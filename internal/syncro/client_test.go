@@ -261,3 +261,119 @@ func TestClientCannotWrite(t *testing.T) {
 		}
 	}
 }
+
+// Fixtures below are the shapes the live Syncro API actually returns, captured
+// from a real account. Guessed shapes are how a mapping passes its tests and
+// still returns empty fields in production — which is exactly what happened to
+// the ticket customer name before these existed.
+
+// A list response leaves `customer` null and carries only the flattened name.
+func TestTicketListUsesFlattenedCustomerName(t *testing.T) {
+	_, client := fakeSyncro(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{
+			"tickets": [{
+				"id": 115778760,
+				"number": 4205,
+				"subject": "[Example] Security Alert",
+				"status": "New",
+				"customer_id": 36244195,
+				"customer": null,
+				"customer_business_then_name": "[Example] Acme Tech Solutions",
+				"user": null,
+				"comments": [{"id": 1, "body": "long thread", "hidden": false}]
+			}],
+			"meta": {"page": 1, "per_page": 25, "total_entries": 5, "total_pages": 1}
+		}`))
+	})
+
+	got, err := client.SearchTickets(context.Background(), syncro.TicketSearch{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ticket := got.Items[0]
+
+	if ticket.Customer != "[Example] Acme Tech Solutions" {
+		t.Errorf("customer name empty on a list response: %+v", ticket)
+	}
+	if ticket.Number != "4205" {
+		t.Errorf("integer ticket number not stringified: %q", ticket.Number)
+	}
+	if ticket.AssignedTo != "" {
+		t.Errorf("unassigned ticket reported an assignee: %q", ticket.AssignedTo)
+	}
+	if len(ticket.Comments) != 0 {
+		t.Error("search returned comments; Syncro sends them but they must not reach context")
+	}
+}
+
+// A single-ticket fetch populates both, and either must work.
+func TestTicketGetUsesNestedCustomerWhenFlatIsAbsent(t *testing.T) {
+	_, client := fakeSyncro(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{
+			"ticket": {
+				"id": 115778760,
+				"subject": "[Example] Security Alert",
+				"customer": {
+					"id": 36244195, "fullname": "Jane Doe",
+					"business_name": "[Example] Acme Tech Solutions"
+				},
+				"comments": [{"id": 1, "body": "plain body", "hidden": false, "is_rich_text": false}]
+			}
+		}`))
+	})
+
+	got, err := client.GetTicket(context.Background(), 115778760)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Customer != "[Example] Acme Tech Solutions" {
+		t.Errorf("nested customer not used as a fallback: %+v", got)
+	}
+}
+
+// An HTML comment body would put markup into model context. The plain preview
+// is preferred when Syncro provides one.
+func TestRichTextCommentPrefersPlainPreview(t *testing.T) {
+	_, client := fakeSyncro(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{
+			"ticket": {
+				"id": 1, "subject": "s",
+				"comments": [{
+					"id": 1,
+					"body": "<div class=\"x\"><p>the actual words</p></div>",
+					"is_rich_text": true,
+					"simple_text_preview": "the actual words",
+					"hidden": false
+				}]
+			}
+		}`))
+	})
+
+	got, err := client.GetTicket(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Comments[0].Body != "the actual words" {
+		t.Errorf("markup reached the comment body: %q", got.Comments[0].Body)
+	}
+}
+
+// An empty result must say so explicitly. With omitempty, "no assets" and
+// "the vendor did not tell us" look identical to whatever reads the output.
+func TestEmptyResultReportsZeroExplicitly(t *testing.T) {
+	_, client := fakeSyncro(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"assets":[],"meta":{"page":1,"per_page":25,"total_entries":0,"total_pages":1}}`))
+	})
+
+	got, err := client.ListAssets(context.Background(), 0, 1, 25)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(got)
+	if !strings.Contains(string(raw), `"total_count":0`) {
+		t.Errorf("a zero total was omitted, so empty is indistinguishable from unknown: %s", raw)
+	}
+	if got.Items == nil {
+		t.Error("items should be an empty array, not null")
+	}
+}

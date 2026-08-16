@@ -61,11 +61,14 @@ type Asset struct {
 // Page describes where a result sits in a paginated set, so a caller knows
 // whether it is looking at everything or at the first slice of something
 // larger — a distinction a model will otherwise assume wrongly.
+// Page fields are never omitempty. A genuine zero — "this customer has no
+// assets" — must be distinguishable from an absent field, or a model reading
+// the result has to guess which it is.
 type Page struct {
 	Page       int `json:"page"`
 	PerPage    int `json:"per_page"`
-	TotalPages int `json:"total_pages,omitempty"`
-	TotalCount int `json:"total_count,omitempty"`
+	TotalPages int `json:"total_pages"`
+	TotalCount int `json:"total_count"`
 }
 
 // Result wraps a list with its pagination.
@@ -113,24 +116,42 @@ type wireTicket struct {
 	CustomerID  int64  `json:"customer_id"`
 	CreatedAt   string `json:"created_at"`
 	UpdatedAt   string `json:"updated_at"`
-	Customer    *struct {
+
+	// Syncro sends the customer two different ways depending on the endpoint:
+	// a list response leaves `customer` null and carries only this flattened
+	// name, while a single-ticket fetch populates both. Reading only the
+	// nested object leaves every search result without a customer name, which
+	// is what the first real response revealed.
+	CustomerName string `json:"customer_business_then_name"`
+	Customer     *struct {
 		BusinessName string `json:"business_name"`
 		FullName     string `json:"fullname"`
 	} `json:"customer"`
+
+	// Null on an unassigned ticket. The populated shape is unverified against
+	// a live assigned ticket, so the fallbacks below are deliberate.
 	User *struct {
 		FullName string `json:"full_name"`
+		Fullname string `json:"fullname"`
+		Name     string `json:"name"`
 		Email    string `json:"email"`
 	} `json:"user"`
+
 	Comments []wireComment `json:"comments"`
 }
 
 type wireComment struct {
-	ID        int64  `json:"id"`
-	Subject   string `json:"subject"`
-	Body      string `json:"body"`
-	Hidden    bool   `json:"hidden"`
-	TechName  string `json:"tech"`
-	CreatedAt string `json:"created_at"`
+	ID       int64  `json:"id"`
+	Subject  string `json:"subject"`
+	Body     string `json:"body"`
+	Hidden   bool   `json:"hidden"`
+	TechName string `json:"tech"`
+	// Syncro can store a comment as HTML. When it does, the plain preview is
+	// the better thing to put in front of a model: markup is noise that costs
+	// context and occasionally confuses a summariser.
+	IsRichText bool   `json:"is_rich_text"`
+	PlainText  string `json:"simple_text_preview"`
+	CreatedAt  string `json:"created_at"`
 }
 
 type wireAsset struct {
@@ -182,21 +203,28 @@ func (w wireTicket) trim(withComments bool) Ticket {
 		CreatedAt:   w.CreatedAt,
 		UpdatedAt:   w.UpdatedAt,
 	}
-	if w.Customer != nil {
+	// The flattened name is the only field present on both endpoints, so it
+	// is preferred; the nested object is a fallback for anything that omits it.
+	t.Customer = w.CustomerName
+	if t.Customer == "" && w.Customer != nil {
 		t.Customer = w.Customer.BusinessName
 		if t.Customer == "" {
 			t.Customer = w.Customer.FullName
 		}
 	}
 	if w.User != nil {
-		t.AssignedTo = w.User.FullName
+		t.AssignedTo = firstNonEmpty(w.User.FullName, w.User.Fullname, w.User.Name, w.User.Email)
 	}
 	if withComments {
 		for _, c := range w.Comments {
+			body := c.Body
+			if c.IsRichText && c.PlainText != "" {
+				body = c.PlainText
+			}
 			t.Comments = append(t.Comments, Comment{
 				ID:        c.ID,
 				Subject:   c.Subject,
-				Body:      truncate(c.Body, 4000),
+				Body:      truncate(body, 4000),
 				Hidden:    c.Hidden,
 				TechName:  c.TechName,
 				CreatedAt: c.CreatedAt,
@@ -204,6 +232,16 @@ func (w wireTicket) trim(withComments bool) Ticket {
 		}
 	}
 	return t
+}
+
+// firstNonEmpty returns the first value that is not blank.
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v = strings.TrimSpace(v); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func (w wireAsset) trim() Asset {
