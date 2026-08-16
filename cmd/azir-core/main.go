@@ -18,8 +18,8 @@ import (
 
 	"github.com/nats-io/nats.go"
 
-	"github.com/spoked/azir/internal/registry"
-	"github.com/spoked/azir/pkg/plugin"
+	"github.com/dreulavelle/azir/internal/registry"
+	"github.com/dreulavelle/azir/pkg/plugin"
 )
 
 func main() {

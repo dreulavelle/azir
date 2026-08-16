@@ -12,8 +12,8 @@ import (
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 
-	"github.com/spoked/azir/internal/registry"
-	"github.com/spoked/azir/pkg/plugin"
+	"github.com/dreulavelle/azir/internal/registry"
+	"github.com/dreulavelle/azir/pkg/plugin"
 )
 
 // startNATS runs an in-process NATS server so the round trip is proven against

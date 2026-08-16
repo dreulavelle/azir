@@ -16,7 +16,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/spoked/azir/pkg/plugin"
+	"github.com/dreulavelle/azir/pkg/plugin"
 )
 
 func main() {

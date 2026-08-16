@@ -19,7 +19,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/micro"
 
-	"github.com/spoked/azir/pkg/plugin"
+	"github.com/dreulavelle/azir/pkg/plugin"
 )
 
 // srvInfoSubject is the NATS service-discovery subject. Every micro service

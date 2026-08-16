@@ -1,4 +1,4 @@
-module github.com/spoked/azir
+module github.com/dreulavelle/azir
 
 go 1.26.6
 

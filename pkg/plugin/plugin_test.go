@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/spoked/azir/pkg/plugin"
+	"github.com/dreulavelle/azir/pkg/plugin"
 )
 
 func noop(_ context.Context, _ plugin.Request) (any, error) { return nil, nil }
