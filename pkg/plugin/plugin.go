@@ -86,6 +86,15 @@ type Plugin struct {
 	ConfigSchema json.RawMessage
 
 	Tools []Tool
+
+	// Preflight lets a plugin report which of its tools can currently work.
+	// Partial capability is the normal case — an administrator granting only
+	// "view tickets" is being sensible — and the right response is for the
+	// usable tools to work while the rest explain themselves, rather than for
+	// the plugin to fail or for a technician to meet an opaque error mid-task.
+	//
+	// Optional: nil means every tool is assumed available.
+	Preflight Preflight
 }
 
 // Error is a controlled error response. Handlers should return these rather

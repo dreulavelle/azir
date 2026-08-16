@@ -35,6 +35,13 @@ type Tool struct {
 	Provides    []plugin.Capability `json:"provides"`
 	Mutates     bool                `json:"mutates"`
 	Schema      json.RawMessage     `json:"schema,omitempty"`
+
+	// Available reports whether the plugin says this tool can currently do its
+	// job. Partial capability is normal — a token granted only ticket access
+	// is a sensible thing for an administrator to issue — so an unusable tool
+	// explains itself rather than failing at call time.
+	Available bool   `json:"available"`
+	Reason    string `json:"unavailable_reason,omitempty"`
 }
 
 // Plugin is a discovered service.
@@ -45,6 +52,9 @@ type Plugin struct {
 	Description string          `json:"description"`
 	Category    plugin.Category `json:"category"`
 	SDK         string          `json:"sdk"`
+	// Ready is false when the plugin cannot work at all, with Reason saying why.
+	Ready  bool   `json:"ready"`
+	Reason string `json:"not_ready_reason,omitempty"`
 	// ConfigSchema is the JSON Schema for this plugin's settings, published by
 	// the plugin itself. The admin console renders its form from this, so
 	// adding a plugin requires no frontend work.
@@ -138,6 +148,11 @@ func (r *Registry) Refresh(ctx context.Context) error {
 		if schema := info.Metadata[plugin.MetaConfigSchema]; schema != "" {
 			p.ConfigSchema = json.RawMessage(schema)
 		}
+
+		// Ask the plugin what still works. A plugin that does not answer is
+		// treated as fully available: silence must not disable functionality.
+		health := r.health(ctx, info.Name)
+		p.Ready, p.Reason = health.Ready, health.Reason
 		for _, ep := range info.Endpoints {
 			// The endpoint name has dots stripped for micro's validator; the
 			// real tool name travels in metadata.
@@ -164,6 +179,22 @@ func (r *Registry) Refresh(ctx context.Context) error {
 					"plugin", info.Name, "tool", ep.Name, "subject", ep.Subject)
 				continue
 			}
+
+			// A tool the plugin has not reported on is assumed available:
+			// silence must not disable working functionality.
+			t.Available = true
+			if status, reported := health.Tools[t.Name]; reported {
+				t.Available, t.Reason = status.Available, status.Reason
+			}
+
+			// An unavailable tool provides nothing. Leaving it in the
+			// capability index would let a feature believe it is supported and
+			// then fail when it calls.
+			if !t.Available {
+				p.Tools = append(p.Tools, t)
+				continue
+			}
+
 			for _, c := range t.Provides {
 				key := string(c)
 				// t.Name, not ep.Name: the endpoint name has had its dots
@@ -281,6 +312,24 @@ func (r *Registry) discover(ctx context.Context) ([]micro.Info, error) {
 		}
 	}
 	return out, nil
+}
+
+// health asks a plugin which of its tools can currently work. A plugin that
+// does not answer is assumed fully available, because a missing reply is far
+// more likely to mean "no preflight implemented" than "everything is broken".
+func (r *Registry) health(ctx context.Context, pluginName string) plugin.Health {
+	assumed := plugin.Health{Ready: true}
+
+	msg, err := r.nc.RequestWithContext(ctx, plugin.HealthSubject(pluginName), nil)
+	if err != nil {
+		return assumed
+	}
+	var h plugin.Health
+	if err := json.Unmarshal(msg.Data, &h); err != nil {
+		r.log.Warn("undecodable plugin health", "plugin", pluginName, "error", err)
+		return assumed
+	}
+	return h
 }
 
 func parseCaps(csv string) []plugin.Capability {

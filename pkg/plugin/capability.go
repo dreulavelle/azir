@@ -21,6 +21,7 @@ const (
 	CapAssetsList      Capability = "assets.list"
 	CapCallsList       Capability = "calls.list"
 	CapDocsSearch      Capability = "documentation.search"
+	CapInvoicesList    Capability = "invoices.list"
 	CapAccessCheck     Capability = "access.check"
 	CapRecordingsGet   Capability = "recordings.get"
 
@@ -39,6 +40,7 @@ var vocabulary = map[Capability]struct{}{
 	CapAssetsList:      {},
 	CapCallsList:       {},
 	CapDocsSearch:      {},
+	CapInvoicesList:    {},
 	CapAccessCheck:     {},
 	CapRecordingsGet:   {},
 	CapDiagnostic:      {},

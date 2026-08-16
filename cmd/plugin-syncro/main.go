@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 
 	"github.com/dreulavelle/azir/internal/syncro"
@@ -56,6 +57,12 @@ func main() {
 				}
 			}
 		}`),
+		// Reports which tools this token can actually drive. An administrator
+		// granting Azir only ticket access is being sensible, and the right
+		// response is for the ticket tools to work while the invoice tools say
+		// what permission they need — not for the plugin to fail, and not for
+		// a technician to meet an opaque 401 mid-conversation.
+		Preflight: preflight,
 		Tools: []plugin.Tool{
 			{
 				Name:        "customers.search",
@@ -162,6 +169,39 @@ func main() {
 				Handler: searchDocs,
 			},
 			{
+				Name: "invoices.list",
+				Description: "List invoices, optionally only paid or only unpaid, and optionally for one " +
+					"customer or ticket. Use this to answer what has been billed and what is outstanding.",
+				Provides: []plugin.Capability{plugin.CapInvoicesList},
+				Schema: json.RawMessage(`{
+					"type": "object",
+					"properties": {
+						"status": {"type": "string", "enum": ["paid", "unpaid"], "description": "Omit for all invoices"},
+						"customer_id": {"type": "integer", "description": "Syncro customer id"},
+						"ticket_id": {"type": "integer", "description": "Invoices raised against one ticket"},
+						"page": {"type": "integer", "minimum": 1, "default": 1},
+						"per_page": {"type": "integer", "minimum": 1, "maximum": 100, "default": 25}
+					}
+				}`),
+				Handler: listInvoices,
+			},
+			{
+				Name: "customers.standing",
+				Description: "A customer's financial position: what is outstanding, how much is overdue, " +
+					"and the unpaid invoices behind the total. The balance is summed from unpaid invoices " +
+					"because Syncro exposes no balance field, and the response says so.",
+				Provides: []plugin.Capability{plugin.CapInvoicesList},
+				Schema: json.RawMessage(`{
+					"type": "object",
+					"required": ["customer_id"],
+					"properties": {
+						"customer_id": {"type": "integer", "description": "Syncro customer id"},
+						"include_paid": {"type": "boolean", "default": false, "description": "Also return recently paid invoices"}
+					}
+				}`),
+				Handler: customerStanding,
+			},
+			{
 				Name: "access.check",
 				Description: "Report what the configured Syncro API token is permitted to do, and whether " +
 					"it holds more permission than Azir needs.",
@@ -190,6 +230,45 @@ func main() {
 		log.Error("plugin failed to start", "error", err)
 		os.Exit(1)
 	}
+}
+
+// preflight asks Syncro what the configured token may do and turns that into
+// per-tool availability.
+func preflight(ctx context.Context) plugin.Health {
+	h := plugin.Health{Tools: map[string]plugin.ToolStatus{}}
+
+	c, err := client(ctx, plugin.Request{})
+	if err != nil {
+		// Unconfigured is a state, not a fault. Say so plainly so the console
+		// shows a setup instruction rather than an error.
+		h.Ready = false
+		h.Reason = "not configured: set the Syncro subdomain and API token in plugin settings"
+		return h
+	}
+
+	access, err := c.CheckAccess(ctx)
+	if err != nil {
+		h.Ready = false
+		h.Reason = "the stored Syncro token was rejected; check it in plugin settings"
+		return h
+	}
+
+	h.Ready = true
+	for tool, status := range access.ToolAvailability() {
+		info, _ := status.(map[string]any)
+		available, _ := info["available"].(bool)
+		ts := plugin.ToolStatus{Available: available}
+		if !available {
+			missing, _ := info["missing"].([]string)
+			ts.Reason = "the Syncro API token lacks " + strings.Join(missing, " and ")
+		}
+		h.Tools[tool] = ts
+	}
+
+	if !access.Sufficient {
+		h.Reason = "the Syncro token is missing permissions Azir needs; see access.check"
+	}
+	return h
 }
 
 // client builds or reuses the API client for the configured subdomain,
@@ -408,12 +487,83 @@ func searchDocs(ctx context.Context, req plugin.Request) (any, error) {
 	return map[string]any{"pages": pages, "count": len(pages)}, nil
 }
 
+func listInvoices(ctx context.Context, req plugin.Request) (any, error) {
+	a, err := args[struct {
+		pageArgs
+		Status     string `json:"status"`
+		CustomerID int64  `json:"customer_id"`
+		TicketID   int64  `json:"ticket_id"`
+	}](req)
+	if err != nil {
+		return nil, err
+	}
+	c, err := client(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.RequireGrants(ctx, "invoices.list"); err != nil {
+		return nil, err
+	}
+
+	customerID := a.CustomerID
+	if customerID == 0 && req.CustomerID != "" {
+		if id, ok := syncroIDFor(ctx, req.CustomerID); ok {
+			customerID = id
+		}
+	}
+
+	return c.ListInvoices(ctx, syncro.InvoiceSearch{
+		Status:     a.Status,
+		CustomerID: customerID,
+		TicketID:   a.TicketID,
+		Page:       a.Page,
+		PerPage:    a.PerPage,
+	})
+}
+
+func customerStanding(ctx context.Context, req plugin.Request) (any, error) {
+	a, err := args[struct {
+		CustomerID  int64 `json:"customer_id"`
+		IncludePaid bool  `json:"include_paid"`
+	}](req)
+	if err != nil {
+		return nil, err
+	}
+	c, err := client(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.RequireGrants(ctx, "customers.standing"); err != nil {
+		return nil, err
+	}
+
+	customerID := a.CustomerID
+	if customerID == 0 && req.CustomerID != "" {
+		if id, ok := syncroIDFor(ctx, req.CustomerID); ok {
+			customerID = id
+		}
+	}
+	if customerID <= 0 {
+		return nil, plugin.Errorf("400", "a Syncro customer id is required")
+	}
+	return c.CustomerStanding(ctx, customerID, a.IncludePaid)
+}
+
 func checkAccess(ctx context.Context, req plugin.Request) (any, error) {
 	c, err := client(ctx, req)
 	if err != nil {
 		return nil, err
 	}
-	return c.CheckAccess(ctx)
+	access, err := c.CheckAccess(ctx)
+	if err != nil {
+		return nil, err
+	}
+	// Which tools this token can actually drive, so a missing permission is a
+	// visible fact rather than a surprise at call time.
+	return map[string]any{
+		"access": access,
+		"tools":  access.ToolAvailability(),
+	}, nil
 }
 
 // syncroIDFor translates an Azir customer into this plugin's identifier.

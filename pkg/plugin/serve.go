@@ -146,6 +146,18 @@ func Serve(ctx context.Context, p Plugin, opts ...Option) error {
 	}
 	defer svc.Stop() //nolint:errcheck // best effort on shutdown
 
+	// Health is served on its own subject so core can ask what still works
+	// without waiting for a tool call to fail.
+	// Preflight needs the same context handlers get: it typically has to read
+	// settings and resolve a credential to decide what works. Without this it
+	// can only ever report "not configured".
+	pluginCtx := withIdentity(withConfig(withVault(context.Background(), vault), cfg), ident)
+	healthSub, err := serveHealth(nc, p.Name, newHealthCache(p.Preflight), pluginCtx)
+	if err != nil {
+		return err
+	}
+	defer healthSub.Unsubscribe() //nolint:errcheck // best effort on shutdown
+
 	for _, t := range p.Tools {
 		if err := svc.AddEndpoint(
 			endpointName(t.Name),
