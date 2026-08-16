@@ -3,7 +3,6 @@ package plugin_test
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"strings"
 	"testing"
 
@@ -20,9 +19,10 @@ func validTool() plugin.Tool {
 	}
 }
 
-// The read-only invariant: a plugin declaring a mutating tool must fail to
-// boot, not fail quietly at request time.
-func TestServeRefusesMutatingTool(t *testing.T) {
+// A mutating tool must declare who is permitted to use it. A write nobody is
+// required to be allowed to make is not a write anyone should be able to make,
+// so this fails at boot rather than at request time.
+func TestServeRefusesUnguardedMutatingTool(t *testing.T) {
 	p := plugin.Plugin{
 		Name:    "writer",
 		Version: "0.1.0",
@@ -31,7 +31,7 @@ func TestServeRefusesMutatingTool(t *testing.T) {
 			{
 				Name:     "tickets.close",
 				Provides: []plugin.Capability{plugin.CapWorkItemsGet},
-				Mutates:  true,
+				Mutates:  true, // no RequiresPermission
 				Handler:  noop,
 			},
 		},
@@ -39,15 +39,40 @@ func TestServeRefusesMutatingTool(t *testing.T) {
 
 	err := plugin.Serve(context.Background(), p)
 	if err == nil {
-		t.Fatal("Serve accepted a mutating tool; the read-only invariant is not enforced")
+		t.Fatal("Serve accepted a mutating tool with no required permission")
 	}
-	if !errors.Is(err, plugin.ErrMutatingTool) {
-		t.Fatalf("want ErrMutatingTool, got %v", err)
+	if !strings.Contains(err.Error(), "no required permission") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 	// Must fail before touching the network, so a misconfigured plugin cannot
 	// briefly appear in discovery.
 	if strings.Contains(err.Error(), "connect") {
 		t.Fatalf("validation ran after connecting: %v", err)
+	}
+}
+
+// A properly declared mutating tool is allowed. Writes exist; they are simply
+// never reachable by the model and never reachable without permission.
+func TestServeAcceptsGuardedMutatingTool(t *testing.T) {
+	p := plugin.Plugin{
+		Name:    "writer",
+		Version: "0.1.0",
+		Tools: []plugin.Tool{{
+			Name:               "tickets.comment",
+			Provides:           []plugin.Capability{plugin.CapWorkItemsGet},
+			Mutates:            true,
+			RequiresPermission: "ticket.comment",
+			Handler:            noop,
+		}},
+	}
+
+	// Validation passes, so the failure below is the connection, not the tool.
+	err := plugin.Serve(context.Background(), p, plugin.WithNATSURL("nats://127.0.0.1:1"))
+	if err == nil {
+		t.Fatal("expected a connection failure")
+	}
+	if strings.Contains(err.Error(), "required permission") {
+		t.Fatalf("a properly guarded mutating tool was rejected: %v", err)
 	}
 }
 

@@ -60,6 +60,19 @@ type HTTPConfig struct {
 
 	// Timeout per attempt.
 	Timeout time.Duration
+
+	// ExplainError extracts a safe, useful message from a 4xx response body.
+	//
+	// Vendor error bodies are sanitised by default because they routinely
+	// carry request URLs and auth headers. But a validation message —
+	// "Subject can't be blank" — is exactly what a caller needs, and throwing
+	// it away turns a fixable mistake into a mystery.
+	//
+	// Only the plugin knows its vendor's error shape, so only the plugin can
+	// extract the safe part. Whatever it returns still passes through the
+	// redactor before reaching a caller, so a mistake here cannot leak a
+	// registered secret.
+	ExplainError func(status int, body []byte) string
 }
 
 // MethodPath is one allowlisted write-shaped read.
@@ -270,8 +283,13 @@ func (c *HTTPClient) Do(ctx context.Context, method, path string, query url.Valu
 				Message: "the stored credential was rejected, or lacks permission for this data; check it in settings"}
 
 		case resp.StatusCode >= 400:
-			return nil, &Error{Code: strconv.Itoa(resp.StatusCode),
-				Message: "the vendor rejected this request"}
+			message := "the vendor rejected this request"
+			if c.cfg.ExplainError != nil && readErr == nil {
+				if explained := strings.TrimSpace(c.cfg.ExplainError(resp.StatusCode, data)); explained != "" {
+					message = explained
+				}
+			}
+			return nil, &Error{Code: strconv.Itoa(resp.StatusCode), Message: message}
 		}
 
 		if readErr != nil {

@@ -222,6 +222,55 @@ func definition() plugin.Plugin {
 				Handler: guarded("customers.standing", customerStanding),
 			},
 			{
+				Name: "tickets.comment",
+				Description: "Post a message to a ticket — a public reply the customer receives, or a " +
+					"hidden internal note they never see. Never offered to the model: only a person can send this.",
+				Provides:           []plugin.Capability{plugin.CapWorkItemsGet},
+				Mutates:            true,
+				RequiresPermission: "ticket.comment",
+				Schema: json.RawMessage(`{
+					"type": "object",
+					"required": ["id", "body"],
+					"properties": {
+						"id": {"type": "integer", "description": "Syncro ticket id"},
+						"body": {"type": "string", "description": "The message text"},
+						"subject": {"type": "string", "description": "Optional subject line"},
+						"hidden": {"type": "boolean", "default": true, "description": "Internal note the customer never sees. Defaults to true: a private note posted publicly is far worse than the reverse."},
+						"do_not_email": {"type": "boolean", "default": false, "description": "Post without emailing the customer"}
+					}
+				}`),
+				Handler: guarded("tickets.comment", postComment),
+			},
+			{
+				Name: "tickets.update",
+				Description: "Change a ticket's status, assignee, priority, or the customer it belongs to. " +
+					"Reassigning the customer is how a PagerDuty ticket on a generic account reaches the right one.",
+				Provides:           []plugin.Capability{plugin.CapWorkItemsGet},
+				Mutates:            true,
+				RequiresPermission: "ticket.status",
+				Schema: json.RawMessage(`{
+					"type": "object",
+					"required": ["id"],
+					"properties": {
+						"id": {"type": "integer", "description": "Syncro ticket id"},
+						"status": {"type": "string", "description": "New status; use tickets.options for the list this account defines"},
+						"user_id": {"type": "integer", "description": "Technician to assign to; see tickets.options"},
+						"customer_id": {"type": "integer", "description": "Move the ticket to a different customer"},
+						"priority": {"type": "string", "description": "New priority"}
+					}
+				}`),
+				Handler: guarded("tickets.update", updateTicket),
+			},
+			{
+				Name: "tickets.options",
+				Description: "The statuses and technicians this Syncro account defines, so an interface can " +
+					"offer real choices instead of guessing at them.",
+				Provides:  []plugin.Capability{plugin.CapWorkItemsGet},
+				Freshness: &plugin.Freshness{Soft: 1 * time.Hour, Hard: 12 * time.Hour},
+				Schema:    json.RawMessage(`{"type": "object", "properties": {}}`),
+				Handler:   guarded("tickets.options", ticketOptions),
+			},
+			{
 				Name: "access.check",
 				Description: "Report what the configured Syncro API token is permitted to do, and whether " +
 					"it holds more permission than Azir needs.",
@@ -592,6 +641,81 @@ func checkAccess(ctx context.Context, req plugin.Request) (any, error) {
 		"access": access,
 		"tools":  access.ToolAvailability(),
 	}, nil
+}
+
+func postComment(ctx context.Context, req plugin.Request) (any, error) {
+	a, err := args[struct {
+		ID         int64  `json:"id"`
+		Body       string `json:"body"`
+		Subject    string `json:"subject"`
+		Hidden     *bool  `json:"hidden"`
+		DoNotEmail bool   `json:"do_not_email"`
+	}](req)
+	if err != nil {
+		return nil, err
+	}
+	c, err := client(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	// Hidden defaults to true. Posting an internal note publicly is far worse
+	// than the reverse, so the safer reading of an absent flag wins.
+	hidden := true
+	if a.Hidden != nil {
+		hidden = *a.Hidden
+	}
+
+	return c.PostComment(ctx, syncro.CommentRequest{
+		TicketID:   a.ID,
+		Subject:    a.Subject,
+		Body:       a.Body,
+		Hidden:     hidden,
+		DoNotEmail: a.DoNotEmail,
+	})
+}
+
+func updateTicket(ctx context.Context, req plugin.Request) (any, error) {
+	a, err := args[struct {
+		ID         int64  `json:"id"`
+		Status     string `json:"status"`
+		UserID     int64  `json:"user_id"`
+		CustomerID int64  `json:"customer_id"`
+		Priority   string `json:"priority"`
+	}](req)
+	if err != nil {
+		return nil, err
+	}
+	c, err := client(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return c.UpdateTicket(ctx, syncro.TicketUpdate{
+		TicketID:   a.ID,
+		Status:     a.Status,
+		UserID:     a.UserID,
+		CustomerID: a.CustomerID,
+		Priority:   a.Priority,
+	})
+}
+
+func ticketOptions(ctx context.Context, req plugin.Request) (any, error) {
+	c, err := client(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	statuses, err := c.TicketStatuses(ctx)
+	if err != nil {
+		return nil, err
+	}
+	technicians, err := c.Technicians(ctx)
+	if err != nil {
+		// Statuses alone are still useful; failing both because one failed is
+		// worse than a partial answer that says what is missing.
+		return map[string]any{"statuses": statuses, "technicians": []any{},
+			"note": "technicians could not be read with this token"}, nil
+	}
+	return map[string]any{"statuses": statuses, "technicians": technicians}, nil
 }
 
 // syncroIDFor translates an Azir customer into this plugin's identifier.

@@ -248,3 +248,50 @@ func TestCapabilityIndexUsesRealToolNames(t *testing.T) {
 		t.Errorf("dotted tool missing from the capability index: %v", providers)
 	}
 }
+
+// A mutating tool must never appear in the capability index. The index is what
+// a feature — and later the agent — consults to find a tool, so a write that
+// appeared there would be discoverable by exactly the thing that must never
+// reach one.
+func TestMutatingToolsStayOutOfTheCapabilityIndex(t *testing.T) {
+	url := startNATS(t)
+
+	p := testPlugin()
+	p.Tools = append(p.Tools, plugin.Tool{
+		Name:               "tickets.comment",
+		Description:        "writes",
+		Provides:           []plugin.Capability{plugin.CapDiagnostic},
+		Mutates:            true,
+		RequiresPermission: "ticket.comment",
+		Handler: func(_ context.Context, _ plugin.Request) (any, error) {
+			return map[string]any{"written": true}, nil
+		},
+	})
+	servePlugin(t, url, p)
+
+	nc, err := nats.Connect(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nc.Close()
+
+	reg := registry.New(nc, quietLogger(), 500*time.Millisecond)
+	if err := reg.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, provider := range reg.Providers(plugin.CapDiagnostic) {
+		if strings.Contains(provider, "comment") {
+			t.Errorf("a mutating tool reached the capability index: %s", provider)
+		}
+	}
+
+	// It is still discoverable to an interface, with its permission attached.
+	tool, ok := reg.Lookup("echo", "tickets.comment")
+	if !ok {
+		t.Fatal("the mutating tool vanished entirely; it should be visible, just not to the model")
+	}
+	if !tool.Mutates || tool.RequiresPermission != "ticket.comment" {
+		t.Errorf("mutation metadata lost: %+v", tool)
+	}
+}

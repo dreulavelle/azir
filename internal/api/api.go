@@ -21,6 +21,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/dreulavelle/azir/internal/audit"
+	"github.com/dreulavelle/azir/internal/identity"
 	"github.com/dreulavelle/azir/internal/registry"
 	"github.com/dreulavelle/azir/internal/store"
 	"github.com/dreulavelle/azir/pkg/plugin"
@@ -44,38 +45,64 @@ type Server struct {
 	Cache *ToolCache
 }
 
-// actor is the stub identity for this phase.
-const actor = "admin"
-
 // Routes builds the mux.
+//
+// Every route carries the permission it needs. Enforcement is a wrapper rather
+// than a line inside each handler, because a check that must be remembered is a
+// check that will eventually be forgotten — and the forgetting is invisible
+// until someone reaches something they should not have.
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", s.health)
 
-	mux.HandleFunc("GET /api/registry", s.getRegistry)
-	mux.HandleFunc("GET /api/capabilities", s.listCapabilities)
-	mux.HandleFunc("POST /api/capabilities/{plugin}/{tool}/decide", s.decideCapability)
+	// Open by necessity: you cannot require a session to find out whether an
+	// account exists yet, or to create one.
+	mux.HandleFunc("GET /api/setup", s.setupState)
+	mux.HandleFunc("POST /api/setup", s.setup)
+	mux.HandleFunc("POST /api/login", s.login)
+	mux.HandleFunc("POST /api/logout", s.logout)
+	mux.HandleFunc("GET /api/me", s.whoami)
 
-	mux.HandleFunc("GET /api/customers", s.listCustomers)
-	mux.HandleFunc("POST /api/customers", s.createCustomer)
-	mux.HandleFunc("GET /api/customers/{id}", s.getCustomer)
-	mux.HandleFunc("POST /api/customers/{id}/identities", s.linkIdentity)
+	p := identity.PermToolRead
+	mux.HandleFunc("GET /api/registry", s.require(p, ignoreActor(s.getRegistry)))
+	mux.HandleFunc("GET /api/capabilities", s.require(p, ignoreActor(s.listCapabilities)))
+	mux.HandleFunc("POST /api/capabilities/{plugin}/{tool}/decide",
+		s.require(identity.PermPluginApprove, s.decideCapability))
 
-	mux.HandleFunc("GET /api/credentials", s.listCredentials)
-	mux.HandleFunc("PUT /api/credentials", s.putCredential)
-	mux.HandleFunc("DELETE /api/credentials/{id}", s.deleteCredential)
-	mux.HandleFunc("POST /api/credentials/rotate", s.rotateCredentials)
+	mux.HandleFunc("GET /api/customers", s.require(p, ignoreActor(s.listCustomers)))
+	mux.HandleFunc("GET /api/customers/{id}", s.require(p, ignoreActor(s.getCustomer)))
+	mux.HandleFunc("POST /api/customers",
+		s.require(identity.PermCustomerManage, s.createCustomer))
+	mux.HandleFunc("POST /api/customers/{id}/identities",
+		s.require(identity.PermCustomerManage, s.linkIdentity))
+
+	mux.HandleFunc("GET /api/credentials",
+		s.require(identity.PermCredentialManage, ignoreActor(s.listCredentials)))
+	mux.HandleFunc("PUT /api/credentials",
+		s.require(identity.PermCredentialManage, s.putCredential))
+	mux.HandleFunc("DELETE /api/credentials/{id}",
+		s.require(identity.PermCredentialManage, s.deleteCredential))
+	mux.HandleFunc("POST /api/credentials/rotate",
+		s.require(identity.PermCredentialManage, s.rotateCredentials))
 
 	// Plugin settings. One panel per plugin, rendered from the schema the
-	// plugin publishes — no per-integration frontend code.
-	mux.HandleFunc("GET /api/plugins/{plugin}/settings", s.getSettings)
-	mux.HandleFunc("PUT /api/plugins/{plugin}/settings", s.putSettings)
-	mux.HandleFunc("DELETE /api/plugins/{plugin}/settings/{field}", s.deleteSettingSecret)
+	// plugin publishes — no per-integration frontend code. Administrators
+	// only: configuring a plugin is how someone would widen their own reach.
+	mux.HandleFunc("GET /api/plugins/{plugin}/settings",
+		s.require(identity.PermPluginConfigure, ignoreActor(s.getSettings)))
+	mux.HandleFunc("PUT /api/plugins/{plugin}/settings",
+		s.require(identity.PermPluginConfigure, s.putSettings))
+	mux.HandleFunc("DELETE /api/plugins/{plugin}/settings/{field}",
+		s.require(identity.PermPluginConfigure, s.deleteSettingSecret))
 
-	mux.HandleFunc("GET /api/audit", s.listAudit)
+	mux.HandleFunc("GET /api/users", s.require(identity.PermUserManage, ignoreActor(s.listUsers)))
+	mux.HandleFunc("POST /api/users", s.require(identity.PermUserManage, s.createUser))
+	mux.HandleFunc("GET /api/roles", s.require(identity.PermUserManage, ignoreActor(s.listRoles)))
 
-	mux.HandleFunc("POST /api/invoke/{plugin}/{tool}", s.invoke)
+	mux.HandleFunc("GET /api/audit", s.require(identity.PermAuditRead, ignoreActor(s.listAudit)))
+
+	mux.HandleFunc("POST /api/invoke/{plugin}/{tool}", s.require(p, s.invoke))
 
 	// The frontend is served by the same binary on the same port, so there is
 	// no proxy to configure and no second origin to authorise.
@@ -91,6 +118,11 @@ func (s *Server) Routes() http.Handler {
 	}
 
 	return mux
+}
+
+// ignoreActor adapts a handler that does not need to know who is calling.
+func ignoreActor(h func(http.ResponseWriter, *http.Request)) func(http.ResponseWriter, *http.Request, identity.Actor) {
+	return func(w http.ResponseWriter, r *http.Request, _ identity.Actor) { h(w, r) }
 }
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
@@ -158,7 +190,7 @@ func (s *Server) listCapabilities(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, records)
 }
 
-func (s *Server) decideCapability(w http.ResponseWriter, r *http.Request) {
+func (s *Server) decideCapability(w http.ResponseWriter, r *http.Request, actor identity.Actor) {
 	var body struct {
 		Status string `json:"status"`
 	}
@@ -168,7 +200,7 @@ func (s *Server) decideCapability(w http.ResponseWriter, r *http.Request) {
 	}
 
 	pluginName, toolName := r.PathValue("plugin"), r.PathValue("tool")
-	err := s.DB.Decide(r.Context(), pluginName, toolName, body.Status, actor)
+	err := s.DB.Decide(r.Context(), pluginName, toolName, body.Status, actor.Email)
 	if errors.Is(err, store.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, errBody("capability not found"))
 		return
@@ -179,7 +211,7 @@ func (s *Server) decideCapability(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.Audit.Record(r.Context(), audit.Event{
-		ActorUserID: actor,
+		ActorUserID: actor.Email,
 		Action:      "capability.decide",
 		Plugin:      pluginName,
 		Tool:        toolName,
@@ -210,7 +242,7 @@ func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, customers)
 }
 
-func (s *Server) createCustomer(w http.ResponseWriter, r *http.Request) {
+func (s *Server) createCustomer(w http.ResponseWriter, r *http.Request, actor identity.Actor) {
 	var body struct {
 		DisplayName string `json:"display_name"`
 	}
@@ -224,7 +256,7 @@ func (s *Server) createCustomer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Audit.Record(r.Context(), audit.Event{
-		ActorUserID: actor, Action: "customer.create",
+		ActorUserID: actor.Email, Action: "customer.create",
 		CustomerID: &c.ID, Outcome: audit.OutcomeOK,
 	})
 	writeJSON(w, http.StatusCreated, c)
@@ -248,7 +280,7 @@ func (s *Server) getCustomer(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, c)
 }
 
-func (s *Server) linkIdentity(w http.ResponseWriter, r *http.Request) {
+func (s *Server) linkIdentity(w http.ResponseWriter, r *http.Request, actor identity.Actor) {
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, errBody("invalid customer id"))
@@ -267,7 +299,7 @@ func (s *Server) linkIdentity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Audit.Record(r.Context(), audit.Event{
-		ActorUserID: actor, Action: "customer.link_identity",
+		ActorUserID: actor.Email, Action: "customer.link_identity",
 		Plugin: body.Plugin, CustomerID: &id, Outcome: audit.OutcomeOK,
 	})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "linked"})
@@ -284,7 +316,7 @@ func (s *Server) listCredentials(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, refs)
 }
 
-func (s *Server) putCredential(w http.ResponseWriter, r *http.Request) {
+func (s *Server) putCredential(w http.ResponseWriter, r *http.Request, actor identity.Actor) {
 	var body struct {
 		CustomerID *uuid.UUID `json:"customer_id"`
 		Plugin     string     `json:"plugin"`
@@ -302,14 +334,14 @@ func (s *Server) putCredential(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Audit.Record(r.Context(), audit.Event{
-		ActorUserID: actor, Action: "credential.put",
+		ActorUserID: actor.Email, Action: "credential.put",
 		Plugin: body.Plugin, CustomerID: body.CustomerID,
 		Outcome: audit.OutcomeOK, Detail: body.Kind,
 	})
 	writeJSON(w, http.StatusOK, ref)
 }
 
-func (s *Server) deleteCredential(w http.ResponseWriter, r *http.Request) {
+func (s *Server) deleteCredential(w http.ResponseWriter, r *http.Request, actor identity.Actor) {
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, errBody("invalid credential id"))
@@ -325,19 +357,19 @@ func (s *Server) deleteCredential(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Audit.Record(r.Context(), audit.Event{
-		ActorUserID: actor, Action: "credential.delete", Outcome: audit.OutcomeOK,
+		ActorUserID: actor.Email, Action: "credential.delete", Outcome: audit.OutcomeOK,
 	})
 	writeJSON(w, http.StatusNoContent, nil)
 }
 
-func (s *Server) rotateCredentials(w http.ResponseWriter, r *http.Request) {
+func (s *Server) rotateCredentials(w http.ResponseWriter, r *http.Request, actor identity.Actor) {
 	moved, err := s.Creds.Rotate(r.Context())
 	if err != nil {
 		s.fail(w, err, "rotation failed")
 		return
 	}
 	s.Audit.Record(r.Context(), audit.Event{
-		ActorUserID: actor, Action: "credential.rotate", Outcome: audit.OutcomeOK,
+		ActorUserID: actor.Email, Action: "credential.rotate", Outcome: audit.OutcomeOK,
 	})
 	writeJSON(w, http.StatusOK, map[string]int{"rewrapped": moved})
 }
@@ -360,13 +392,47 @@ type invokeRequest struct {
 	Refresh bool `json:"refresh,omitempty"`
 }
 
-func (s *Server) invoke(w http.ResponseWriter, r *http.Request) {
+func (s *Server) invoke(w http.ResponseWriter, r *http.Request, actor identity.Actor) {
 	pluginName, toolName := r.PathValue("plugin"), r.PathValue("tool")
 
 	tool, ok := s.Reg.Lookup(pluginName, toolName)
 	if !ok {
 		writeJSON(w, http.StatusNotFound, errBody("no such tool in the current registry snapshot"))
 		return
+	}
+
+	// A write requires three independent conditions, because this is the one
+	// place where being wrong is irreversible: the caller holds the tool's
+	// declared permission, an administrator has enabled writes for this
+	// plugin, and the tool was approved like any other.
+	if tool.Mutates {
+		if err := actor.Require(tool.RequiresPermission); err != nil {
+			s.Audit.Record(r.Context(), audit.Event{
+				ActorUserID: actor.Email, Action: "tool.write",
+				Plugin: pluginName, Tool: toolName,
+				Outcome: audit.OutcomeDenied, Detail: "missing " + tool.RequiresPermission,
+			})
+			writeJSON(w, http.StatusForbidden, map[string]string{
+				"error":               "your role does not permit this action",
+				"required_permission": tool.RequiresPermission,
+			})
+			return
+		}
+		enabled, err := s.writesEnabled(r.Context(), pluginName)
+		if err != nil {
+			s.fail(w, err, "could not check whether writes are enabled")
+			return
+		}
+		if !enabled {
+			s.Audit.Record(r.Context(), audit.Event{
+				ActorUserID: actor.Email, Action: "tool.write",
+				Plugin: pluginName, Tool: toolName,
+				Outcome: audit.OutcomeRefused, Detail: "writes disabled for this plugin",
+			})
+			writeJSON(w, http.StatusForbidden, errBody(
+				"writes are disabled for this plugin; an administrator can enable them in plugin settings"))
+			return
+		}
 	}
 
 	// The approval gate. Discovery made this tool visible; only an
@@ -378,7 +444,7 @@ func (s *Server) invoke(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, ok := approved[pluginName+"."+toolName]; !ok {
 		s.Audit.Record(r.Context(), audit.Event{
-			ActorUserID: actor, Action: "tool.invoke",
+			ActorUserID: actor.Email, Action: "tool.invoke",
 			Plugin: pluginName, Tool: toolName,
 			Outcome: audit.OutcomeDenied, Detail: "not approved",
 		})
@@ -394,7 +460,7 @@ func (s *Server) invoke(w http.ResponseWriter, r *http.Request) {
 
 	payload, err := json.Marshal(plugin.Request{
 		CustomerID: body.CustomerID,
-		Actor:      plugin.Actor{UserID: actor, Role: "admin"},
+		Actor:      plugin.Actor{UserID: actor.Email, Role: actor.Role},
 		Args:       body.Args,
 	})
 	if err != nil {
@@ -434,7 +500,7 @@ func (s *Server) invoke(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var result Result
-	if s.Cache != nil {
+	if s.Cache != nil && !tool.Mutates {
 		result, err = s.Cache.Do(r.Context(), tool, customerUUID, body.Args, body.Refresh, fetch)
 	} else {
 		var raw json.RawMessage
@@ -448,12 +514,12 @@ func (s *Server) invoke(w http.ResponseWriter, r *http.Request) {
 		if toolErr != nil {
 			status, failBody, detail = toolErr.status, toolErr.body, toolErr.detail
 		}
-		s.recordInvoke(r.Context(), pluginName, toolName, body.CustomerID, audit.OutcomeFailed, detail)
+		s.recordInvoke(r.Context(), actor, pluginName, toolName, body.CustomerID, audit.OutcomeFailed, detail)
 		writeJSON(w, status, failBody)
 		return
 	}
 
-	s.recordInvoke(r.Context(), pluginName, toolName, body.CustomerID, audit.OutcomeOK, result.Source)
+	s.recordInvoke(r.Context(), actor, pluginName, toolName, body.CustomerID, audit.OutcomeOK, result.Source)
 
 	// How the answer was obtained travels with it. A caller — a person or a
 	// model — reasons differently about a number that is four minutes old than
@@ -465,6 +531,18 @@ func (s *Server) invoke(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(result.Payload)
 }
 
+// writesEnabled reports whether an administrator has turned on writes for a
+// plugin. Off unless deliberately switched on: read-only stays the default,
+// and a deployment that never enables it behaves exactly as before.
+func (s *Server) writesEnabled(ctx context.Context, pluginName string) (bool, error) {
+	settings, err := s.DB.GetPluginConfig(ctx, pluginName, nil)
+	if err != nil {
+		return false, err
+	}
+	enabled, _ := settings.Values["writes_enabled"].(bool)
+	return enabled, nil
+}
+
 // toolFailure carries an error shape from inside the fetch closure.
 type toolFailure struct {
 	status int
@@ -472,9 +550,9 @@ type toolFailure struct {
 	detail string
 }
 
-func (s *Server) recordInvoke(ctx context.Context, pluginName, toolName, customerID, outcome, detail string) {
+func (s *Server) recordInvoke(ctx context.Context, actor identity.Actor, pluginName, toolName, customerID, outcome, detail string) {
 	e := audit.Event{
-		ActorUserID: actor,
+		ActorUserID: actor.Email,
 		Action:      "tool.invoke",
 		Plugin:      pluginName,
 		Tool:        toolName,

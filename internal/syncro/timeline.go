@@ -149,18 +149,28 @@ func (tl *Timeline) computeSignals() {
 
 // Timer is one logged block of work on a ticket.
 //
-// The shape is inferred from Syncro's documented filters rather than observed:
-// the trial account had no timers, so the field names below are a best effort
-// and several aliases are decoded for each value.
+// Shape verified against a live entry. Durations arrive in seconds under
+// active_duration and billable_time, and are converted to minutes here because
+// a technician thinks in minutes and a model reading "900" will guess wrongly.
+//
+// A timer carries no customer id, so filtering by customer cannot be done
+// client-side — Syncro's documented customer_id query parameter is the only
+// way, and that is what the search below relies on.
 type Timer struct {
-	ID         int64  `json:"id"`
-	TicketID   int64  `json:"ticket_id"`
-	CustomerID int64  `json:"customer_id,omitempty"`
-	User       string `json:"user,omitempty"`
-	Notes      string `json:"notes,omitempty"`
-	Minutes    int    `json:"minutes"`
-	Billable   bool   `json:"billable"`
-	StartedAt  string `json:"started_at,omitempty"`
+	ID       int64  `json:"id"`
+	TicketID int64  `json:"ticket_id"`
+	UserID   int64  `json:"user_id,omitempty"`
+	User     string `json:"user,omitempty"`
+	Notes    string `json:"notes,omitempty"`
+	// Minutes is the time actually worked; BillableMinutes may differ when a
+	// technician has overridden what the customer is charged for.
+	Minutes         int    `json:"minutes"`
+	BillableMinutes int    `json:"billable_minutes"`
+	Billable        bool   `json:"billable"`
+	Recorded        bool   `json:"recorded"`
+	Status          string `json:"status,omitempty"`
+	StartedAt       string `json:"started_at,omitempty"`
+	EndedAt         string `json:"ended_at,omitempty"`
 }
 
 // TimerSearch filters ticket timers. The time window and customer filters are
@@ -259,43 +269,48 @@ func (c *Client) SearchWiki(ctx context.Context, query string, includeBody bool)
 	return out, nil
 }
 
+// wireTimer mirrors a live ticket_timers entry.
 type wireTimer struct {
-	ID         int64 `json:"id"`
-	TicketID   int64 `json:"ticket_id"`
-	CustomerID int64 `json:"customer_id"`
-	// Several aliases per value: the live shape is unverified, and decoding a
-	// few plausible names costs nothing while a wrong single guess costs a
-	// silently empty field.
-	Notes         string `json:"notes"`
-	Comment       string `json:"comment"`
-	UserName      string `json:"user_name"`
-	Tech          string `json:"tech"`
-	Minutes       int    `json:"minutes"`
-	DurationMins  int    `json:"duration_minutes"`
-	BillingStatus string `json:"billing_status"`
-	Billable      *bool  `json:"billable"`
-	StartAt       string `json:"start_at"`
-	StartedAt     string `json:"started_at"`
-	CreatedAt     string `json:"created_at"`
+	ID             int64  `json:"id"`
+	TicketID       int64  `json:"ticket_id"`
+	UserID         int64  `json:"user_id"`
+	Notes          string `json:"notes"`
+	Billable       bool   `json:"billable"`
+	Recorded       bool   `json:"recorded"`
+	Status         string `json:"status"`
+	StartTime      string `json:"start_time"`
+	EndTime        string `json:"end_time"`
+	CreatedAt      string `json:"created_at"`
+	ActiveDuration int    `json:"active_duration"`
+	BillableTime   int    `json:"billable_time"`
+	ElapsedSeconds int    `json:"elapsed_seconds"`
 }
 
 func (w wireTimer) trim() Timer {
-	t := Timer{
-		ID:         w.ID,
-		TicketID:   w.TicketID,
-		CustomerID: w.CustomerID,
-		User:       firstNonEmpty(w.UserName, w.Tech),
-		Notes:      truncate(firstNonEmpty(w.Notes, w.Comment), 1000),
-		Minutes:    max(w.Minutes, w.DurationMins),
-		StartedAt:  firstNonEmpty(w.StartAt, w.StartedAt, w.CreatedAt),
+	return Timer{
+		ID:       w.ID,
+		TicketID: w.TicketID,
+		UserID:   w.UserID,
+		Notes:    truncate(w.Notes, 1000),
+		// Seconds to minutes: a technician thinks in minutes, and a model
+		// reading a bare 900 will guess the unit wrongly.
+		Minutes:         secondsToMinutes(max(w.ActiveDuration, w.ElapsedSeconds)),
+		BillableMinutes: secondsToMinutes(w.BillableTime),
+		Billable:        w.Billable,
+		Recorded:        w.Recorded,
+		Status:          w.Status,
+		StartedAt:       firstNonEmpty(w.StartTime, w.CreatedAt),
+		EndedAt:         w.EndTime,
 	}
-	switch {
-	case w.Billable != nil:
-		t.Billable = *w.Billable
-	default:
-		t.Billable = !strings.EqualFold(w.BillingStatus, "Non-Billable")
+}
+
+// secondsToMinutes rounds to the nearest minute, so a 90-second entry reads as
+// 2 rather than disappearing.
+func secondsToMinutes(seconds int) int {
+	if seconds <= 0 {
+		return 0
 	}
-	return t
+	return (seconds + 30) / 60
 }
 
 // --- text helpers -----------------------------------------------------------

@@ -62,11 +62,23 @@ type Tool struct {
 	// reason, when nothing supplies them.
 	Provides []Capability
 
-	// Mutates marks a tool that writes to an external system. Azir is
-	// read-only system-wide, so Serve refuses to start when this is true. The
-	// field exists rather than being omitted so that the refusal is explicit
-	// and a future contributor meets a boot failure, not a silent success.
+	// Mutates marks a tool that writes to an external system.
+	//
+	// A mutating tool is never offered to the model. Not gated, not
+	// approval-wrapped — absent from the tool list entirely, because the whole
+	// prompt-injection containment argument rests on there being no action for
+	// an injection to reach. Ticket bodies are attacker-controlled text, and a
+	// model that cannot act cannot be talked into acting.
+	//
+	// Mutating tools are invoked only by an authenticated person, holding the
+	// permission the tool declares, in a deployment where an administrator has
+	// enabled writes for that plugin. Three independent conditions, because
+	// this is the one place where being wrong is irreversible.
 	Mutates bool
+
+	// RequiresPermission names the permission a caller must hold. Meaningful
+	// only for mutating tools; reads are governed by tool.read.
+	RequiresPermission string
 
 	// Secrets names Schema properties that must never reach the model.
 	Secrets []string
@@ -159,8 +171,9 @@ func Errorf(code, format string, args ...any) *Error {
 	return &Error{Code: code, Message: fmt.Sprintf(format, args...)}
 }
 
-// ErrMutatingTool is returned by Serve when a plugin declares a mutating tool.
-var ErrMutatingTool = fmt.Errorf("azir is read-only: mutating tools cannot be registered")
+// ErrMutatingTool is retained for callers that referenced it. Mutating tools
+// are now permitted but never reach the model; see [Tool.Mutates].
+var ErrMutatingTool = fmt.Errorf("azir: mutating tool")
 
 func (p Plugin) validate() error {
 	if p.Name == "" {
@@ -182,8 +195,10 @@ func (p Plugin) validate() error {
 		}
 		seen[t.Name] = struct{}{}
 
-		if t.Mutates {
-			return fmt.Errorf("%w: plugin %q tool %q", ErrMutatingTool, p.Name, t.Name)
+		if t.Mutates && t.RequiresPermission == "" {
+			return fmt.Errorf("plugin %q: mutating tool %q declares no required permission; "+
+				"a write nobody is required to be allowed to make is not a write anyone should make",
+				p.Name, t.Name)
 		}
 		if t.Handler == nil {
 			return fmt.Errorf("plugin %q: tool %q has no handler", p.Name, t.Name)

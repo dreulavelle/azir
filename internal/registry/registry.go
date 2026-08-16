@@ -46,6 +46,10 @@ type Tool struct {
 	// Freshness is the staleness budget the plugin declared. Nil means results
 	// are never cached.
 	Freshness *plugin.Freshness `json:"freshness,omitempty"`
+
+	// RequiresPermission is the permission a caller must hold to invoke a
+	// mutating tool.
+	RequiresPermission string `json:"requires_permission,omitempty"`
 }
 
 // Plugin is a discovered service.
@@ -180,11 +184,12 @@ func (r *Registry) Refresh(ctx context.Context) error {
 			if f, ok := plugin.ParseFreshness(ep.Metadata[plugin.MetaFreshness]); ok {
 				t.Freshness = &f
 			}
-			// A mutating tool should be impossible: the SDK refuses to start
-			// with one. If a non-SDK service ever advertises one, core must
-			// not treat it as usable.
-			if t.Mutates {
-				r.log.Error("refusing mutating tool from discovery",
+			t.RequiresPermission = ep.Metadata[plugin.MetaPermission]
+
+			// A mutating tool with no declared permission is refused: an
+			// unguarded write is worse than a missing feature.
+			if t.Mutates && t.RequiresPermission == "" {
+				r.log.Error("refusing a mutating tool that declares no permission",
 					"plugin", info.Name, "tool", ep.Name, "subject", ep.Subject)
 				continue
 			}
@@ -194,6 +199,14 @@ func (r *Registry) Refresh(ctx context.Context) error {
 			t.Available = true
 			if status, reported := health.Tools[t.Name]; reported {
 				t.Available, t.Reason = status.Available, status.Reason
+			}
+
+			// A mutating tool never enters the capability index. The index is
+			// what a feature — and later the agent — consults to find a tool,
+			// and a write must never be discoverable that way.
+			if t.Mutates {
+				p.Tools = append(p.Tools, t)
+				continue
 			}
 
 			// An unavailable tool provides nothing. Leaving it in the

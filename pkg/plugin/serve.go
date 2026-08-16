@@ -29,6 +29,7 @@ const (
 	MetaMutates      = "azir.mutates"
 	MetaSchema       = "azir.schema"
 	MetaFreshness    = "azir.freshness"
+	MetaPermission   = "azir.permission"
 	MetaCategory     = "azir.category"
 	MetaConfigSchema = "azir.config_schema"
 	MetaSDK          = "azir.sdk"
@@ -191,6 +192,9 @@ func toolMetadata(t Tool) map[string]string {
 	}
 	if t.Freshness != nil {
 		meta[MetaFreshness] = t.Freshness.String()
+	}
+	if t.RequiresPermission != "" {
+		meta[MetaPermission] = t.RequiresPermission
 	}
 	return meta
 }

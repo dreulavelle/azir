@@ -4,80 +4,102 @@ set -euo pipefail
 
 BASE="${AZIR_BASE:-http://localhost:8080}"
 CANARY="AZIR-CANARY-smoke-b7f3e91d-DO-NOT-EMIT"
+JAR=$(mktemp)
+trap 'rm -f "$JAR"' EXIT
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 step() { printf '%-2s %s\n' "$1" "$2"; }
+
+# Everything below the setup routes requires a session, so sign in first —
+# either completing first-run setup or logging in as the smoke account.
+SMOKE_EMAIL="${AZIR_SMOKE_EMAIL:-smoke@azir.local}"
+SMOKE_PASS="${AZIR_SMOKE_PASSWORD:-smoke-test-password-1}"
+
+if curl -fsS "$BASE/api/setup" | grep -q '"needs_setup":true'; then
+  curl -fsS -c "$JAR" -X POST "$BASE/api/setup" -H 'Content-Type: application/json' \
+    -d "{\"email\":\"$SMOKE_EMAIL\",\"display_name\":\"Smoke\",\"password\":\"$SMOKE_PASS\"}" >/dev/null \
+    || fail "first-run setup failed"
+else
+  curl -fsS -c "$JAR" -X POST "$BASE/api/login" -H 'Content-Type: application/json' \
+    -d "{\"email\":\"$SMOKE_EMAIL\",\"password\":\"$SMOKE_PASS\"}" >/dev/null \
+    || fail "could not sign in as $SMOKE_EMAIL (set AZIR_SMOKE_EMAIL/PASSWORD)"
+fi
+
+# Authenticated wrappers.
+get()  { curl -fsS -b "$JAR" "$@"; }
+post() { curl -fsS -b "$JAR" -X POST "$@"; }
+put()  { curl -fsS -b "$JAR" -X PUT "$@"; }
 
 step 1 "core, embedded nats and postgres are healthy"
 health=$(curl -fsS "$BASE/healthz")
 echo "$health" | grep -q '"status":"ok"' || fail "unhealthy: $health"
 
 step 2 "echo plugin discovered via \$SRV"
-curl -fsS "$BASE/api/registry" | grep -q '"name":"echo"' || fail "echo not discovered"
+get "$BASE/api/registry" | grep -q '"name":"echo"' || fail "echo not discovered"
 
 step 3 "an unapproved tool is not usable"
 # Approvals persist across restarts by design, so reset before asserting —
 # otherwise this only passes on a fresh volume.
 for tool in ping leak; do
-  curl -fsS -X POST "$BASE/api/capabilities/echo/$tool/decide" \
+  post "$BASE/api/capabilities/echo/$tool/decide" \
     -H 'Content-Type: application/json' -d '{"status":"pending"}' >/dev/null
 done
-curl -fsS "$BASE/api/registry" | grep -q '"status":"pending"' || fail "tool was not pending"
-denied=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/api/invoke/echo/ping" \
+get "$BASE/api/registry" | grep -q '"status":"pending"' || fail "tool was not pending"
+denied=$(curl -sS -b "$JAR" -o /dev/null -w '%{http_code}' -X POST "$BASE/api/invoke/echo/ping" \
   -H 'Content-Type: application/json' -d '{"customer_id":""}')
 [ "$denied" = "403" ] || fail "unapproved tool was invocable (HTTP $denied)"
 
 step 4 "an administrator can approve a capability"
-curl -fsS -X POST "$BASE/api/capabilities/echo/ping/decide" \
+post "$BASE/api/capabilities/echo/ping/decide" \
   -H 'Content-Type: application/json' -d '{"status":"approved"}' >/dev/null
-curl -fsS -X POST "$BASE/api/capabilities/echo/leak/decide" \
+post "$BASE/api/capabilities/echo/leak/decide" \
   -H 'Content-Type: application/json' -d '{"status":"approved"}' >/dev/null
 
 step 5 "plugin settings are schema-driven and round-trip"
 # Settings persist, so pin them to a known state rather than assuming a fresh
 # database — the same reason approvals are reset above.
-curl -fsS -X PUT "$BASE/api/plugins/echo/settings" -H 'Content-Type: application/json' \
+put "$BASE/api/plugins/echo/settings" -H 'Content-Type: application/json' \
   -d "{\"values\":{\"greeting\":\"pong\",\"shout\":false,\"demo_secret\":\"$CANARY\"}}" >/dev/null
-curl -fsS "$BASE/api/plugins/echo/settings" | grep -q '"x-azir-secret"' \
+get "$BASE/api/plugins/echo/settings" | grep -q '"x-azir-secret"' \
   || fail "plugin did not publish a config schema"
-curl -fsS "$BASE/api/plugins/echo/settings" | grep -q "$CANARY" \
+get "$BASE/api/plugins/echo/settings" | grep -q "$CANARY" \
   && fail "a stored secret was returned by the settings API"
-curl -fsS "$BASE/api/plugins/echo/settings" | grep -q '"demo_secret": *true' \
+get "$BASE/api/plugins/echo/settings" | grep -q '"demo_secret": *true' \
   || fail "secret was not routed to the vault"
 
 step 6 "approved tool round-trips and reads its settings"
-pong=$(curl -fsS -X POST "$BASE/api/invoke/echo/ping" \
+pong=$(post "$BASE/api/invoke/echo/ping" \
   -H 'Content-Type: application/json' -d '{"args":{"message":"hello"}}')
 echo "$pong" | grep -qi 'hello' || fail "round trip failed: $pong"
 
 step 7 "plugin resolves its credential from the vault"
-curl -fsS -X POST "$BASE/api/capabilities/echo/secret.check/decide" \
+post "$BASE/api/capabilities/echo/secret.check/decide" \
   -H 'Content-Type: application/json' -d '{"status":"approved"}' >/dev/null
-check=$(curl -fsS -X POST "$BASE/api/invoke/echo/secret.check" \
+check=$(post "$BASE/api/invoke/echo/secret.check" \
   -H 'Content-Type: application/json' -d '{}')
 echo "$check" | grep -q '"configured":true' || fail "vault resolution failed: $check"
 echo "$check" | grep -q "$CANARY" && fail "the credential value was returned"
 
 step 8 "SDK redacts credential-shaped output"
-leak=$(curl -fsS -X POST "$BASE/api/invoke/echo/leak" \
+leak=$(post "$BASE/api/invoke/echo/leak" \
   -H 'Content-Type: application/json' -d '{}')
 echo "$leak" | grep -q 'caught-by-key-name' && fail "key-name redaction did not run: $leak"
 echo "$leak" | grep -q 'super-secret-api-key-value' && fail "literal redaction did not run: $leak"
 
 step 9 "customer spine resolves an external identity"
-cust=$(curl -fsS -X POST "$BASE/api/customers" \
+cust=$(post "$BASE/api/customers" \
   -H 'Content-Type: application/json' \
   -d "{\"display_name\":\"Smoke Test $RANDOM\"}")
 cust_id=$(echo "$cust" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
 [ -n "$cust_id" ] || fail "customer not created: $cust"
-curl -fsS -X POST "$BASE/api/customers/$cust_id/identities" \
+post "$BASE/api/customers/$cust_id/identities" \
   -H 'Content-Type: application/json' \
   -d "{\"plugin\":\"syncro\",\"external_id\":\"smoke-$RANDOM\"}" >/dev/null
 
 step 10 "credentials are stored sealed and never returned"
-curl -fsS -X PUT "$BASE/api/credentials" -H 'Content-Type: application/json' \
+put "$BASE/api/credentials" -H 'Content-Type: application/json' \
   -d "{\"customer_id\":\"$cust_id\",\"plugin\":\"3cx\",\"kind\":\"extension_password\",\"secret\":\"$CANARY\"}" >/dev/null
-listing=$(curl -fsS "$BASE/api/credentials")
+listing=$(get "$BASE/api/credentials")
 echo "$listing" | grep -q "$CANARY" && fail "credential value returned by the API"
 
 step 11 "the canary never appears in the container's logs"
@@ -91,11 +113,15 @@ docker compose -f deploy/compose.yaml exec -T postgres \
   || fail "pgvector is not usable in the running database"
 
 step 13 "actions were audited"
-curl -fsS "$BASE/api/audit" | grep -q 'credential.put' || fail "audit did not record credential.put"
+get "$BASE/api/audit" | grep -q 'credential.put' || fail "audit did not record credential.put"
 
-step 14 "the frontend is served by the same binary on the same port"
+step 14 "an unauthenticated request is refused"
+curl -sS -o /dev/null -w '%{http_code}' "$BASE/api/registry" | grep -q 401 \
+  || fail "an unauthenticated request reached the registry"
+
+step 15 "the frontend is served by the same binary on the same port"
 curl -fsS "$BASE/" | grep -qi '<div id="root">' || fail "embedded frontend not served"
-curl -sS -o /dev/null -w '%{http_code}' "$BASE/api/nope" | grep -q 404 \
+curl -sS -b "$JAR" -o /dev/null -w '%{http_code}' "$BASE/api/nope" | grep -q 404 \
   || fail "an unknown api path fell through to the SPA"
 
 echo

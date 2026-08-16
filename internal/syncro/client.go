@@ -58,9 +58,14 @@ func New(subdomain string, credential CredentialFunc) (*Client, error) {
 		RequestsPerMinute: RateLimit,
 		Burst:             10,
 		MaxRetries:        3,
-		// Deliberately empty. Syncro's reads are all GETs, so nothing needs a
-		// write-shaped exception and the invariant needs no carve-out.
-		AllowedWritePaths: nil,
+		ExplainError:      explainSyncroError,
+		// The write surface, enumerated rather than opened. Everything not
+		// listed here is refused by the transport, so the plugin cannot make a
+		// write it was not designed to make even if a handler tried.
+		AllowedWritePaths: []plugin.MethodPath{
+			{Method: http.MethodPost, Prefix: "/tickets", Why: "post a comment to a ticket"},
+			{Method: http.MethodPut, Prefix: "/tickets", Why: "change status, assignee or customer"},
+		},
 	}, func(ctx context.Context, r *http.Request) error {
 		token, err := credential(ctx)
 		if err != nil {
@@ -101,6 +106,37 @@ func NewForTest(baseURL string, credential CredentialFunc) (*Client, error) {
 		return nil, err
 	}
 	return &Client{http: httpClient}, nil
+}
+
+// explainSyncroError pulls the validation message out of a Syncro rejection.
+//
+// Syncro answers a bad request with {"success":false,"message":["..."]}, which
+// is precisely the actionable part and contains none of the request. Anything
+// unrecognised is dropped rather than passed through, because an unknown shape
+// is exactly where a credential could be hiding.
+func explainSyncroError(status int, body []byte) string {
+	if status >= 500 {
+		return ""
+	}
+	var shape struct {
+		Message any `json:"message"`
+	}
+	if err := json.Unmarshal(body, &shape); err != nil {
+		return ""
+	}
+	switch m := shape.Message.(type) {
+	case string:
+		return truncate(m, 300)
+	case []any:
+		parts := make([]string, 0, len(m))
+		for _, item := range m {
+			if s, ok := item.(string); ok {
+				parts = append(parts, s)
+			}
+		}
+		return truncate(strings.Join(parts, "; "), 300)
+	}
+	return ""
 }
 
 // validSubdomain accepts only what can safely become a hostname label.

@@ -79,6 +79,9 @@ var toolResources = map[string]string{
 	"customers.standing": "invoices",
 	"docs.search":        "documentation",
 	"time.entries":       "time_entries",
+	"tickets.comment":    "tickets",
+	"tickets.update":     "tickets",
+	"tickets.options":    "tickets",
 	"access.check":       "",
 }
 

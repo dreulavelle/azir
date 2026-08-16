@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/dreulavelle/azir/internal/audit"
+	"github.com/dreulavelle/azir/internal/identity"
 	"github.com/dreulavelle/azir/internal/registry"
 	"github.com/dreulavelle/azir/internal/store"
 	"github.com/dreulavelle/azir/pkg/plugin"
@@ -139,7 +140,7 @@ func sameScope(a, b *uuid.UUID) bool {
 // everything else lands in plugin_config. An administrator types a password
 // and a subdomain into the same panel and does not need to know that they are
 // stored entirely differently — which is the point.
-func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
+func (s *Server) putSettings(w http.ResponseWriter, r *http.Request, actor identity.Actor) {
 	name := r.PathValue("plugin")
 	p, ok := s.findPlugin(name)
 	if !ok {
@@ -191,13 +192,13 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		stored++
 	}
 
-	if err := s.DB.SetPluginConfig(r.Context(), name, customerID, plain, actor); err != nil {
+	if err := s.DB.SetPluginConfig(r.Context(), name, customerID, plain, actor.Email); err != nil {
 		s.fail(w, err, "could not save settings")
 		return
 	}
 
 	s.Audit.Record(r.Context(), audit.Event{
-		ActorUserID: actor,
+		ActorUserID: actor.Email,
 		Action:      "plugin.configure",
 		Plugin:      name,
 		CustomerID:  customerID,
@@ -205,7 +206,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	})
 	if stored > 0 {
 		s.Audit.Record(r.Context(), audit.Event{
-			ActorUserID: actor,
+			ActorUserID: actor.Email,
 			Action:      "credential.put",
 			Plugin:      name,
 			CustomerID:  customerID,
@@ -220,7 +221,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 // deleteSettingSecret clears one stored credential.
-func (s *Server) deleteSettingSecret(w http.ResponseWriter, r *http.Request) {
+func (s *Server) deleteSettingSecret(w http.ResponseWriter, r *http.Request, actor identity.Actor) {
 	name, field := r.PathValue("plugin"), r.PathValue("field")
 
 	customerID, err := customerParam(r)
@@ -241,7 +242,7 @@ func (s *Server) deleteSettingSecret(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			s.Audit.Record(r.Context(), audit.Event{
-				ActorUserID: actor, Action: "credential.delete",
+				ActorUserID: actor.Email, Action: "credential.delete",
 				Plugin: name, CustomerID: customerID, Outcome: audit.OutcomeOK,
 			})
 			writeJSON(w, http.StatusNoContent, nil)
