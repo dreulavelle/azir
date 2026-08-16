@@ -186,15 +186,29 @@ boundary.
 ## Development
 
 ```sh
-make test-db   # start Postgres and create the test database
 make check     # gofmt, go vet, go test -race
 make build     # binaries into bin/
+make test-db   # optional: reuse the running Postgres instead of a container
 ```
 
-NATS runs in-process for tests, so the discovery round-trip is verified against
-the real protocol. Store tests need Postgres — mocking a store proves nothing
-about the SQL, which is the part that breaks — and skip without
-`AZIR_TEST_DATABASE_URL`.
+`go test ./...` needs no setup. Two different tools, for two different reasons:
+
+**NATS runs in-process.** `nats-server` is a Go library, so tests get the real
+protocol in milliseconds with no Docker. A container here would be strictly
+worse — slower, and no more faithful.
+
+**Postgres runs in a container**, started by `testcontainers` from the same
+pgvector image the deployment uses, with `deploy/postgres/postgresql.conf`
+mounted. Mocking a store proves nothing about the SQL, which is the part that
+actually breaks; and mounting the real config means a typo in our tuning fails
+the suite rather than surfacing later as mysterious production behaviour.
+
+Set `AZIR_TEST_DATABASE_URL` to point at an existing database instead — faster
+for a repeated local loop. Tuning assertions skip in that mode, since an
+externally supplied database has whatever configuration its operator gave it.
+
+The suite previously skipped store tests when no database was configured, which
+was a mistake worth naming: a skipped test looks exactly like a passing one.
 
 ### Migrations
 

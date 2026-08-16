@@ -211,6 +211,9 @@ func TestPerTableAutovacuumApplied(t *testing.T) {
 // maintenance_work_mem raised for HNSW builds, inheriting it across several
 // workers is how a container gets OOM-killed during routine maintenance.
 func TestAutovacuumMemoryIsBounded(t *testing.T) {
+	if !usingOwnPostgres {
+		t.Skip("asserts the deployment's tuning; an externally supplied database has its own")
+	}
 	db := testDB(t)
 
 	var setting string

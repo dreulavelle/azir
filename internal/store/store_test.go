@@ -3,7 +3,6 @@ package store_test
 import (
 	"context"
 	"errors"
-	"os"
 	"strings"
 	"testing"
 
@@ -13,19 +12,15 @@ import (
 	"github.com/dreulavelle/azir/internal/vault"
 )
 
-// testDB connects to a scratch database and gives each test its own schema, so
-// tests are isolated without a database per test. These run against real
-// Postgres because mocking a store proves nothing about the SQL, which is the
-// part that actually breaks.
+// testDB connects to the package's database and resets the schema, so tests
+// are isolated without a database per test. These run against real Postgres
+// because mocking a store proves nothing about the SQL, which is the part that
+// actually breaks. TestMain resolves where that database comes from.
 func testDB(t *testing.T) *store.DB {
 	t.Helper()
-	dsn := os.Getenv("AZIR_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set AZIR_TEST_DATABASE_URL to run store tests (make test-db)")
-	}
 	ctx := context.Background()
 
-	db, err := store.Open(ctx, dsn)
+	db, err := store.Open(ctx, testDSN)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

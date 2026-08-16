@@ -16,11 +16,11 @@ vet: ## go vet
 	@go vet ./...
 
 .PHONY: test
-test: ## Run the Go test suite (store tests need AZIR_TEST_DATABASE_URL)
+test: ## Run the Go test suite (starts its own Postgres unless AZIR_TEST_DATABASE_URL is set)
 	@go test ./... -race -count=1
 
 .PHONY: test-db
-test-db: ## Start Postgres and create the test database
+test-db: ## Reuse the running Postgres for tests instead of starting a container
 	@$(COMPOSE) up -d postgres
 	@until docker exec azir-postgres-1 pg_isready -U azir -d azir >/dev/null 2>&1; do sleep 1; done
 	@docker exec azir-postgres-1 psql -U azir -d azir -c "CREATE DATABASE azir_test" 2>/dev/null || true
