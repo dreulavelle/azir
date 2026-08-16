@@ -72,6 +72,17 @@ func testPlugin() plugin.Plugin {
 				},
 			},
 			{
+				// A dotted name: NATS micro rejects dots in endpoint names, so
+				// the SDK sanitises the endpoint and keeps the dots in the
+				// subject. Every real tool name is dotted, so this must work.
+				Name:        "tickets.search",
+				Description: "dotted name",
+				Provides:    []plugin.Capability{plugin.CapDiagnostic},
+				Handler: func(_ context.Context, _ plugin.Request) (any, error) {
+					return map[string]any{"dotted": true}, nil
+				},
+			},
+			{
 				Name:     "boom",
 				Provides: []plugin.Capability{plugin.CapDiagnostic},
 				Handler: func(_ context.Context, _ plugin.Request) (any, error) {
@@ -81,6 +92,11 @@ func testPlugin() plugin.Plugin {
 			},
 		},
 	}
+}
+
+func payloadFor(customerID string) []byte {
+	body, _ := json.Marshal(plugin.Request{CustomerID: customerID})
+	return body
 }
 
 type errNaked struct{}
@@ -117,14 +133,27 @@ func TestDiscoveryAndRoundTrip(t *testing.T) {
 	if got.SDK != plugin.SDKVersion {
 		t.Errorf("want sdk %q, got %q", plugin.SDKVersion, got.SDK)
 	}
-	if len(got.Tools) != 2 {
-		t.Fatalf("want 2 tools, got %d", len(got.Tools))
+	if len(got.Tools) != 3 {
+		t.Fatalf("want 3 tools, got %d", len(got.Tools))
 	}
 
 	// Capability index must point at the right tool.
 	providers := reg.Providers(plugin.CapDiagnostic)
-	if len(providers) != 2 {
-		t.Fatalf("want 2 providers of %s, got %v", plugin.CapDiagnostic, providers)
+	if len(providers) != 3 {
+		t.Fatalf("want 3 providers of %s, got %v", plugin.CapDiagnostic, providers)
+	}
+
+	// A dotted tool name must survive registration and discovery intact, and
+	// its subject must keep the dots.
+	dotted, ok := reg.Lookup("echo", "tickets.search")
+	if !ok {
+		t.Fatal("a dotted tool name did not survive discovery")
+	}
+	if dotted.Subject != "azir.tool.echo.tickets.search" {
+		t.Errorf("unexpected subject for dotted tool: %q", dotted.Subject)
+	}
+	if _, err := nc.Request(dotted.Subject, payloadFor("cust_1"), 3*time.Second); err != nil {
+		t.Errorf("dotted tool is not reachable: %v", err)
 	}
 
 	tool, ok := reg.Lookup("echo", "ping")
@@ -135,8 +164,7 @@ func TestDiscoveryAndRoundTrip(t *testing.T) {
 		t.Errorf("metadata did not survive discovery: %q", tool.Description)
 	}
 
-	payload, _ := json.Marshal(plugin.Request{CustomerID: "cust_123"})
-	msg, err := nc.Request(tool.Subject, payload, 3*time.Second)
+	msg, err := nc.Request(tool.Subject, payloadFor("cust_123"), 3*time.Second)
 	if err != nil {
 		t.Fatalf("round trip failed: %v", err)
 	}
@@ -173,8 +201,7 @@ func TestUnwrappedErrorIsNotEchoed(t *testing.T) {
 		t.Fatal("boom not found")
 	}
 
-	payload, _ := json.Marshal(plugin.Request{CustomerID: "cust_123"})
-	msg, err := nc.Request(tool.Subject, payload, 3*time.Second)
+	msg, err := nc.Request(tool.Subject, payloadFor("cust_123"), 3*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}

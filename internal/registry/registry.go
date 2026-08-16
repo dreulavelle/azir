@@ -45,7 +45,11 @@ type Plugin struct {
 	Description string          `json:"description"`
 	Category    plugin.Category `json:"category"`
 	SDK         string          `json:"sdk"`
-	Tools       []Tool          `json:"tools"`
+	// ConfigSchema is the JSON Schema for this plugin's settings, published by
+	// the plugin itself. The admin console renders its form from this, so
+	// adding a plugin requires no frontend work.
+	ConfigSchema json.RawMessage `json:"config_schema,omitempty"`
+	Tools        []Tool          `json:"tools"`
 }
 
 // Snapshot is an immutable view of the registry at one moment.
@@ -131,10 +135,19 @@ func (r *Registry) Refresh(ctx context.Context) error {
 			Category:    plugin.Category(info.Metadata[plugin.MetaCategory]),
 			SDK:         info.Metadata[plugin.MetaSDK],
 		}
+		if schema := info.Metadata[plugin.MetaConfigSchema]; schema != "" {
+			p.ConfigSchema = json.RawMessage(schema)
+		}
 		for _, ep := range info.Endpoints {
+			// The endpoint name has dots stripped for micro's validator; the
+			// real tool name travels in metadata.
+			name := ep.Metadata[plugin.MetaName]
+			if name == "" {
+				name = ep.Name
+			}
 			t := Tool{
 				Plugin:      info.Name,
-				Name:        ep.Name,
+				Name:        name,
 				Subject:     ep.Subject,
 				Description: ep.Metadata[plugin.MetaDescription],
 				Mutates:     ep.Metadata[plugin.MetaMutates] == "true",

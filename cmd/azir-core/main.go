@@ -27,6 +27,7 @@ import (
 	"github.com/dreulavelle/azir/internal/audit"
 	"github.com/dreulavelle/azir/internal/logging"
 	"github.com/dreulavelle/azir/internal/natsd"
+	"github.com/dreulavelle/azir/internal/pluginhost"
 	"github.com/dreulavelle/azir/internal/registry"
 	"github.com/dreulavelle/azir/internal/store"
 	"github.com/dreulavelle/azir/internal/supervisor"
@@ -126,6 +127,20 @@ func run(log *slog.Logger) error {
 		}
 	}()
 
+	// Plugins resolve their credentials and settings from core at request
+	// time, so an administrator changes them in the console and nothing needs
+	// redeploying. These subjects sit outside azir.tool.*, so neither is ever
+	// discoverable as a model-facing capability.
+	creds := store.NewCredentials(db, v)
+	host := pluginhost.New(nc, db, creds, recorder, log)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := host.Start(ctx); err != nil && ctx.Err() == nil {
+			log.Error("plugin host stopped", "error", err)
+		}
+	}()
+
 	reg := registry.New(nc, log, 500*time.Millisecond)
 	// Discovery proposes: every tool seen becomes a candidate awaiting an
 	// administrator's decision.
@@ -165,7 +180,7 @@ func run(log *slog.Logger) error {
 			NC:    nc,
 			Reg:   reg,
 			DB:    db,
-			Creds: store.NewCredentials(db, v),
+			Creds: creds,
 			Audit: recorder,
 			Log:   log,
 			Web:   assets,

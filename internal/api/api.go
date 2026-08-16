@@ -62,6 +62,12 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("DELETE /api/credentials/{id}", s.deleteCredential)
 	mux.HandleFunc("POST /api/credentials/rotate", s.rotateCredentials)
 
+	// Plugin settings. One panel per plugin, rendered from the schema the
+	// plugin publishes — no per-integration frontend code.
+	mux.HandleFunc("GET /api/plugins/{plugin}/settings", s.getSettings)
+	mux.HandleFunc("PUT /api/plugins/{plugin}/settings", s.putSettings)
+	mux.HandleFunc("DELETE /api/plugins/{plugin}/settings/{field}", s.deleteSettingSecret)
+
 	mux.HandleFunc("GET /api/audit", s.listAudit)
 
 	mux.HandleFunc("POST /api/invoke/{plugin}/{tool}", s.invoke)

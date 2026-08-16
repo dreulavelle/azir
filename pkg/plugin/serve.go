@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"strconv"
@@ -22,6 +23,7 @@ const SDKVersion = "0.1.0"
 // visible to core and therefore a candidate for model context, so nothing
 // sensitive may be placed in service or endpoint metadata.
 const (
+	MetaName         = "azir.name"
 	MetaDescription  = "azir.description"
 	MetaProvides     = "azir.provides"
 	MetaMutates      = "azir.mutates"
@@ -33,6 +35,22 @@ const (
 
 // SubjectPrefix is the root of the tool request/reply namespace.
 const SubjectPrefix = "azir.tool"
+
+// endpointName renders a tool name as a NATS micro endpoint name.
+//
+// micro validates endpoint names as a single token and rejects dots, but dots
+// are exactly what Azir's tool names use — "tickets.search" reads far better
+// to a model than "tickets_search", and the capability vocabulary is dotted
+// for the same reason. So the endpoint name is sanitised while the subject
+// keeps its dots, and the real name travels in metadata for discovery.
+func endpointName(tool string) string {
+	return strings.ReplaceAll(tool, ".", "_")
+}
+
+// toolSubject is the full request/reply subject for a tool.
+func toolSubject(pluginName, tool string) string {
+	return SubjectPrefix + "." + pluginName + "." + tool
+}
 
 type options struct {
 	natsURL string
@@ -100,15 +118,24 @@ func Serve(ctx context.Context, p Plugin, opts ...Option) error {
 
 	red := NewRedactor(o.secrets...)
 
+	// Credentials and settings are resolved from core at request time rather
+	// than injected as environment variables, so an administrator can change
+	// them in the web console without redeploying anything. Both live outside
+	// azir.tool.*, so neither is ever discovered as a model-facing capability.
+	vault := newVault(nc, p.Name, red, func(secret string) {
+		// A credential learned at runtime must also be scrubbed from this
+		// plugin's log output, not only from its responses.
+		if h, ok := o.logger.Handler().(interface{ Register(...string) }); ok {
+			h.Register(secret)
+		}
+	})
+	cfg := newConfig(nc, p.Name)
+
 	svc, err := micro.AddService(nc, micro.Config{
 		Name:        p.Name,
 		Version:     p.Version,
 		Description: p.Description,
-		Metadata: map[string]string{
-			MetaCategory:     string(categoryOrOther(p.Category)),
-			MetaSDK:          SDKVersion,
-			MetaConfigSchema: string(p.ConfigSchema),
-		},
+		Metadata:    serviceMetadata(p),
 		ErrorHandler: func(_ micro.Service, err *micro.NATSError) {
 			log.Error("service error", "subject", err.Subject, "error", err.Description)
 		},
@@ -118,18 +145,18 @@ func Serve(ctx context.Context, p Plugin, opts ...Option) error {
 	}
 	defer svc.Stop() //nolint:errcheck // best effort on shutdown
 
-	group := svc.AddGroup(SubjectPrefix + "." + p.Name)
 	for _, t := range p.Tools {
-		if err := group.AddEndpoint(
-			t.Name,
-			micro.HandlerFunc(wrap(t, red, log)),
+		if err := svc.AddEndpoint(
+			endpointName(t.Name),
+			micro.HandlerFunc(wrap(t, red, vault, cfg, log)),
+			micro.WithEndpointSubject(toolSubject(p.Name, t.Name)),
 			micro.WithEndpointMetadata(toolMetadata(t)),
 		); err != nil {
-			return err
+			return fmt.Errorf("register tool %q: %w", t.Name, err)
 		}
 		log.Info("registered tool",
 			"tool", t.Name,
-			"subject", SubjectPrefix+"."+p.Name+"."+t.Name,
+			"subject", toolSubject(p.Name, t.Name),
 			"provides", capsToStrings(t.Provides))
 	}
 
@@ -141,6 +168,8 @@ func Serve(ctx context.Context, p Plugin, opts ...Option) error {
 
 func toolMetadata(t Tool) map[string]string {
 	return map[string]string{
+		// The true name, since the endpoint name has had its dots removed.
+		MetaName:        t.Name,
 		MetaDescription: t.Description,
 		MetaProvides:    strings.Join(capsToStrings(t.Provides), ","),
 		MetaMutates:     strconv.FormatBool(t.Mutates),
@@ -148,10 +177,22 @@ func toolMetadata(t Tool) map[string]string {
 	}
 }
 
+// serviceMetadata publishes what an administrator needs to configure this
+// plugin. The config schema travels with the plugin so the console can render
+// its settings form generically — adding a plugin requires no frontend work,
+// which is the difference between modular and merely decoupled.
+func serviceMetadata(p Plugin) map[string]string {
+	return map[string]string{
+		MetaCategory:     string(categoryOrOther(p.Category)),
+		MetaSDK:          SDKVersion,
+		MetaConfigSchema: string(p.ConfigSchema),
+	}
+}
+
 // wrap adapts a Handler to the transport, and is where the SDK's two
 // non-negotiable behaviours live: every return value is redacted, and no
 // unrecognised error is ever echoed back to the caller.
-func wrap(t Tool, red *Redactor, log *slog.Logger) func(micro.Request) {
+func wrap(t Tool, red *Redactor, vault *Vault, cfg *Config, log *slog.Logger) func(micro.Request) {
 	return func(r micro.Request) {
 		var req Request
 		if len(r.Data()) > 0 {
@@ -161,7 +202,8 @@ func wrap(t Tool, red *Redactor, log *slog.Logger) func(micro.Request) {
 			}
 		}
 
-		out, err := t.Handler(context.Background(), req)
+		ctx := withConfig(withVault(context.Background(), vault), cfg)
+		out, err := t.Handler(ctx, req)
 		if err != nil {
 			var perr *Error
 			if errors.As(err, &perr) {

@@ -1,2 +1,0 @@
-Build output lands here. Kept in git so the go:embed directive in embed.go
-always has a directory to match; the built files themselves are gitignored.

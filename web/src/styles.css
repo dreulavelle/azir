@@ -214,3 +214,157 @@ button.ghost {
   background: transparent;
   border: 1px solid var(--rule);
 }
+
+/* ---------------------------------------------------------------- shell --- */
+nav {
+  display: flex;
+  gap: 4px;
+  margin-top: 18px;
+  border-bottom: 1px solid var(--rule);
+}
+
+button.tab {
+  background: transparent;
+  color: var(--ink-mid);
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  padding: 8px 14px;
+  font-size: 14px;
+}
+
+button.tab.active {
+  color: var(--ink);
+  border-bottom-color: var(--accent);
+  font-weight: 650;
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 20px;
+  margin-top: 20px;
+}
+
+.card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.card-head button {
+  margin-left: auto;
+}
+
+/* --------------------------------------------------------- schema form --- */
+/* Rendered entirely from a plugin's published schema — nothing here knows
+   about any particular integration. */
+.settings-panel {
+  margin-top: 16px;
+  padding: 18px;
+  background: var(--sunk);
+  border: 1px solid var(--rule);
+  border-radius: 5px;
+}
+
+.schema-form {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  max-width: 520px;
+}
+
+.field label {
+  font-size: 14px;
+  font-weight: 650;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.field .req {
+  color: var(--alert);
+}
+
+.field p {
+  margin: 0;
+}
+
+.field input[type="text"],
+.field input[type="password"],
+.field input[type="number"],
+.field select {
+  font: inherit;
+  font-size: 14px;
+  padding: 7px 10px;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background: var(--paper);
+  color: var(--ink);
+}
+
+.field input:focus-visible,
+.field select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.field input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+}
+
+.pill-secret {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 400;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  padding: 1px 6px;
+}
+
+.form-actions {
+  display: flex;
+  gap: 8px;
+}
+
+button.small-btn {
+  align-self: flex-start;
+  font-size: 12px;
+  padding: 3px 10px;
+}
+
+.note-line {
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--accent);
+}
+
+.inline-form {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+  flex-wrap: wrap;
+}
+
+.inline-form input {
+  font: inherit;
+  font-size: 14px;
+  padding: 7px 10px;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background: var(--paper);
+  color: var(--ink);
+  min-width: 240px;
+}

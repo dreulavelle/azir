@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"slices"
 	"strings"
+	"sync"
 )
 
 // redactedMarker replaces any value the redactor removes. It is deliberately
@@ -24,6 +25,7 @@ var sensitiveKeys = []string{
 // opt-in per plugin is not enforcement. Core redacts again during context
 // assembly; this is the first of two gates, not the only one.
 type Redactor struct {
+	mu       sync.RWMutex
 	literals []string
 }
 
@@ -32,14 +34,25 @@ type Redactor struct {
 // credentials they resolved from the vault, so a value cannot escape by being
 // embedded in a message the key-name rules would miss.
 func NewRedactor(literals ...string) *Redactor {
-	kept := make([]string, 0, len(literals))
-	for _, l := range literals {
+	r := &Redactor{}
+	r.Learn(literals...)
+	return r
+}
+
+// Learn registers additional secret values at runtime. Credentials are
+// resolved long after startup, so the redactor has to be able to grow: a
+// value that arrives at request time is exactly the one most likely to be
+// echoed back by mistake.
+func (r *Redactor) Learn(values ...string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, v := range values {
 		// Very short values would match everywhere and destroy the payload.
-		if len(l) >= 6 {
-			kept = append(kept, l)
+		if len(v) < 6 || slices.Contains(r.literals, v) {
+			continue
 		}
+		r.literals = append(r.literals, v)
 	}
-	return &Redactor{literals: kept}
 }
 
 // Value round-trips v through JSON and returns a redacted copy.
@@ -83,6 +96,8 @@ func (r *Redactor) walk(v any, parentSensitive bool) any {
 }
 
 func (r *Redactor) scrubLiterals(s string) string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	for _, lit := range r.literals {
 		if strings.Contains(s, lit) {
 			s = strings.ReplaceAll(s, lit, redactedMarker)
