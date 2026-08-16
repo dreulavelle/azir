@@ -32,7 +32,7 @@ services:
   postgres:
     # pgvector is why this is Postgres; the image ships the extension so the
     # migration can simply CREATE EXTENSION.
-    image: pgvector/pgvector:pg17
+    image: pgvector/pgvector:pg18
     environment:
       POSTGRES_USER: azir
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-azir_dev_only}
@@ -42,7 +42,11 @@ services:
       - "-c"
       - "config_file=/etc/postgresql/postgresql.conf"
     volumes:
-      - pg-data:/var/lib/postgresql/data
+      # Mounted at /var/lib/postgresql rather than .../data, which is what the
+      # 18+ images expect: the cluster then lives in a version-named
+      # subdirectory, so a future major upgrade can use `pg_upgrade --link`
+      # without both versions straddling a mount boundary.
+      - pg-data:/var/lib/postgresql
       - ./postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
     ports:
       # Published for psql during development, off 5432 so a Postgres already

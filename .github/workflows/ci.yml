@@ -13,7 +13,7 @@ jobs:
       postgres:
         # pgvector is the reason this is Postgres; CI must run the same image
         # so a missing extension fails here rather than in production.
-        image: pgvector/pgvector:pg17
+        image: pgvector/pgvector:pg18
         env:
           POSTGRES_USER: azir
           POSTGRES_PASSWORD: azir_ci

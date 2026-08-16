@@ -27,7 +27,7 @@ same server. Setting `NATS_URL` points everything at an external cluster.
 
 Three choices worth knowing about:
 
-**Postgres with pgvector, not SQLite.** Semantic recall over tickets,
+**Postgres 18 with pgvector, not SQLite.** Semantic recall over tickets,
 conversations and memory is the feature a general chat tool cannot match, and
 it needs an ANN index. `sqlite-vec` is brute-force only and degrades past
 roughly a million vectors; pgvector's HNSW answers in 5–20ms at 95%+ recall well
@@ -111,12 +111,24 @@ already running on the host. Override with `AZIR_PG_PORT`.
 
 ### Tuning
 
-`deploy/postgres/postgresql.conf` is a commented, checked-in config rather than
-an autotuner — a generated config makes behaviour depend on the machine a
+`deploy/postgres/postgresql.conf` targets PostgreSQL 18 and is a commented,
+checked-in config rather than an autotuner — a generated config makes behaviour depend on the machine a
 container landed on, which turns "the query got slow" into archaeology. The
 baseline assumes ~4GB for the container; scale the memory settings with the
 limit. `jit = off` is deliberate: JIT regularly costs more than it saves on
 short pgvector queries and is a known source of latency spikes.
+
+Two PostgreSQL 18 specifics. `io_method = worker` rather than `io_uring`,
+because io_uring fails under Docker's default seccomp profile — worth
+revisiting on a host that can grant the syscalls, since vector scans are
+read-heavy. And `effective_io_concurrency` now counts I/Os the executor keeps
+in flight rather than being a device-parallelism hint, so the old advice to set
+it in the hundreds no longer applies.
+
+The Postgres volume mounts at `/var/lib/postgresql`, not `.../data`. The 18+
+images expect this: the cluster lives in a version-named subdirectory so a
+future major upgrade can use `pg_upgrade --link` without straddling a mount
+boundary.
 
 ### Configuration
 
