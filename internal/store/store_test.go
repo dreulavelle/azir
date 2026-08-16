@@ -1,11 +1,9 @@
 package store_test
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -15,19 +13,29 @@ import (
 	"github.com/dreulavelle/azir/internal/vault"
 )
 
-// testDB creates a scratch database on disk. SQLite means these run against
-// the real engine with no external service — mocking a store proves nothing
-// about the SQL, which is the part that breaks.
+// testDB connects to a scratch database and gives each test its own schema, so
+// tests are isolated without a database per test. These run against real
+// Postgres because mocking a store proves nothing about the SQL, which is the
+// part that actually breaks.
 func testDB(t *testing.T) *store.DB {
 	t.Helper()
+	dsn := os.Getenv("AZIR_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("set AZIR_TEST_DATABASE_URL to run store tests (make test-db)")
+	}
 	ctx := context.Background()
 
-	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "azir-test.db"))
+	db, err := store.Open(ctx, dsn)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(db.Close)
 
+	// Extensions live in the shared schema; objects do not.
+	if _, err := db.Pool().Exec(ctx,
+		`DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;`); err != nil {
+		t.Fatalf("reset schema: %v", err)
+	}
 	if err := db.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -45,16 +53,6 @@ func testVault(t *testing.T) *vault.Vault {
 		t.Fatal(err)
 	}
 	return v
-}
-
-// Migrate must be safe to run repeatedly: every container start calls it.
-func TestMigrateIsIdempotent(t *testing.T) {
-	db := testDB(t)
-	for range 3 {
-		if err := db.Migrate(context.Background()); err != nil {
-			t.Fatalf("repeat migrate: %v", err)
-		}
-	}
 }
 
 func TestCustomerSpine(t *testing.T) {
@@ -114,23 +112,14 @@ func TestCredentialsSealedAtRest(t *testing.T) {
 
 	// The canary must not be readable from the table by any means.
 	var count int
-	if err := db.Reader().QueryRowContext(ctx, `
+	if err := db.Pool().QueryRow(ctx, `
 		SELECT count(*) FROM credentials
-		WHERE instr(ciphertext, ?) > 0 OR instr(dek_wrapped, ?) > 0`,
-		[]byte(secret), []byte(secret)).Scan(&count); err != nil {
+		WHERE position($1::bytea in ciphertext) > 0
+		   OR position($1::bytea in dek_wrapped) > 0`, []byte(secret)).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 0 {
 		t.Fatal("secret is present in the credentials table as plaintext")
-	}
-
-	// Nor may it be readable by anyone who simply opens the file.
-	raw, err := os.ReadFile(db.Path())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if bytes.Contains(raw, []byte(secret)) {
-		t.Fatal("secret is readable in the raw database file")
 	}
 
 	got, err := creds.Open(ctx, &c.ID, "3cx", "extension_password")

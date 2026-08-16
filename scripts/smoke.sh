@@ -8,7 +8,7 @@ CANARY="AZIR-CANARY-smoke-b7f3e91d-DO-NOT-EMIT"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 step() { printf '%-2s %s\n' "$1" "$2"; }
 
-step 1 "core, embedded nats and sqlite are healthy"
+step 1 "core, embedded nats and postgres are healthy"
 health=$(curl -fsS "$BASE/healthz")
 echo "$health" | grep -q '"status":"ok"' || fail "unhealthy: $health"
 
@@ -65,10 +65,15 @@ if docker compose -f deploy/compose.yaml logs 2>/dev/null | grep -q "$CANARY"; t
   fail "canary credential reached the container logs"
 fi
 
-step 10 "actions were audited"
+step 10 "pgvector is present and indexable"
+docker compose -f deploy/compose.yaml exec -T postgres \
+  psql -U azir -d azir -qtAc "SELECT '[1,2,3]'::vector <=> '[1,2,4]'::vector" >/dev/null \
+  || fail "pgvector is not usable in the running database"
+
+step 11 "actions were audited"
 curl -fsS "$BASE/api/audit" | grep -q 'credential.put' || fail "audit did not record credential.put"
 
-step 11 "the frontend is served by the same binary on the same port"
+step 12 "the frontend is served by the same binary on the same port"
 curl -fsS "$BASE/" | grep -qi '<div id="root">' || fail "embedded frontend not served"
 curl -sS -o /dev/null -w '%{http_code}' "$BASE/api/nope" | grep -q 404 \
   || fail "an unknown api path fell through to the SPA"

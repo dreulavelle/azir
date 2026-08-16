@@ -2,8 +2,6 @@ package store
 
 import (
 	"context"
-	"database/sql"
-	"encoding/json"
 	"fmt"
 	"time"
 )
@@ -36,17 +34,12 @@ func (db *DB) Observe(ctx context.Context, plugin, tool string, provides []strin
 	if provides == nil {
 		provides = []string{}
 	}
-	encoded, err := json.Marshal(provides)
-	if err != nil {
-		return err
-	}
-	now := nowString()
-	_, err = db.write.ExecContext(ctx, `
-		INSERT INTO capabilities (plugin, tool, status, provides, first_seen_at, last_seen_at)
-		VALUES (?, ?, 'pending', ?, ?, ?)
+	_, err := db.pool.Exec(ctx, `
+		INSERT INTO capabilities (plugin, tool, status, provides)
+		VALUES ($1, $2, 'pending', $3)
 		ON CONFLICT (plugin, tool) DO UPDATE
-		SET last_seen_at = excluded.last_seen_at, provides = excluded.provides`,
-		plugin, tool, string(encoded), now, now)
+		SET last_seen_at = now(), provides = EXCLUDED.provides`,
+		plugin, tool, provides)
 	if err != nil {
 		return fmt.Errorf("store: observe capability %s.%s: %w", plugin, tool, err)
 	}
@@ -58,19 +51,15 @@ func (db *DB) Decide(ctx context.Context, plugin, tool, status, by string) error
 	if status != StatusApproved && status != StatusRejected && status != StatusPending {
 		return fmt.Errorf("store: invalid capability status %q", status)
 	}
-	res, err := db.write.ExecContext(ctx, `
+	tag, err := db.pool.Exec(ctx, `
 		UPDATE capabilities
-		SET status = ?, decided_by = ?, decided_at = ?
-		WHERE plugin = ? AND tool = ?`,
-		status, by, nowString(), plugin, tool)
+		SET status = $3, decided_by = $4, decided_at = now()
+		WHERE plugin = $1 AND tool = $2`,
+		plugin, tool, status, by)
 	if err != nil {
 		return fmt.Errorf("store: decide capability: %w", err)
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n == 0 {
+	if tag.RowsAffected() == 0 {
 		return ErrNotFound
 	}
 	return nil
@@ -78,7 +67,7 @@ func (db *DB) Decide(ctx context.Context, plugin, tool, status, by string) error
 
 // Capabilities returns every known tool decision.
 func (db *DB) Capabilities(ctx context.Context) ([]CapabilityRecord, error) {
-	rows, err := db.read.QueryContext(ctx, `
+	rows, err := db.pool.Query(ctx, `
 		SELECT plugin, tool, status, provides, decided_by, decided_at, first_seen_at, last_seen_at
 		FROM capabilities ORDER BY plugin, tool`)
 	if err != nil {
@@ -88,27 +77,14 @@ func (db *DB) Capabilities(ctx context.Context) ([]CapabilityRecord, error) {
 
 	out := []CapabilityRecord{}
 	for rows.Next() {
-		var (
-			r                       CapabilityRecord
-			provides                string
-			decidedBy, decidedAt    sql.NullString
-			firstSeenAt, lastSeenAt string
-		)
-		if err := rows.Scan(&r.Plugin, &r.Tool, &r.Status, &provides,
-			&decidedBy, &decidedAt, &firstSeenAt, &lastSeenAt); err != nil {
+		var r CapabilityRecord
+		if err := rows.Scan(&r.Plugin, &r.Tool, &r.Status, &r.Provides,
+			&r.DecidedBy, &r.DecidedAt, &r.FirstSeenAt, &r.LastSeenAt); err != nil {
 			return nil, err
 		}
-		r.Provides = []string{}
-		_ = json.Unmarshal([]byte(provides), &r.Provides)
-		if decidedBy.Valid {
-			v := decidedBy.String
-			r.DecidedBy = &v
+		if r.Provides == nil {
+			r.Provides = []string{}
 		}
-		if decidedAt.Valid {
-			t := parseTime(decidedAt.String)
-			r.DecidedAt = &t
-		}
-		r.FirstSeenAt, r.LastSeenAt = parseTime(firstSeenAt), parseTime(lastSeenAt)
 		out = append(out, r)
 	}
 	return out, rows.Err()
@@ -117,7 +93,7 @@ func (db *DB) Capabilities(ctx context.Context) ([]CapabilityRecord, error) {
 // ApprovedTools returns the set of "plugin.tool" keys an administrator has
 // activated. Everything else is invisible to the model.
 func (db *DB) ApprovedTools(ctx context.Context) (map[string]struct{}, error) {
-	rows, err := db.read.QueryContext(ctx,
+	rows, err := db.pool.Query(ctx,
 		`SELECT plugin, tool FROM capabilities WHERE status = 'approved'`)
 	if err != nil {
 		return nil, fmt.Errorf("store: approved tools: %w", err)

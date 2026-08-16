@@ -148,16 +148,12 @@ func Mirror(ctx context.Context, js jetstream.JetStream, db *store.DB, log *slog
 }
 
 func insert(ctx context.Context, db *store.DB, e Event) error {
-	var customerID any
-	if e.CustomerID != nil {
-		customerID = e.CustomerID.String()
-	}
-	_, err := db.Writer().ExecContext(ctx, `
+	_, err := db.Pool().Exec(ctx, `
 		INSERT INTO audit_log
 			(occurred_at, actor_user_id, action, plugin, tool, customer_id, outcome, detail)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		e.OccurredAt.UTC().Format(time.RFC3339Nano), e.ActorUserID, e.Action,
-		nullable(e.Plugin), nullable(e.Tool), customerID, e.Outcome, nullable(e.Detail))
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		e.OccurredAt, e.ActorUserID, e.Action,
+		nullable(e.Plugin), nullable(e.Tool), e.CustomerID, e.Outcome, nullable(e.Detail))
 	return err
 }
 
@@ -173,9 +169,9 @@ func Recent(ctx context.Context, db *store.DB, limit int) ([]Event, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	rows, err := db.Reader().QueryContext(ctx, `
+	rows, err := db.Pool().Query(ctx, `
 		SELECT occurred_at, actor_user_id, action, plugin, tool, customer_id, outcome, detail
-		FROM audit_log ORDER BY occurred_at DESC LIMIT ?`, limit)
+		FROM audit_log ORDER BY occurred_at DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("audit: recent: %w", err)
 	}
@@ -184,21 +180,12 @@ func Recent(ctx context.Context, db *store.DB, limit int) ([]Event, error) {
 	out := []Event{}
 	for rows.Next() {
 		var (
-			e                                Event
-			occurredAt                       string
-			plugin, tool, detail, customerID *string
+			e                    Event
+			plugin, tool, detail *string
 		)
-		if err := rows.Scan(&occurredAt, &e.ActorUserID, &e.Action,
-			&plugin, &tool, &customerID, &e.Outcome, &detail); err != nil {
+		if err := rows.Scan(&e.OccurredAt, &e.ActorUserID, &e.Action,
+			&plugin, &tool, &e.CustomerID, &e.Outcome, &detail); err != nil {
 			return nil, err
-		}
-		if t, err := time.Parse(time.RFC3339Nano, occurredAt); err == nil {
-			e.OccurredAt = t.UTC()
-		}
-		if customerID != nil {
-			if parsed, err := uuid.Parse(*customerID); err == nil {
-				e.CustomerID = &parsed
-			}
 		}
 		e.Plugin, e.Tool, e.Detail = deref(plugin), deref(tool), deref(detail)
 		out = append(out, e)

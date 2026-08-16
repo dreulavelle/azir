@@ -2,12 +2,12 @@ package store
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/dreulavelle/azir/internal/vault"
 )
@@ -37,21 +37,15 @@ func NewCredentials(db *DB, v *vault.Vault) *Credentials {
 	return &Credentials{db: db, v: v}
 }
 
-// scopeKey renders the nullable customer scope the same way the unique index
-// does, so a deployment-wide secret collides with itself rather than
-// accumulating duplicate rows.
-func scopeKey(customerID *uuid.UUID) string {
-	if customerID == nil {
-		return ""
-	}
-	return customerID.String()
-}
+// nilScope is the sentinel the unique index coalesces a NULL customer to, so
+// a deployment-wide secret collides with itself instead of accumulating rows.
+var nilScope = uuid.UUID{}
 
-func scopeArg(customerID *uuid.UUID) any {
+func scope(customerID *uuid.UUID) uuid.UUID {
 	if customerID == nil {
-		return nil
+		return nilScope
 	}
-	return customerID.String()
+	return *customerID
 }
 
 // Put seals and stores a secret, replacing any existing one for the same
@@ -69,45 +63,34 @@ func (c *Credentials) Put(ctx context.Context, customerID *uuid.UUID, plugin, ki
 		return CredentialRef{}, err
 	}
 
-	now := nowString()
 	ref := CredentialRef{
-		ID:         uuid.New(),
 		CustomerID: customerID,
 		Plugin:     plugin,
 		Kind:       kind,
 		KeyVersion: sealed.KeyVersion,
-		CreatedAt:  parseTime(now),
-		UpdatedAt:  parseTime(now),
 	}
 
-	_, err = c.db.write.ExecContext(ctx, `
+	// RETURNING gives back the surviving row, so an upsert reports the id that
+	// is actually stored rather than the one this call proposed.
+	err = c.db.pool.QueryRow(ctx, `
 		INSERT INTO credentials
-			(id, customer_id, plugin, kind, dek_wrapped, dek_nonce, ciphertext, nonce,
-			 key_version, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT (plugin, kind, COALESCE(customer_id, '')) DO UPDATE SET
-			dek_wrapped = excluded.dek_wrapped,
-			dek_nonce   = excluded.dek_nonce,
-			ciphertext  = excluded.ciphertext,
-			nonce       = excluded.nonce,
-			key_version = excluded.key_version,
-			updated_at  = excluded.updated_at`,
-		ref.ID.String(), scopeArg(customerID), plugin, kind,
+			(id, customer_id, plugin, kind, dek_wrapped, dek_nonce, ciphertext, nonce, key_version)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		ON CONFLICT (plugin, kind, COALESCE(customer_id, $10::uuid)) DO UPDATE SET
+			dek_wrapped = EXCLUDED.dek_wrapped,
+			dek_nonce   = EXCLUDED.dek_nonce,
+			ciphertext  = EXCLUDED.ciphertext,
+			nonce       = EXCLUDED.nonce,
+			key_version = EXCLUDED.key_version,
+			updated_at  = now()
+		RETURNING id, created_at, updated_at`,
+		uuid.New(), customerID, plugin, kind,
 		sealed.DEKWrapped, sealed.DEKNonce, sealed.Ciphertext, sealed.Nonce,
-		sealed.KeyVersion, now, now)
+		sealed.KeyVersion, nilScope,
+	).Scan(&ref.ID, &ref.CreatedAt, &ref.UpdatedAt)
 	if err != nil {
 		// The error must not echo any part of the secret.
 		return CredentialRef{}, fmt.Errorf("store: put credential for plugin %q kind %q: %w", plugin, kind, err)
-	}
-
-	// An upsert keeps the original id; report what is actually stored.
-	var stored string
-	if err := c.db.read.QueryRowContext(ctx,
-		`SELECT id FROM credentials WHERE plugin = ? AND kind = ? AND COALESCE(customer_id, '') = ?`,
-		plugin, kind, scopeKey(customerID)).Scan(&stored); err == nil {
-		if parsed, err := uuid.Parse(stored); err == nil {
-			ref.ID = parsed
-		}
 	}
 	return ref, nil
 }
@@ -116,13 +99,13 @@ func (c *Credentials) Put(ctx context.Context, customerID *uuid.UUID, plugin, ki
 // or return the result; register it with the logging redactor instead.
 func (c *Credentials) Open(ctx context.Context, customerID *uuid.UUID, plugin, kind string) ([]byte, error) {
 	var s vault.Sealed
-	err := c.db.read.QueryRowContext(ctx, `
+	err := c.db.pool.QueryRow(ctx, `
 		SELECT dek_wrapped, dek_nonce, ciphertext, nonce, key_version
 		FROM credentials
-		WHERE plugin = ? AND kind = ? AND COALESCE(customer_id, '') = ?`,
-		plugin, kind, scopeKey(customerID),
+		WHERE plugin = $1 AND kind = $2 AND COALESCE(customer_id, $4::uuid) = $3`,
+		plugin, kind, scope(customerID), nilScope,
 	).Scan(&s.DEKWrapped, &s.DEKNonce, &s.Ciphertext, &s.Nonce, &s.KeyVersion)
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
@@ -134,7 +117,7 @@ func (c *Credentials) Open(ctx context.Context, customerID *uuid.UUID, plugin, k
 // List returns references only. There is deliberately no way to enumerate
 // secret values.
 func (c *Credentials) List(ctx context.Context) ([]CredentialRef, error) {
-	rows, err := c.db.read.QueryContext(ctx, `
+	rows, err := c.db.pool.Query(ctx, `
 		SELECT id, customer_id, plugin, kind, key_version, created_at, updated_at
 		FROM credentials ORDER BY plugin, kind`)
 	if err != nil {
@@ -144,23 +127,11 @@ func (c *Credentials) List(ctx context.Context) ([]CredentialRef, error) {
 
 	out := []CredentialRef{}
 	for rows.Next() {
-		var (
-			r                    CredentialRef
-			idStr                string
-			customerID           sql.NullString
-			createdAt, updatedAt string
-		)
-		if err := rows.Scan(&idStr, &customerID, &r.Plugin, &r.Kind,
-			&r.KeyVersion, &createdAt, &updatedAt); err != nil {
+		var r CredentialRef
+		if err := rows.Scan(&r.ID, &r.CustomerID, &r.Plugin, &r.Kind,
+			&r.KeyVersion, &r.CreatedAt, &r.UpdatedAt); err != nil {
 			return nil, err
 		}
-		r.ID, _ = uuid.Parse(idStr)
-		if customerID.Valid && customerID.String != "" {
-			if parsed, err := uuid.Parse(customerID.String); err == nil {
-				r.CustomerID = &parsed
-			}
-		}
-		r.CreatedAt, r.UpdatedAt = parseTime(createdAt), parseTime(updatedAt)
 		out = append(out, r)
 	}
 	return out, rows.Err()
@@ -168,15 +139,11 @@ func (c *Credentials) List(ctx context.Context) ([]CredentialRef, error) {
 
 // Delete removes a credential.
 func (c *Credentials) Delete(ctx context.Context, id uuid.UUID) error {
-	res, err := c.db.write.ExecContext(ctx, `DELETE FROM credentials WHERE id = ?`, id.String())
+	tag, err := c.db.pool.Exec(ctx, `DELETE FROM credentials WHERE id = $1`, id)
 	if err != nil {
 		return fmt.Errorf("store: delete credential: %w", err)
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n == 0 {
+	if tag.RowsAffected() == 0 {
 		return ErrNotFound
 	}
 	return nil
@@ -186,15 +153,15 @@ func (c *Credentials) Delete(ctx context.Context, id uuid.UUID) error {
 // never decrypted, so rotation is cheap and the plaintext never materialises.
 // It returns the number of credentials moved.
 func (c *Credentials) Rotate(ctx context.Context) (int, error) {
-	rows, err := c.db.read.QueryContext(ctx, `
+	rows, err := c.db.pool.Query(ctx, `
 		SELECT id, dek_wrapped, dek_nonce, ciphertext, nonce, key_version
-		FROM credentials WHERE key_version <> ?`, c.v.CurrentVersion())
+		FROM credentials WHERE key_version <> $1`, c.v.CurrentVersion())
 	if err != nil {
 		return 0, fmt.Errorf("store: scan for rotation: %w", err)
 	}
 
 	type pending struct {
-		id     string
+		id     uuid.UUID
 		sealed vault.Sealed
 	}
 	var todo []pending
@@ -218,11 +185,11 @@ func (c *Credentials) Rotate(ctx context.Context) (int, error) {
 		if err != nil {
 			return moved, fmt.Errorf("store: rewrap %s: %w", p.id, err)
 		}
-		if _, err := c.db.write.ExecContext(ctx, `
+		if _, err := c.db.pool.Exec(ctx, `
 			UPDATE credentials
-			SET dek_wrapped = ?, dek_nonce = ?, key_version = ?, updated_at = ?
-			WHERE id = ?`,
-			rewrapped.DEKWrapped, rewrapped.DEKNonce, rewrapped.KeyVersion, nowString(), p.id,
+			SET dek_wrapped = $2, dek_nonce = $3, key_version = $4, updated_at = now()
+			WHERE id = $1`,
+			p.id, rewrapped.DEKWrapped, rewrapped.DEKNonce, rewrapped.KeyVersion,
 		); err != nil {
 			return moved, fmt.Errorf("store: persist rewrap %s: %w", p.id, err)
 		}

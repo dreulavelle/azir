@@ -16,8 +16,19 @@ vet: ## go vet
 	@go vet ./...
 
 .PHONY: test
-test: ## Run the Go test suite
+test: ## Run the Go test suite (store tests need AZIR_TEST_DATABASE_URL)
 	@go test ./... -race -count=1
+
+.PHONY: test-db
+test-db: ## Start Postgres and create the test database
+	@$(COMPOSE) up -d postgres
+	@until docker exec azir-postgres-1 pg_isready -U azir -d azir >/dev/null 2>&1; do sleep 1; done
+	@docker exec azir-postgres-1 psql -U azir -d azir -c "CREATE DATABASE azir_test" 2>/dev/null || true
+	@echo 'export AZIR_TEST_DATABASE_URL="postgres://azir:azir_dev_only@localhost:5433/azir_test?sslmode=disable"'
+
+.PHONY: psql
+psql: ## Open a psql session against the running database
+	@docker exec -it azir-postgres-1 psql -U azir -d azir
 
 .PHONY: build
 build: ## Build all binaries into bin/

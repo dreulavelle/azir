@@ -15,26 +15,30 @@ is the foundation everything else needs: a credential vault, the customer
 spine, the capability approval gate, an audit trail, and redaction that is
 tested rather than asserted.
 
-## One container
+## Two containers
 
-Azir is a single binary in a single image. It embeds a NATS server with
-JetStream, a SQLite store, the HTTP API, the built frontend, and a supervisor
-that runs bundled plugins as child processes.
+Azir is a single binary — it embeds a NATS server with JetStream, the HTTP API,
+the built frontend, and a supervisor that runs bundled plugins as child
+processes. Postgres is the one external service.
 
-That is a deployment decision, not an architectural one. Plugins are still
-separate processes speaking NATS, so crash isolation is unchanged and a
-third-party plugin can still run as its own container against the same server.
-Setting `NATS_URL` points everything at an external cluster, so the
-single-binary default never becomes a ceiling.
+Plugins are still separate processes speaking NATS, so crash isolation is
+unchanged and a third-party plugin can run as its own container against the
+same server. Setting `NATS_URL` points everything at an external cluster.
 
 Three choices worth knowing about:
 
-**SQLite, not Postgres.** `modernc.org/sqlite` is pure Go, so the binary is
-static and the image is small. For a handful of technicians the write volume is
-trivial and a backup is a file copy. The cost is real: no `pgvector`, so the
-semantic search in phase 5 will brute-force cosine similarity in Go. At MSP
-corpus sizes that is tens of milliseconds, and the store is behind an interface
-if it ever needs to move.
+**Postgres with pgvector, not SQLite.** Semantic recall over tickets,
+conversations and memory is the feature a general chat tool cannot match, and
+it needs an ANN index. `sqlite-vec` is brute-force only and degrades past
+roughly a million vectors; pgvector's HNSW answers in 5–20ms at 95%+ recall well
+past ten million. Call records alone add on the order of a million rows a year.
+Postgres also gives real write concurrency for ingest that runs while backfill
+does, `tsvector` alongside vectors for hybrid retrieval in one query, and
+partitioning as the high-churn tables grow.
+
+Turso was evaluated and rejected: the Rust rewrite is in beta and its own
+maintainers advise caution for mission-critical use, which this is — Azir holds
+System Owner credentials for every customer PBX.
 
 **A Go supervisor, not s6.** A child's stdout is piped through the same
 redacting log handler core uses, so a plugin that logs carelessly still cannot
@@ -92,15 +96,27 @@ that must be importable from a plugin living in another repository.
 ```sh
 make keygen              # generate a master key
 export AZIR_MASTER_KEY=…
-make up                  # build and start the one container
-make smoke               # eleven checks against the running stack
+make up                  # build and start azir + postgres
+make smoke               # twelve checks against the running stack
+make psql                # a session against the running database
 make down
 ```
 
 Then open <http://localhost:8080> — API and UI on the same port.
 
-Everything durable lives in one volume at `/var/lib/azir`: the SQLite database
-and JetStream's store. That directory is the entire backup surface.
+Two things to back up: the Postgres volume, and `/var/lib/azir` for JetStream.
+
+Postgres publishes on **5433** by default so it does not collide with one
+already running on the host. Override with `AZIR_PG_PORT`.
+
+### Tuning
+
+`deploy/postgres/postgresql.conf` is a commented, checked-in config rather than
+an autotuner — a generated config makes behaviour depend on the machine a
+container landed on, which turns "the query got slow" into archaeology. The
+baseline assumes ~4GB for the container; scale the memory settings with the
+limit. `jit = off` is deliberate: JIT regularly costs more than it saves on
+short pgvector queries and is a known source of latency spikes.
 
 ### Configuration
 
@@ -108,7 +124,8 @@ and JetStream's store. That directory is the entire backup surface.
 |---|---|---|
 | `AZIR_MASTER_KEY` | — | base64 32-byte key sealing the vault. Required. |
 | `AZIR_MASTER_KEYS` | — | `1:<b64>,2:<b64>` when more than one key version is loaded |
-| `AZIR_DATA_DIR` | `/var/lib/azir` | SQLite and JetStream storage |
+| `DATABASE_URL` | — | Postgres connection string. Required. |
+| `AZIR_DATA_DIR` | `/var/lib/azir` | JetStream storage |
 | `AZIR_HTTP_ADDR` | `:8080` | API and UI listener |
 | `NATS_URL` | embedded | set to use an external NATS instead |
 | `AZIR_PLUGIN_DIR` | `/usr/local/lib/azir/plugins` | bundled plugins to supervise |
@@ -117,13 +134,27 @@ and JetStream's store. That directory is the entire backup surface.
 ## Development
 
 ```sh
-make check   # gofmt, go vet, go test -race
-make build   # binaries into bin/
+make test-db   # start Postgres and create the test database
+make check     # gofmt, go vet, go test -race
+make build     # binaries into bin/
 ```
 
-Tests need no external services: NATS runs in-process and SQLite writes to a
-temp directory, so the discovery round-trip and every SQL path are verified
-against the real implementations.
+NATS runs in-process for tests, so the discovery round-trip is verified against
+the real protocol. Store tests need Postgres — mocking a store proves nothing
+about the SQL, which is the part that breaks — and skip without
+`AZIR_TEST_DATABASE_URL`.
+
+### Migrations
+
+The migrator is hand-rolled but not naive. Each migration runs in its own
+transaction under a Postgres advisory lock, so concurrent replica starts
+serialise rather than race. Every file is checksummed: editing an applied
+migration is a fatal error, not a silent no-op, because that is precisely how
+environments diverge. A database carrying a migration this binary does not know
+about is also refused, so an accidental rollback cannot run against a future
+schema. A migration needing `CREATE INDEX CONCURRENTLY` opts out of its
+transaction with an `-- azir:no-transaction` marker, and must then be written
+idempotently.
 
 The canary tests are the ones that matter. A sentinel credential is pushed
 through every route that could leak it — messages, attributes, errors, groups,

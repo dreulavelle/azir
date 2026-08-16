@@ -1,9 +1,9 @@
 // Command azir-core is Azir.
 //
-// One binary, one container. It embeds a NATS server with JetStream, the
-// SQLite store, the HTTP API, the built frontend, and a supervisor for
-// bundled plugins. Plugins remain separate processes speaking NATS, so the
-// architecture is unchanged — there is simply nothing else to deploy.
+// One binary. It embeds a NATS server with JetStream, the HTTP API, the built
+// frontend, and a supervisor for bundled plugins; Postgres is the one external
+// service. Plugins remain separate processes speaking NATS, so the
+// architecture is unchanged.
 //
 // Point NATS_URL at an external cluster to opt out of the embedded server.
 package main
@@ -60,7 +60,11 @@ func run(log *slog.Logger) error {
 	}
 	log.Info("vault ready", "key_version", v.CurrentVersion())
 
-	db, err := store.Open(ctx, envOr("AZIR_DB_PATH", filepath.Join(dataDir, "azir.db")))
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		return errors.New("DATABASE_URL is required")
+	}
+	db, err := store.Open(ctx, dsn)
 	if err != nil {
 		return err
 	}
@@ -69,7 +73,9 @@ func run(log *slog.Logger) error {
 	if err := db.Migrate(ctx); err != nil {
 		return err
 	}
-	log.Info("store ready", "path", db.Path())
+	if applied, err := db.AppliedMigrations(ctx); err == nil && len(applied) > 0 {
+		log.Info("store ready", "schema_version", applied[0].Version, "migrations", len(applied))
+	}
 
 	// Embedded NATS unless an external one is configured.
 	natsURL := os.Getenv("NATS_URL")

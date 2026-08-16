@@ -9,6 +9,20 @@ jobs:
   go:
     runs-on: ubuntu-latest
 
+    services:
+      postgres:
+        # pgvector is the reason this is Postgres; CI must run the same image
+        # so a missing extension fails here rather than in production.
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: azir
+          POSTGRES_PASSWORD: azir_ci
+          POSTGRES_DB: azir_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd="pg_isready -U azir -d azir_test"
+          --health-interval=5s --health-timeout=3s --health-retries=12
+
     steps:
       - uses: actions/checkout@v5
 
@@ -32,6 +46,8 @@ jobs:
       # outbound payload — turning "credentials do not leak" from a claim into
       # a check that fails the build.
       - name: test
+        env:
+          AZIR_TEST_DATABASE_URL: postgres://azir:azir_ci@localhost:5432/azir_test?sslmode=disable
         run: go test ./... -race -count=1
 
       - name: no canary in the built binaries

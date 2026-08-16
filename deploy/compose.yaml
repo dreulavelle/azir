@@ -1,8 +1,9 @@
 name: azir
 
-# One service. Core embeds NATS with JetStream, SQLite and the frontend, and
-# supervises bundled plugins as child processes. Compose is here for
-# convenience — `docker run` works just as well.
+# Two services. Azir is one binary — embedded NATS with JetStream, the API, the
+# frontend, and supervised plugins — and Postgres is the one external
+# dependency, because semantic recall needs a real ANN index and ingest is
+# genuinely concurrent.
 services:
   azir:
     build:
@@ -10,6 +11,7 @@ services:
       dockerfile: Dockerfile
     image: azir:local
     environment:
+      DATABASE_URL: postgres://azir:${POSTGRES_PASSWORD:-azir_dev_only}@postgres:5432/azir?sslmode=disable
       # Development key only. Generate a real one with `make keygen` and pass
       # it as a Docker secret or platform secret anywhere that will hold a
       # customer's credentials.
@@ -20,9 +22,39 @@ services:
     ports:
       - "${AZIR_PORT:-8080}:8080"
     volumes:
-      # SQLite and JetStream both live here. This is the backup surface.
+      # JetStream's store. Postgres holds everything else.
       - azir-data:/var/lib/azir
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    # pgvector is why this is Postgres; the image ships the extension so the
+    # migration can simply CREATE EXTENSION.
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: azir
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-azir_dev_only}
+      POSTGRES_DB: azir
+    command:
+      - "postgres"
+      - "-c"
+      - "config_file=/etc/postgresql/postgresql.conf"
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ./postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+    ports:
+      # Published for psql during development, off 5432 so a Postgres already
+      # running on the host does not collide.
+      - "${AZIR_PG_PORT:-5433}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U azir -d azir"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
     restart: unless-stopped
 
 volumes:
   azir-data:
+  pg-data:
