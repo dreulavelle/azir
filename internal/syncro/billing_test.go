@@ -12,11 +12,13 @@ import (
 // cannot work.
 func TestPartialPermissionsDegradeGracefully(t *testing.T) {
 	ticketsOnly := syncro.Access{
-		Grants: map[string]map[string]bool{
-			"ticket":   {"read": true, "write": false, "delete": false},
-			"customer": {"read": false},
-			"asset":    {"read": false},
-			"invoice":  {"read": false},
+		Reachable: map[string]bool{
+			"tickets":       true,
+			"customers":     false,
+			"assets":        false,
+			"invoices":      false,
+			"documentation": false,
+			"time_entries":  false,
 		},
 	}
 
@@ -31,10 +33,12 @@ func TestPartialPermissionsDegradeGracefully(t *testing.T) {
 	}
 
 	mustExplain := map[string]string{
-		"customers.search":   "customer.read",
-		"assets.list":        "asset.read",
-		"invoices.list":      "invoice.read",
-		"customers.standing": "invoice.read",
+		"customers.search":   "customers",
+		"assets.list":        "assets",
+		"invoices.list":      "invoices",
+		"customers.standing": "invoices",
+		"docs.search":        "documentation",
+		"time.entries":       "time_entries",
 	}
 	for tool, need := range mustExplain {
 		st, ok := availability[tool].(map[string]any)
@@ -53,11 +57,9 @@ func TestPartialPermissionsDegradeGracefully(t *testing.T) {
 // cannot be passing by disabling things indiscriminately.
 func TestFullPermissionsEnableEverything(t *testing.T) {
 	full := syncro.Access{
-		Grants: map[string]map[string]bool{
-			"ticket":   {"read": true},
-			"customer": {"read": true},
-			"asset":    {"read": true},
-			"invoice":  {"read": true},
+		Reachable: map[string]bool{
+			"tickets": true, "customers": true, "assets": true,
+			"invoices": true, "documentation": true, "time_entries": true,
 		},
 	}
 	for tool, st := range full.ToolAvailability() {

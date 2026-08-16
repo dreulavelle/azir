@@ -103,6 +103,12 @@ func TestAuthFailureIsNotRetried(t *testing.T) {
 	if !strings.Contains(perr.Message, "settings") {
 		t.Errorf("error does not point the operator anywhere useful: %q", perr.Message)
 	}
+	// 401 is ambiguous on some vendors, so the message must not assert that
+	// the credential is wrong when it may simply lack permission.
+	if !strings.Contains(perr.Message, "permission") {
+		t.Errorf("401 message claims a bad credential without allowing for a "+
+			"permission denial: %q", perr.Message)
+	}
 }
 
 // 429 must be respected rather than hammered, and Retry-After honoured.

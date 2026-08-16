@@ -88,7 +88,7 @@ func definition() plugin.Plugin {
 						"per_page": {"type": "integer", "minimum": 1, "maximum": 100, "default": 25}
 					}
 				}`),
-				Handler: searchCustomers,
+				Handler: guarded("customers.search", searchCustomers),
 			},
 			{
 				Name:        "customers.get",
@@ -102,7 +102,7 @@ func definition() plugin.Plugin {
 						"id": {"type": "integer", "description": "Syncro customer id"}
 					}
 				}`),
-				Handler: getCustomer,
+				Handler: guarded("customers.get", getCustomer),
 			},
 			{
 				Name:      "tickets.search",
@@ -120,7 +120,7 @@ func definition() plugin.Plugin {
 						"per_page": {"type": "integer", "minimum": 1, "maximum": 100, "default": 25}
 					}
 				}`),
-				Handler: searchTickets,
+				Handler: guarded("tickets.search", searchTickets),
 			},
 			{
 				Name:        "tickets.get",
@@ -134,7 +134,7 @@ func definition() plugin.Plugin {
 						"id": {"type": "integer", "description": "Syncro ticket id"}
 					}
 				}`),
-				Handler: getTicket,
+				Handler: guarded("tickets.get", getTicket),
 			},
 			{
 				Name:      "tickets.timeline",
@@ -151,7 +151,7 @@ func definition() plugin.Plugin {
 						"id": {"type": "integer", "description": "Syncro ticket id"}
 					}
 				}`),
-				Handler: getTimeline,
+				Handler: guarded("tickets.timeline", getTimeline),
 			},
 			{
 				Name:      "time.entries",
@@ -169,7 +169,7 @@ func definition() plugin.Plugin {
 						"per_page": {"type": "integer", "minimum": 1, "maximum": 100, "default": 25}
 					}
 				}`),
-				Handler: listTimeEntries,
+				Handler: guarded("time.entries", listTimeEntries),
 			},
 			{
 				Name:      "docs.search",
@@ -184,7 +184,7 @@ func definition() plugin.Plugin {
 						"include_body": {"type": "boolean", "default": true, "description": "Return full page text, not just titles"}
 					}
 				}`),
-				Handler: searchDocs,
+				Handler: guarded("docs.search", searchDocs),
 			},
 			{
 				Name:      "invoices.list",
@@ -202,7 +202,7 @@ func definition() plugin.Plugin {
 						"per_page": {"type": "integer", "minimum": 1, "maximum": 100, "default": 25}
 					}
 				}`),
-				Handler: listInvoices,
+				Handler: guarded("invoices.list", listInvoices),
 			},
 			{
 				Name:      "customers.standing",
@@ -219,7 +219,7 @@ func definition() plugin.Plugin {
 						"include_paid": {"type": "boolean", "default": false, "description": "Also return recently paid invoices"}
 					}
 				}`),
-				Handler: customerStanding,
+				Handler: guarded("customers.standing", customerStanding),
 			},
 			{
 				Name: "access.check",
@@ -242,9 +242,27 @@ func definition() plugin.Plugin {
 						"per_page": {"type": "integer", "minimum": 1, "maximum": 100, "default": 25}
 					}
 				}`),
-				Handler: listAssets,
+				Handler: guarded("assets.list", listAssets),
 			},
 		},
+	}
+}
+
+// guarded wraps a handler with its permission precondition.
+//
+// Applied at registration rather than remembered inside each handler: a
+// forgotten guard is invisible until a technician meets a bare 401, and
+// "remember to call this" is not a mechanism.
+func guarded(tool string, h plugin.Handler) plugin.Handler {
+	return func(ctx context.Context, req plugin.Request) (any, error) {
+		c, err := client(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		if err := c.RequireGrants(ctx, tool); err != nil {
+			return nil, err
+		}
+		return h(ctx, req)
 	}
 }
 
@@ -276,13 +294,15 @@ func preflight(ctx context.Context) plugin.Health {
 		ts := plugin.ToolStatus{Available: available}
 		if !available {
 			missing, _ := info["missing"].([]string)
-			ts.Reason = "the Syncro API token lacks " + strings.Join(missing, " and ")
+			ts.Reason = "the Syncro API token cannot read " +
+				strings.ReplaceAll(strings.Join(missing, " or "), "_", " ")
 		}
 		h.Tools[tool] = ts
 	}
 
 	if !access.Sufficient {
-		h.Reason = "the Syncro token is missing permissions Azir needs; see access.check"
+		h.Reason = "the Syncro token cannot read " + strings.Join(access.Unreachable, ", ") +
+			"; tools needing those are unavailable"
 	}
 	return h
 }
@@ -517,10 +537,6 @@ func listInvoices(ctx context.Context, req plugin.Request) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := c.RequireGrants(ctx, "invoices.list"); err != nil {
-		return nil, err
-	}
-
 	customerID := a.CustomerID
 	if customerID == 0 && req.CustomerID != "" {
 		if id, ok := syncroIDFor(ctx, req.CustomerID); ok {
@@ -549,10 +565,6 @@ func customerStanding(ctx context.Context, req plugin.Request) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := c.RequireGrants(ctx, "customers.standing"); err != nil {
-		return nil, err
-	}
-
 	customerID := a.CustomerID
 	if customerID == 0 && req.CustomerID != "" {
 		if id, ok := syncroIDFor(ctx, req.CustomerID); ok {

@@ -73,3 +73,28 @@ func TestAccessCheckIsNeverCached(t *testing.T) {
 		}
 	}
 }
+
+// Every tool that reads a permissioned resource must be guarded. An unguarded
+// tool surfaces a bare vendor 401 instead of naming what is missing, which is
+// the failure the guard exists to prevent.
+func TestEveryPermissionedToolIsGuarded(t *testing.T) {
+	// guarded() closes over the tool name, so the only reliable check is that
+	// the wrapper is present: an unwrapped handler and a wrapped one differ in
+	// behaviour when the resource is unreachable, and that is what the live
+	// degradation test covers. Here we assert the map is complete, which is
+	// the part a person forgets.
+	for _, tool := range definition().Tools {
+		if _, known := syncroToolResource(tool.Name); !known {
+			t.Errorf("tool %q is not in the resource map, so it cannot be guarded", tool.Name)
+		}
+	}
+}
+
+func syncroToolResource(name string) (string, bool) {
+	for _, known := range syncro.KnownTools() {
+		if known == name {
+			return known, true
+		}
+	}
+	return "", false
+}

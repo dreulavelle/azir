@@ -263,8 +263,11 @@ func (c *HTTPClient) Do(ctx context.Context, method, path string, query url.Valu
 			// Never retry an auth failure. Repeated bad credentials are how a
 			// client gets its IP blacklisted, and a rotated password should
 			// surface to a human rather than being hammered at.
+			// Some vendors — Syncro among them — return 401 for a permission
+			// denial rather than 403, so this cannot claim the credential is
+			// wrong. Naming both causes is the only honest message.
 			return nil, &Error{Code: strconv.Itoa(resp.StatusCode),
-				Message: "the stored credential was rejected; check it in settings"}
+				Message: "the stored credential was rejected, or lacks permission for this data; check it in settings"}
 
 		case resp.StatusCode >= 400:
 			return nil, &Error{Code: strconv.Itoa(resp.StatusCode),

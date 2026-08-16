@@ -360,6 +360,23 @@ core merges that into the registry and drops unavailable tools from the
 capability index. The vendor-specific mapping lives entirely inside the plugin,
 which is where vendor knowledge belongs.
 
+**Probe, do not ask.** The Syncro plugin originally read `/me` to learn what
+its token could do. Testing against three tokens on one account — full admin,
+partially restricted, and ticket-only — showed `/me` returns *identical*
+permissions for all three: it reports the **user's** permissions, not the
+**token's**. The self-report was confidently wrong, so availability is now
+determined by issuing a cheap single-item read against each resource and
+observing what comes back. Measured beats claimed, and every report says which
+one it is.
+
+Two details that only appear under a real restricted token. Syncro answers a
+permission denial with **401, not 403**, so a refusal is indistinguishable from
+a bad credential by status alone — the SDK's message names both causes rather
+than asserting the wrong one. And the permission precondition is applied at
+registration by a wrapper, not called inside each handler: a forgotten guard is
+invisible until someone meets a bare 401, and "remember to call this" is not a
+mechanism.
+
 This mirrors how Airbyte handles the same problem across hundreds of connectors:
 `check` that credentials work at all, `discover` what is actually available with
 them, and fail at read time for anything else. The platform receives a catalog,
