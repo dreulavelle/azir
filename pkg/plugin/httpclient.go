@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -149,7 +150,12 @@ func (c *HTTPClient) permitted(method, path string) bool {
 		return true
 	}
 	for _, allowed := range c.cfg.AllowedWritePaths {
-		if allowed.Method == method && strings.HasPrefix(path, allowed.Prefix) {
+		if allowed.Method != method {
+			continue
+		}
+		// Match on a path boundary, not a raw prefix: "/search" must not also
+		// permit "/searchable-write".
+		if path == allowed.Prefix || strings.HasPrefix(path, strings.TrimSuffix(allowed.Prefix, "/")+"/") {
 			return true
 		}
 	}
@@ -171,15 +177,35 @@ func (c *HTTPClient) Do(ctx context.Context, method, path string, query url.Valu
 		target.RawQuery = query.Encode()
 	}
 
+	// Buffer the body once. A retry needs to send it again, and an io.Reader
+	// is consumed by the first attempt — which would silently deliver an empty
+	// body on the retry rather than failing, so a retried search would return
+	// wrong results instead of an error.
+	var payload []byte
+	if body != nil {
+		var err error
+		payload, err = io.ReadAll(io.LimitReader(body, 8<<20))
+		if err != nil {
+			return nil, errors.New("plugin: could not read request body")
+		}
+	}
+
 	var lastStatus int
 	for attempt := range c.cfg.MaxRetries + 1 {
 		if err := c.limiter.Wait(ctx); err != nil {
 			return nil, ctx.Err()
 		}
 
-		req, err := http.NewRequestWithContext(ctx, method, target.String(), body)
+		var attemptBody io.Reader
+		if payload != nil {
+			attemptBody = bytes.NewReader(payload)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, target.String(), attemptBody)
 		if err != nil {
 			return nil, errors.New("plugin: could not build request")
+		}
+		if payload != nil {
+			req.Header.Set("Content-Type", "application/json")
 		}
 		req.Header.Set("Accept", "application/json")
 		if c.authorize != nil {

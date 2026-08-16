@@ -185,6 +185,18 @@ func (s *Server) decideCapability(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) {
+	// ?q= runs the trigram-backed fuzzy search, so a name read off a ticket
+	// resolves to a customer without anyone knowing an identifier.
+	if q := r.URL.Query().Get("q"); q != "" {
+		customers, err := s.DB.SearchCustomers(r.Context(), q, 20)
+		if err != nil {
+			s.fail(w, err, "could not search customers")
+			return
+		}
+		writeJSON(w, http.StatusOK, customers)
+		return
+	}
+
 	customers, err := s.DB.ListCustomers(r.Context())
 	if err != nil {
 		s.fail(w, err, "could not list customers")

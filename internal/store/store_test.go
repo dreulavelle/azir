@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/dreulavelle/azir/internal/store"
+	"github.com/dreulavelle/azir/internal/testsupport"
 	"github.com/dreulavelle/azir/internal/vault"
 )
 
@@ -18,23 +19,7 @@ import (
 // actually breaks. TestMain resolves where that database comes from.
 func testDB(t *testing.T) *store.DB {
 	t.Helper()
-	ctx := context.Background()
-
-	db, err := store.Open(ctx, testDSN)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	t.Cleanup(db.Close)
-
-	// Extensions live in the shared schema; objects do not.
-	if _, err := db.Pool().Exec(ctx,
-		`DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;`); err != nil {
-		t.Fatalf("reset schema: %v", err)
-	}
-	if err := db.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-	return db
+	return testsupport.DB(t, testDSN)
 }
 
 func testVault(t *testing.T) *vault.Vault {
@@ -257,5 +242,50 @@ func TestDeleteCredential(t *testing.T) {
 	}
 	if _, err := creds.Open(ctx, nil, "syncro", "api_key"); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("credential readable after delete: %v", err)
+	}
+}
+
+// Fuzzy lookup is how a name read off a ticket resolves to a customer without
+// anyone knowing an identifier, so near-misses and case differences must match.
+func TestSearchCustomers(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+
+	for _, name := range []string{"Acme Dental", "Acme Legal", "Northwind Traders"} {
+		if _, err := db.CreateCustomer(ctx, name); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tests := []struct {
+		query string
+		want  string
+	}{
+		{"Acme Dental", "Acme Dental"},
+		{"acme dentl", "Acme Dental"},      // typo
+		{"northwind", "Northwind Traders"}, // case and partial
+	}
+
+	for _, tc := range tests {
+		got, err := db.SearchCustomers(ctx, tc.query, 10)
+		if err != nil {
+			t.Fatalf("search %q: %v", tc.query, err)
+		}
+		if len(got) == 0 {
+			t.Errorf("search %q found nothing", tc.query)
+			continue
+		}
+		if got[0].DisplayName != tc.want {
+			t.Errorf("search %q ranked %q first, want %q", tc.query, got[0].DisplayName, tc.want)
+		}
+	}
+
+	// An empty query lists everything rather than matching nothing.
+	all, err := db.SearchCustomers(ctx, "  ", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 3 {
+		t.Errorf("empty query returned %d customers, want 3", len(all))
 	}
 }

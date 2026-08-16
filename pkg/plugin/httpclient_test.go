@@ -3,9 +3,11 @@ package plugin_test
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -207,5 +209,69 @@ func TestPlaintextBaseURLIsRefused(t *testing.T) {
 	_, err := plugin.NewHTTPClient(plugin.HTTPConfig{BaseURL: "http://acme.syncromsp.com/api/v1"}, nil)
 	if err == nil {
 		t.Fatal("a plaintext base URL was accepted; credentials would travel in the clear")
+	}
+}
+
+// A retry must resend the body. An io.Reader is consumed by the first attempt,
+// so a naive implementation delivers an empty body on the retry — silently
+// returning wrong results rather than failing, which is worse than an error.
+func TestRetriedRequestKeepsItsBody(t *testing.T) {
+	var attempts atomic.Int32
+	var mu sync.Mutex
+	var bodies []string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, string(b))
+		mu.Unlock()
+		if attempts.Add(1) == 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv, plugin.HTTPConfig{
+		MaxRetries:        2,
+		AllowedWritePaths: []plugin.MethodPath{{Method: http.MethodPost, Prefix: "/search"}},
+	})
+
+	const payload = `{"query":"acme"}`
+	if _, err := c.Do(context.Background(), http.MethodPost, "/search", nil,
+		strings.NewReader(payload)); err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(bodies) < 2 {
+		t.Fatalf("expected a retry, saw %d attempts", len(bodies))
+	}
+	for i, b := range bodies {
+		if b != payload {
+			t.Errorf("attempt %d sent %q, want %q", i+1, b, payload)
+		}
+	}
+}
+
+// An allowlisted prefix must not leak across a path boundary.
+func TestWriteAllowlistRespectsPathBoundaries(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv, plugin.HTTPConfig{
+		AllowedWritePaths: []plugin.MethodPath{{Method: http.MethodPost, Prefix: "/search"}},
+	})
+
+	ctx := context.Background()
+	if _, err := c.Do(ctx, http.MethodPost, "/search/tickets", nil, nil); err != nil {
+		t.Errorf("a path under the allowlisted prefix was refused: %v", err)
+	}
+	if _, err := c.Do(ctx, http.MethodPost, "/searchable-write", nil, nil); !errors.Is(err, plugin.ErrMethodNotAllowed) {
+		t.Errorf("allowlist leaked across a path boundary: %v", err)
 	}
 }

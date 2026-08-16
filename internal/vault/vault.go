@@ -232,12 +232,3 @@ func newGCM(key []byte) (cipher.AEAD, error) {
 	}
 	return cipher.NewGCM(block)
 }
-
-// GenerateKey returns a base64 master key suitable for AZIR_MASTER_KEY.
-func GenerateKey() (string, error) {
-	k := make([]byte, KeySize)
-	if _, err := rand.Read(k); err != nil {
-		return "", err
-	}
-	return base64.StdEncoding.EncodeToString(k), nil
-}

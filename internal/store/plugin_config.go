@@ -76,29 +76,3 @@ func (db *DB) SetPluginConfig(ctx context.Context, plugin string, customerID *uu
 	}
 	return nil
 }
-
-// ListPluginConfig returns every scope configured for a plugin, so the console
-// can show which customers have overrides.
-func (db *DB) ListPluginConfig(ctx context.Context, plugin string) ([]PluginSettings, error) {
-	rows, err := db.pool.Query(ctx, `
-		SELECT customer_id, values, updated_by, updated_at
-		FROM plugin_config WHERE plugin = $1 ORDER BY customer_id NULLS FIRST`, plugin)
-	if err != nil {
-		return nil, fmt.Errorf("store: list plugin config: %w", err)
-	}
-	defer rows.Close()
-
-	out := []PluginSettings{}
-	for rows.Next() {
-		s := PluginSettings{Plugin: plugin, Values: map[string]any{}}
-		var raw []byte
-		if err := rows.Scan(&s.CustomerID, &raw, &s.UpdatedBy, &s.UpdatedAt); err != nil {
-			return nil, err
-		}
-		if err := json.Unmarshal(raw, &s.Values); err != nil {
-			return nil, err
-		}
-		out = append(out, s)
-	}
-	return out, rows.Err()
-}
