@@ -300,6 +300,35 @@ That last one is why handlers receive an opaque Azir customer id rather than a
 vendor one: memory and context hang off the spine, so switching PSA later does
 not orphan them.
 
+### Syncro permissions
+
+Azir needs exactly three: `ticket.read`, `customer.read`, `asset.read`. Nothing
+else — it never writes, never deletes, and never executes scripts.
+
+`syncro.access.check` reports what a configured token actually grants and names
+anything beyond that set, so least privilege is verifiable from inside Azir
+rather than by squinting at checkboxes in another product. Run against a full
+admin token it reports 21 excessive grants, including `script.execute`, which
+would let a compromised Azir run code on customer machines.
+
+### On MCP
+
+Syncro publishes an MCP server, and the temptation is to wire MCP into core.
+That would be a mistake: every guarantee Azir makes — the read-only invariant,
+the credential firewall, outbound redaction, capability tags — is enforced in
+`pkg/plugin`. An MCP server is a third-party tool surface that will have write
+tools, returns content we do not shape, and holds its own credentials.
+
+The right shape is an MCP *bridge plugin*, which inherits those guarantees:
+refusing to register any MCP tool that advertises mutation, drawing server
+credentials from the vault, and landing its tools as pending capabilities.
+
+Worth being clear that a bridge is strictly worse than a native plugin where
+one exists. This plugin trims responses, paces to Syncro's documented limit and
+curates its tool surface; their MCP would give us their shapes and their
+verbosity. MCP earns its place on the long tail — systems that will never
+justify a plugin of their own.
+
 ### Capability tags
 
 Tools declare what they provide from a vocabulary Azir owns

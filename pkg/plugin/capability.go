@@ -20,6 +20,8 @@ const (
 	CapTimeEntriesList Capability = "time_entries.list"
 	CapAssetsList      Capability = "assets.list"
 	CapCallsList       Capability = "calls.list"
+	CapDocsSearch      Capability = "documentation.search"
+	CapAccessCheck     Capability = "access.check"
 	CapRecordingsGet   Capability = "recordings.get"
 
 	// CapDiagnostic is for tools that expose no customer data at all, such as
@@ -36,6 +38,8 @@ var vocabulary = map[Capability]struct{}{
 	CapTimeEntriesList: {},
 	CapAssetsList:      {},
 	CapCallsList:       {},
+	CapDocsSearch:      {},
+	CapAccessCheck:     {},
 	CapRecordingsGet:   {},
 	CapDiagnostic:      {},
 }

@@ -115,6 +115,61 @@ func main() {
 				Handler: getTicket,
 			},
 			{
+				Name: "tickets.timeline",
+				Description: "The full history of one ticket in one chronological sequence — creation, " +
+					"every message, and logged time — with computed signals: time to first response, " +
+					"longest gap, how many times the conversation changed sides, and whether it has gone quiet. " +
+					"Reach for this when helping with a specific ticket.",
+				Provides: []plugin.Capability{plugin.CapWorkItemsGet},
+				Schema: json.RawMessage(`{
+					"type": "object",
+					"required": ["id"],
+					"properties": {
+						"id": {"type": "integer", "description": "Syncro ticket id"}
+					}
+				}`),
+				Handler: getTimeline,
+			},
+			{
+				Name: "time.entries",
+				Description: "Logged time entries, filterable by customer and date window. Use this to " +
+					"find work that was done, or to check whether time was booked against a customer in a period.",
+				Provides: []plugin.Capability{plugin.CapTimeEntriesList},
+				Schema: json.RawMessage(`{
+					"type": "object",
+					"properties": {
+						"customer_id": {"type": "integer", "description": "Syncro customer id"},
+						"since": {"type": "string", "description": "RFC3339 timestamp; entries created after this"},
+						"until": {"type": "string", "description": "RFC3339 timestamp; entries created before this"},
+						"page": {"type": "integer", "minimum": 1, "default": 1},
+						"per_page": {"type": "integer", "minimum": 1, "maximum": 100, "default": 25}
+					}
+				}`),
+				Handler: listTimeEntries,
+			},
+			{
+				Name: "docs.search",
+				Description: "Search the company's Syncro wiki — documented procedures, runbooks and " +
+					"setup guides. Prefer a documented procedure over general knowledge when one exists.",
+				Provides: []plugin.Capability{plugin.CapDocsSearch},
+				Schema: json.RawMessage(`{
+					"type": "object",
+					"properties": {
+						"query": {"type": "string", "description": "Words to match in a page title or body"},
+						"include_body": {"type": "boolean", "default": true, "description": "Return full page text, not just titles"}
+					}
+				}`),
+				Handler: searchDocs,
+			},
+			{
+				Name: "access.check",
+				Description: "Report what the configured Syncro API token is permitted to do, and whether " +
+					"it holds more permission than Azir needs.",
+				Provides: []plugin.Capability{plugin.CapAccessCheck},
+				Schema:   json.RawMessage(`{"type": "object", "properties": {}}`),
+				Handler:  checkAccess,
+			},
+			{
 				Name:        "assets.list",
 				Description: "List a customer's assets — machines, devices and their serials.",
 				Provides:    []plugin.Capability{plugin.CapAssetsList},
@@ -283,6 +338,82 @@ func listAssets(ctx context.Context, req plugin.Request) (any, error) {
 		}
 	}
 	return c.ListAssets(ctx, customerID, a.Page, a.PerPage)
+}
+
+func getTimeline(ctx context.Context, req plugin.Request) (any, error) {
+	a, err := args[struct {
+		ID int64 `json:"id"`
+	}](req)
+	if err != nil {
+		return nil, err
+	}
+	if a.ID <= 0 {
+		return nil, plugin.Errorf("400", "a Syncro ticket id is required")
+	}
+	c, err := client(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return c.GetTimeline(ctx, a.ID)
+}
+
+func listTimeEntries(ctx context.Context, req plugin.Request) (any, error) {
+	a, err := args[struct {
+		pageArgs
+		CustomerID int64  `json:"customer_id"`
+		Since      string `json:"since"`
+		Until      string `json:"until"`
+	}](req)
+	if err != nil {
+		return nil, err
+	}
+	c, err := client(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	customerID := a.CustomerID
+	if customerID == 0 && req.CustomerID != "" {
+		if id, ok := syncroIDFor(ctx, req.CustomerID); ok {
+			customerID = id
+		}
+	}
+
+	return c.TicketTimers(ctx, syncro.TimerSearch{
+		CustomerID: customerID,
+		Since:      a.Since,
+		Until:      a.Until,
+		Page:       a.Page,
+		PerPage:    a.PerPage,
+	})
+}
+
+func searchDocs(ctx context.Context, req plugin.Request) (any, error) {
+	a, err := args[struct {
+		Query       string `json:"query"`
+		IncludeBody *bool  `json:"include_body"`
+	}](req)
+	if err != nil {
+		return nil, err
+	}
+	c, err := client(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	includeBody := a.IncludeBody == nil || *a.IncludeBody
+	pages, err := c.SearchWiki(ctx, a.Query, includeBody)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"pages": pages, "count": len(pages)}, nil
+}
+
+func checkAccess(ctx context.Context, req plugin.Request) (any, error) {
+	c, err := client(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return c.CheckAccess(ctx)
 }
 
 // syncroIDFor translates an Azir customer into this plugin's identifier.
