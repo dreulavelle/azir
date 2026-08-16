@@ -166,7 +166,11 @@ func (r *Registry) Refresh(ctx context.Context) error {
 			}
 			for _, c := range t.Provides {
 				key := string(c)
-				caps[key] = append(caps[key], info.Name+"."+ep.Name)
+				// t.Name, not ep.Name: the endpoint name has had its dots
+				// stripped for micro's validator, while the approval gate keys
+				// on the real name. Using the sanitised one here silently
+				// produces provider keys that nothing else matches.
+				caps[key] = append(caps[key], info.Name+"."+t.Name)
 			}
 			p.Tools = append(p.Tools, t)
 		}

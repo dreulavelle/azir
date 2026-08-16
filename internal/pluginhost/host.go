@@ -53,11 +53,20 @@ func (h *Host) Start(ctx context.Context) error {
 		_ = vaultSub.Unsubscribe()
 		return err
 	}
-	h.subs = []*nats.Subscription{vaultSub, configSub}
+	identitySub, err := h.nc.Subscribe(plugin.IdentitySubjectPrefix+".*", func(m *nats.Msg) {
+		h.resolveIdentity(ctx, m)
+	})
+	if err != nil {
+		_ = vaultSub.Unsubscribe()
+		_ = configSub.Unsubscribe()
+		return err
+	}
+	h.subs = []*nats.Subscription{vaultSub, configSub, identitySub}
 
 	h.log.Info("plugin host ready",
 		"vault_subject", plugin.VaultSubjectPrefix+".*",
-		"config_subject", plugin.ConfigSubjectPrefix+".*")
+		"config_subject", plugin.ConfigSubjectPrefix+".*",
+		"identity_subject", plugin.IdentitySubjectPrefix+".*")
 
 	<-ctx.Done()
 	for _, s := range h.subs {
@@ -201,6 +210,92 @@ func (h *Host) resolveConfig(ctx context.Context, m *nats.Msg) {
 	}
 
 	body, err := json.Marshal(map[string]any{"values": settings.Values})
+	if err != nil {
+		h.respondErr(m, "500", "resolution failed")
+		return
+	}
+	_ = m.Respond(body)
+}
+
+// resolveIdentity translates between Azir's customer spine and a plugin's own
+// identifiers, in whichever direction the request asks for.
+//
+// The plugin name comes from the subject, so a plugin can only ever see the
+// identity mapping for its own system.
+func (h *Host) resolveIdentity(ctx context.Context, m *nats.Msg) {
+	name := subjectPlugin(m.Subject)
+	if name == "" {
+		h.respondErr(m, "400", "malformed subject")
+		return
+	}
+
+	var req struct {
+		CustomerID string `json:"customer_id"`
+		ExternalID string `json:"external_id"`
+	}
+	if err := json.Unmarshal(m.Data, &req); err != nil {
+		h.respondErr(m, "400", "invalid request")
+		return
+	}
+
+	var customer store.Customer
+	switch {
+	case req.ExternalID != "":
+		c, err := h.db.ResolveIdentity(ctx, name, req.ExternalID)
+		if errors.Is(err, store.ErrNotFound) {
+			h.respondErr(m, "404", "no such identity")
+			return
+		}
+		if err != nil {
+			h.log.Error("identity resolution failed", "plugin", name, "error", err)
+			h.respondErr(m, "500", "resolution failed")
+			return
+		}
+		customer = c
+
+	case req.CustomerID != "":
+		id, err := uuid.Parse(req.CustomerID)
+		if err != nil {
+			h.respondErr(m, "400", "invalid customer id")
+			return
+		}
+		c, err := h.db.GetCustomer(ctx, id)
+		if errors.Is(err, store.ErrNotFound) {
+			h.respondErr(m, "404", "no such customer")
+			return
+		}
+		if err != nil {
+			h.log.Error("identity resolution failed", "plugin", name, "error", err)
+			h.respondErr(m, "500", "resolution failed")
+			return
+		}
+		customer = c
+
+	default:
+		h.respondErr(m, "400", "one of customer_id or external_id is required")
+		return
+	}
+
+	// Find this plugin's identifier among the customer's links. A customer
+	// with no link here is an ordinary state, not an error: a walk-in with no
+	// PSA record is still a customer.
+	var external string
+	for _, identity := range customer.Identities {
+		if identity.Plugin == name {
+			external = identity.ExternalID
+			break
+		}
+	}
+	if external == "" {
+		h.respondErr(m, "404", "no such identity")
+		return
+	}
+
+	body, err := json.Marshal(map[string]string{
+		"customer_id":  customer.ID.String(),
+		"external_id":  external,
+		"display_name": customer.DisplayName,
+	})
 	if err != nil {
 		h.respondErr(m, "500", "resolution failed")
 		return

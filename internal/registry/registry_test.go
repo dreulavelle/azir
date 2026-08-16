@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -215,5 +216,35 @@ func TestUnwrappedErrorIsNotEchoed(t *testing.T) {
 	}
 	if desc != "internal plugin error" {
 		t.Errorf("want generic error description, got %q", desc)
+	}
+}
+
+// The capability index must key on real tool names. The endpoint name has its
+// dots stripped for micro, and the approval gate keys on the real name — so a
+// sanitised name here produces provider keys that nothing else can match.
+func TestCapabilityIndexUsesRealToolNames(t *testing.T) {
+	url := startNATS(t)
+	servePlugin(t, url, testPlugin())
+
+	nc, err := nats.Connect(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nc.Close()
+
+	reg := registry.New(nc, quietLogger(), 500*time.Millisecond)
+	if err := reg.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	providers := reg.Providers(plugin.CapDiagnostic)
+	for _, p := range providers {
+		if strings.Contains(p, "_") {
+			t.Errorf("capability index carries a sanitised name %q; "+
+				"approval keys use dots and will never match", p)
+		}
+	}
+	if !slices.Contains(providers, "echo.tickets.search") {
+		t.Errorf("dotted tool missing from the capability index: %v", providers)
 	}
 }

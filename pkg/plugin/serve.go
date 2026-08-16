@@ -130,6 +130,7 @@ func Serve(ctx context.Context, p Plugin, opts ...Option) error {
 		}
 	})
 	cfg := newConfig(nc, p.Name)
+	ident := newIdentity(nc, p.Name)
 
 	svc, err := micro.AddService(nc, micro.Config{
 		Name:        p.Name,
@@ -148,7 +149,7 @@ func Serve(ctx context.Context, p Plugin, opts ...Option) error {
 	for _, t := range p.Tools {
 		if err := svc.AddEndpoint(
 			endpointName(t.Name),
-			micro.HandlerFunc(wrap(t, red, vault, cfg, log)),
+			micro.HandlerFunc(wrap(t, red, vault, cfg, ident, log)),
 			micro.WithEndpointSubject(toolSubject(p.Name, t.Name)),
 			micro.WithEndpointMetadata(toolMetadata(t)),
 		); err != nil {
@@ -192,7 +193,7 @@ func serviceMetadata(p Plugin) map[string]string {
 // wrap adapts a Handler to the transport, and is where the SDK's two
 // non-negotiable behaviours live: every return value is redacted, and no
 // unrecognised error is ever echoed back to the caller.
-func wrap(t Tool, red *Redactor, vault *Vault, cfg *Config, log *slog.Logger) func(micro.Request) {
+func wrap(t Tool, red *Redactor, vault *Vault, cfg *Config, ident *Identity, log *slog.Logger) func(micro.Request) {
 	return func(r micro.Request) {
 		var req Request
 		if len(r.Data()) > 0 {

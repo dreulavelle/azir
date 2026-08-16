@@ -76,12 +76,14 @@ decision, so restarting a plugin cannot launder a rejection back into pending.
 ```
 cmd/azir-core/        the whole application
 cmd/plugin-echo/      diagnostic plugin proving the transport
+cmd/plugin-syncro/    Syncro MSP: tickets, customers, assets (read-only)
 internal/api/         HTTP surface and SPA serving
 internal/audit/       append-only trail, JetStream to SQLite
 internal/logging/     the redacting slog handler
 internal/natsd/       embedded NATS server
 internal/registry/    service discovery and the capability index
-internal/store/       SQLite: spine, credentials, capabilities, audit
+internal/store/       Postgres: spine, credentials, capabilities, audit
+internal/syncro/      Syncro API client
 internal/supervisor/  bundled plugins as supervised children
 internal/vault/       envelope encryption and key rotation
 pkg/plugin/           the SDK — importable from outside this module
@@ -270,6 +272,33 @@ Two rules that are enforced rather than documented:
 - **Register every resolved credential via `WithSecrets`.** The redactor scrubs
   those literals wherever they appear, including inside prose that key-name
   rules would never inspect.
+
+### Configuring a plugin
+
+A plugin publishes a JSON Schema for its own settings, and the console renders
+the form from it — there is no per-integration frontend code. Fields marked
+`x-azir-secret` are sealed into the vault; everything else lands in
+`plugin_config`. An administrator types a subdomain and an API token into the
+same panel without needing to know they are stored entirely differently.
+
+Handlers read both back at request time, so a rotated key or a changed
+subdomain takes effect without restarting anything:
+
+```go
+cfg, _ := plugin.ConfigFrom(ctx)
+subdomain, err := cfg.String(ctx, req.CustomerID, "subdomain")
+
+v, _ := plugin.VaultFrom(ctx)
+token, err := v.For(ctx, "", "api_key")
+
+// Azir customer id -> this plugin's identifier, through the spine.
+ident, _ := plugin.IdentityFrom(ctx)
+external, err := ident.External(ctx, req.CustomerID)
+```
+
+That last one is why handlers receive an opaque Azir customer id rather than a
+vendor one: memory and context hang off the spine, so switching PSA later does
+not orphan them.
 
 ### Capability tags
 
