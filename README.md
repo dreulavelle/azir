@@ -222,6 +222,19 @@ schema. A migration needing `CREATE INDEX CONCURRENTLY` opts out of its
 transaction with an `-- azir:no-transaction` marker, and must then be written
 idempotently.
 
+One fixture earns special mention. `pkg/plugin/adversarial_test.go` is a
+deliberately hostile plugin that attempts every route a careless or malicious
+author might use to get a credential out: returning it, burying it in a nested
+structure, embedding it in prose, using it as an object key, wrapping it in an
+error, and reaching for another plugin's. It exists because the credential
+firewall was otherwise tested one component at a time, and a firewall is only
+meaningful end to end.
+
+It earned its place immediately by finding two real holes: the redactor walked
+map values but never map keys, so a secret used as an object key escaped
+whole; and `plugin.Errorf` messages went to the caller unredacted, because the
+contract said they were caller-safe and nothing enforced it.
+
 The canary tests are the ones that matter. A sentinel credential is pushed
 through every route that could leak it — messages, attributes, errors, groups,
 derived loggers, the database file — and asserted absent. One test deliberately

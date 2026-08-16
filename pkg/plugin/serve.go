@@ -207,7 +207,11 @@ func wrap(t Tool, red *Redactor, vault *Vault, cfg *Config, log *slog.Logger) fu
 		if err != nil {
 			var perr *Error
 			if errors.As(err, &perr) {
-				_ = r.Error(perr.Code, perr.Message, nil)
+				// A controlled error is documented as caller-safe, but
+				// documentation is not enforcement: an author formatting a
+				// credential into Errorf would otherwise leak it straight to
+				// the caller, and from there into model context.
+				_ = r.Error(perr.Code, red.Text(perr.Message), nil)
 				return
 			}
 			// Unrecognised errors routinely carry request URLs and auth

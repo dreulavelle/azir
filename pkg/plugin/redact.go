@@ -55,6 +55,11 @@ func (r *Redactor) Learn(values ...string) {
 	}
 }
 
+// Text scrubs registered secret literals from a plain string. Used for
+// anything that reaches a caller without passing through Value — an error
+// message most importantly.
+func (r *Redactor) Text(s string) string { return r.scrubLiterals(s) }
+
 // Value round-trips v through JSON and returns a redacted copy.
 func (r *Redactor) Value(v any) (any, error) {
 	raw, err := json.Marshal(v)
@@ -73,7 +78,10 @@ func (r *Redactor) walk(v any, parentSensitive bool) any {
 	case map[string]any:
 		out := make(map[string]any, len(t))
 		for k, val := range t {
-			out[k] = r.walk(val, isSensitiveKey(k))
+			// Keys are scrubbed too. A secret used as an object key would
+			// otherwise escape entirely, since walking only values never
+			// inspects it — found by the adversarial plugin fixture.
+			out[r.scrubLiterals(k)] = r.walk(val, isSensitiveKey(k))
 		}
 		return out
 	case []any:
