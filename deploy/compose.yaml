@@ -58,17 +58,6 @@ services:
       timeout: 3s
       retries: 12
     restart: unless-stopped
-    # Asynchronous I/O is already on via io_method=worker. Switching to
-    # io_uring needs the syscalls Docker's default seccomp profile blocks:
-    #
-    #   security_opt:
-    #     - seccomp=./postgres/seccomp-io-uring.json
-    #
-    # and io_method=io_uring in postgresql.conf. Left off deliberately —
-    # io_uring bypasses seccomp filtering rather than merely widening it, and
-    # this container holds every customer's PBX credentials. See the tuning
-    # notes in README.md for the measurement that would justify it; raising
-    # shared_buffers is the cheaper first move.
 
 volumes:
   azir-data:

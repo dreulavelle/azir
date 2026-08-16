@@ -148,7 +148,22 @@ eliminating the I/O beats making it faster. io_uring becomes interesting only
 once the working set exceeds the RAM you are willing to buy for it, and it
 should be enabled against a measurement rather than a hunch.
 
-`deploy/compose.yaml` carries the commented opt-in.
+#### Autovacuum
+
+The global settings are a floor; each table tightens further in
+`0002_autovacuum.sql`, because a setting that suits `audit_log` is wasteful on
+`customers`. `audit_log` is append-only and churns constantly, so it vacuums
+aggressively and freezes early — un-frozen pages otherwise accumulate until an
+anti-wraparound vacuum has to read the whole table in one stall. `capabilities`
+is tiny but rewritten every discovery sweep, which produces dead tuples out of
+all proportion to its size.
+
+Two global values matter more than they look. `autovacuum_vacuum_cost_limit` is
+raised well above the default throttle, which was calibrated for spinning disks
+and is the usual reason autovacuum cannot keep up. And `autovacuum_work_mem` is
+set **explicitly**: its `-1` default inherits `maintenance_work_mem`, which is
+1GB here for HNSW builds — so each of several autovacuum workers could claim
+that, on a container sized for 4GB total. A test asserts it is not `-1`.
 
 The Postgres volume mounts at `/var/lib/postgresql`, not `.../data`. The 18+
 images expect this: the cluster lives in a version-named subdirectory so a

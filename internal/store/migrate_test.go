@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -176,5 +177,49 @@ func TestTrigramExtensionIsUsable(t *testing.T) {
 	}
 	if sim <= 0 {
 		t.Fatalf("implausible similarity %v", sim)
+	}
+}
+
+// Per-table autovacuum settings exist because the global config is a
+// compromise the high-churn tables cannot live with. A migration that silently
+// failed to apply them would show up much later as a table that never vacuums.
+func TestPerTableAutovacuumApplied(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+
+	want := map[string]string{
+		"audit_log":    "autovacuum_vacuum_scale_factor=0.01",
+		"capabilities": "autovacuum_vacuum_scale_factor=0.05",
+		"credentials":  "autovacuum_vacuum_threshold=25",
+		"customers":    "autovacuum_vacuum_threshold=50",
+	}
+
+	for table, setting := range want {
+		var options []string
+		if err := db.Pool().QueryRow(ctx,
+			`SELECT COALESCE(reloptions, '{}') FROM pg_class WHERE relname = $1`,
+			table).Scan(&options); err != nil {
+			t.Fatalf("read reloptions for %s: %v", table, err)
+		}
+		if !slices.Contains(options, setting) {
+			t.Errorf("%s is missing %q; got %v", table, setting, options)
+		}
+	}
+}
+
+// Autovacuum must not be able to claim maintenance_work_mem per worker. With
+// maintenance_work_mem raised for HNSW builds, inheriting it across several
+// workers is how a container gets OOM-killed during routine maintenance.
+func TestAutovacuumMemoryIsBounded(t *testing.T) {
+	db := testDB(t)
+
+	var setting string
+	if err := db.Pool().QueryRow(context.Background(),
+		`SELECT current_setting('autovacuum_work_mem')`).Scan(&setting); err != nil {
+		t.Fatal(err)
+	}
+	if setting == "-1" {
+		t.Error("autovacuum_work_mem inherits maintenance_work_mem; " +
+			"each worker can then claim the full HNSW build budget")
 	}
 }
