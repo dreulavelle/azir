@@ -118,12 +118,37 @@ baseline assumes ~4GB for the container; scale the memory settings with the
 limit. `jit = off` is deliberate: JIT regularly costs more than it saves on
 short pgvector queries and is a known source of latency spikes.
 
-Two PostgreSQL 18 specifics. `io_method = worker` rather than `io_uring`,
-because io_uring fails under Docker's default seccomp profile — worth
-revisiting on a host that can grant the syscalls, since vector scans are
-read-heavy. And `effective_io_concurrency` now counts I/Os the executor keeps
-in flight rather than being a device-parallelism hint, so the old advice to set
-it in the hundreds no longer applies.
+`effective_io_concurrency` now counts I/Os the executor keeps in flight rather
+than being a device-parallelism hint, so the pre-18 advice to set it in the
+hundreds no longer applies.
+
+#### On asynchronous I/O
+
+Azir already runs PostgreSQL 18's async I/O. `io_method = worker` is the async
+implementation using worker processes; it is not the old synchronous path. In
+published cold-cache benchmarks the large jump is sync → worker, with io_uring
+adding a further increment — and for high-bandwidth sequential scans worker can
+beat io_uring outright, because it spreads CPU load across processes.
+
+io_uring stays off for two reasons.
+
+It **bypasses seccomp filtering** rather than merely needing a wider profile:
+operations are submitted through the ring instead of as syscalls, so a filter
+cannot see them. Docker blocks it by default for exactly this reason, and
+Google attributed a majority of the kernel exploits in one bug-bounty year to
+it. The container in question holds envelope-encrypted System Owner credentials
+for every customer PBX.
+
+And it would buy little today. Async I/O accelerates reads that reach the disk;
+HNSW traversal against an index resident in `shared_buffers` does not reach the
+disk at all. The threshold worth watching is when the working set outgrows
+shared memory — at 1536 dimensions a float32 embedding is ~6KB, so 1GB holds
+roughly 170k vectors. At that point **raise `shared_buffers` first**:
+eliminating the I/O beats making it faster. io_uring becomes interesting only
+once the working set exceeds the RAM you are willing to buy for it, and it
+should be enabled against a measurement rather than a hunch.
+
+`deploy/compose.yaml` carries the commented opt-in.
 
 The Postgres volume mounts at `/var/lib/postgresql`, not `.../data`. The 18+
 images expect this: the cluster lives in a version-named subdirectory so a
