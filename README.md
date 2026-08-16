@@ -311,6 +311,64 @@ rather than by squinting at checkboxes in another product. Run against a full
 admin token it reports 21 excessive grants, including `script.execute`, which
 would let a compromised Azir run code on customer machines.
 
+### Freshness, not mirroring
+
+Azir caches tool results; it does not mirror Syncro. Nothing is stored that
+nobody asked for, and the vendor stays the source of truth.
+
+Each tool declares a two-level staleness budget, because only the plugin knows
+how volatile its own data is — a ticket changes while you are reading it, a
+customer's phone number does not:
+
+| tool | serve instantly | must refresh |
+|---|---|---|
+| `tickets.get`, `tickets.timeline` | 30s | 2m |
+| `tickets.search` | 60s | 5m |
+| `time.entries` | 5m | 30m |
+| `invoices.list`, `customers.standing` | 10m | 1h |
+| `customers.*` | 30m | 4h |
+| `assets.list` | 1h | 12h |
+| `docs.search` | 6h | 24h |
+| `access.check` | never cached |  |
+
+Below the first threshold a cached answer is returned as-is. Between the two it
+is still returned immediately while a refresh runs behind it, so this caller is
+fast and the next is current. Beyond the second, the caller waits. Concurrent
+refreshes of the same entry collapse into one, because twenty callers arriving
+at an expired entry must not become twenty vendor requests.
+
+Two things make this honest rather than merely fast. Every response carries
+`X-Azir-Source` and `X-Azir-Age-Seconds`, so a reader — person or model — knows
+whether a figure is live or four minutes old. And `{"refresh": true}` bypasses
+the cache entirely, which is what the UI sends when a technician opens a ticket
+they are about to act on.
+
+When the vendor is unreachable, a stale entry is served with
+`X-Azir-Source: cache-stale-vendor-unavailable` rather than an error. Something
+old and labelled beats nothing.
+
+### Permissions across heterogeneous plugins
+
+Azir has no permission table, deliberately. Every vendor models permissions
+differently — Syncro has a read/write/delete matrix, 3CX has roles, the next
+one will have something else — so a central table would either be
+Syncro-shaped and wrong, or abstract enough to mean nothing.
+
+Instead a plugin reports what it can currently do, and core interprets none of
+it. `Preflight` returns per-tool availability with a human-readable reason;
+core merges that into the registry and drops unavailable tools from the
+capability index. The vendor-specific mapping lives entirely inside the plugin,
+which is where vendor knowledge belongs.
+
+This mirrors how Airbyte handles the same problem across hundreds of connectors:
+`check` that credentials work at all, `discover` what is actually available with
+them, and fail at read time for anything else. The platform receives a catalog,
+never a permission model.
+
+A test asserts every tool has a permission entry and that no entry names a tool
+that no longer exists, because the failure mode of that map drifting is a tool
+that reports itself available and then returns 401.
+
 ### On MCP
 
 Syncro publishes an MCP server, and the temptation is to wire MCP into core.

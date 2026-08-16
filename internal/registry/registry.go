@@ -42,6 +42,10 @@ type Tool struct {
 	// explains itself rather than failing at call time.
 	Available bool   `json:"available"`
 	Reason    string `json:"unavailable_reason,omitempty"`
+
+	// Freshness is the staleness budget the plugin declared. Nil means results
+	// are never cached.
+	Freshness *plugin.Freshness `json:"freshness,omitempty"`
 }
 
 // Plugin is a discovered service.
@@ -170,6 +174,11 @@ func (r *Registry) Refresh(ctx context.Context) error {
 			}
 			if s := ep.Metadata[plugin.MetaSchema]; s != "" {
 				t.Schema = json.RawMessage(s)
+			}
+			// Absent freshness means never cache, which is the right default
+			// for anything whose answer is expected to be live.
+			if f, ok := plugin.ParseFreshness(ep.Metadata[plugin.MetaFreshness]); ok {
+				t.Freshness = &f
 			}
 			// A mutating tool should be impossible: the SDK refuses to start
 			// with one. If a non-SDK service ever advertises one, core must

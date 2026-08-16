@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/dreulavelle/azir/internal/syncro"
 	"github.com/dreulavelle/azir/pkg/plugin"
@@ -35,7 +36,17 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	p := plugin.Plugin{
+	if err := plugin.Serve(ctx, definition(), plugin.WithLogger(log)); err != nil {
+		log.Error("plugin failed to start", "error", err)
+		os.Exit(1)
+	}
+}
+
+// definition is the plugin as registered. Extracted from main so a test can
+// assert that every tool is accounted for in the permission map — a tool added
+// without one would silently report itself available and then fail with a 401.
+func definition() plugin.Plugin {
+	return plugin.Plugin{
 		Name:        "syncro",
 		Version:     "0.1.0",
 		Description: "Read-only access to Syncro MSP tickets, customers and assets",
@@ -66,6 +77,7 @@ func main() {
 		Tools: []plugin.Tool{
 			{
 				Name:        "customers.search",
+				Freshness:   &plugin.Freshness{Soft: 30 * time.Minute, Hard: 4 * time.Hour},
 				Description: "Find customers by name, business, email or phone. Returns a page of matches with contact details.",
 				Provides:    []plugin.Capability{plugin.CapCustomersList},
 				Schema: json.RawMessage(`{
@@ -80,6 +92,7 @@ func main() {
 			},
 			{
 				Name:        "customers.get",
+				Freshness:   &plugin.Freshness{Soft: 30 * time.Minute, Hard: 4 * time.Hour},
 				Description: "Fetch one customer by their Syncro id, including contact details and notes.",
 				Provides:    []plugin.Capability{plugin.CapCustomersGet},
 				Schema: json.RawMessage(`{
@@ -92,7 +105,8 @@ func main() {
 				Handler: getCustomer,
 			},
 			{
-				Name: "tickets.search",
+				Name:      "tickets.search",
+				Freshness: &plugin.Freshness{Soft: 60 * time.Second, Hard: 5 * time.Minute},
 				Description: "Search tickets by free text, status, or customer. Returns summaries without " +
 					"comment threads; use tickets.get for the full conversation on one ticket.",
 				Provides: []plugin.Capability{plugin.CapWorkItemsSearch},
@@ -110,6 +124,7 @@ func main() {
 			},
 			{
 				Name:        "tickets.get",
+				Freshness:   &plugin.Freshness{Soft: 30 * time.Second, Hard: 2 * time.Minute},
 				Description: "Fetch one ticket including its full comment thread. This is the tool to reach for when helping with a specific ticket.",
 				Provides:    []plugin.Capability{plugin.CapWorkItemsGet},
 				Schema: json.RawMessage(`{
@@ -122,7 +137,8 @@ func main() {
 				Handler: getTicket,
 			},
 			{
-				Name: "tickets.timeline",
+				Name:      "tickets.timeline",
+				Freshness: &plugin.Freshness{Soft: 30 * time.Second, Hard: 2 * time.Minute},
 				Description: "The full history of one ticket in one chronological sequence — creation, " +
 					"every message, and logged time — with computed signals: time to first response, " +
 					"longest gap, how many times the conversation changed sides, and whether it has gone quiet. " +
@@ -138,7 +154,8 @@ func main() {
 				Handler: getTimeline,
 			},
 			{
-				Name: "time.entries",
+				Name:      "time.entries",
+				Freshness: &plugin.Freshness{Soft: 5 * time.Minute, Hard: 30 * time.Minute},
 				Description: "Logged time entries, filterable by customer and date window. Use this to " +
 					"find work that was done, or to check whether time was booked against a customer in a period.",
 				Provides: []plugin.Capability{plugin.CapTimeEntriesList},
@@ -155,7 +172,8 @@ func main() {
 				Handler: listTimeEntries,
 			},
 			{
-				Name: "docs.search",
+				Name:      "docs.search",
+				Freshness: &plugin.Freshness{Soft: 6 * time.Hour, Hard: 24 * time.Hour},
 				Description: "Search the company's Syncro wiki — documented procedures, runbooks and " +
 					"setup guides. Prefer a documented procedure over general knowledge when one exists.",
 				Provides: []plugin.Capability{plugin.CapDocsSearch},
@@ -169,7 +187,8 @@ func main() {
 				Handler: searchDocs,
 			},
 			{
-				Name: "invoices.list",
+				Name:      "invoices.list",
+				Freshness: &plugin.Freshness{Soft: 10 * time.Minute, Hard: 1 * time.Hour},
 				Description: "List invoices, optionally only paid or only unpaid, and optionally for one " +
 					"customer or ticket. Use this to answer what has been billed and what is outstanding.",
 				Provides: []plugin.Capability{plugin.CapInvoicesList},
@@ -186,7 +205,8 @@ func main() {
 				Handler: listInvoices,
 			},
 			{
-				Name: "customers.standing",
+				Name:      "customers.standing",
+				Freshness: &plugin.Freshness{Soft: 10 * time.Minute, Hard: 1 * time.Hour},
 				Description: "A customer's financial position: what is outstanding, how much is overdue, " +
 					"and the unpaid invoices behind the total. The balance is summed from unpaid invoices " +
 					"because Syncro exposes no balance field, and the response says so.",
@@ -211,6 +231,7 @@ func main() {
 			},
 			{
 				Name:        "assets.list",
+				Freshness:   &plugin.Freshness{Soft: 1 * time.Hour, Hard: 12 * time.Hour},
 				Description: "List a customer's assets — machines, devices and their serials.",
 				Provides:    []plugin.Capability{plugin.CapAssetsList},
 				Schema: json.RawMessage(`{
@@ -224,11 +245,6 @@ func main() {
 				Handler: listAssets,
 			},
 		},
-	}
-
-	if err := plugin.Serve(ctx, p, plugin.WithLogger(log)); err != nil {
-		log.Error("plugin failed to start", "error", err)
-		os.Exit(1)
 	}
 }
 

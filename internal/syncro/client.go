@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/dreulavelle/azir/pkg/plugin"
 )
@@ -28,6 +29,13 @@ const maxPerPage = 100
 // anything but GET, HEAD and OPTIONS.
 type Client struct {
 	http *plugin.HTTPClient
+
+	// The permission matrix, cached: preflight and every guarded call ask the
+	// same question, and an administrator editing a token is rare.
+	accessMu sync.Mutex
+	access   Access
+	accessAt time.Time
+	accessOK bool
 }
 
 // Credentials are resolved per request by the caller-supplied function, so a

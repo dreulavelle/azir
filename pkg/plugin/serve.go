@@ -28,6 +28,7 @@ const (
 	MetaProvides     = "azir.provides"
 	MetaMutates      = "azir.mutates"
 	MetaSchema       = "azir.schema"
+	MetaFreshness    = "azir.freshness"
 	MetaCategory     = "azir.category"
 	MetaConfigSchema = "azir.config_schema"
 	MetaSDK          = "azir.sdk"
@@ -180,7 +181,7 @@ func Serve(ctx context.Context, p Plugin, opts ...Option) error {
 }
 
 func toolMetadata(t Tool) map[string]string {
-	return map[string]string{
+	meta := map[string]string{
 		// The true name, since the endpoint name has had its dots removed.
 		MetaName:        t.Name,
 		MetaDescription: t.Description,
@@ -188,6 +189,10 @@ func toolMetadata(t Tool) map[string]string {
 		MetaMutates:     strconv.FormatBool(t.Mutates),
 		MetaSchema:      string(stripSecretFields(t.Schema, t.Secrets)),
 	}
+	if t.Freshness != nil {
+		meta[MetaFreshness] = t.Freshness.String()
+	}
+	return meta
 }
 
 // serviceMetadata publishes what an administrator needs to configure this

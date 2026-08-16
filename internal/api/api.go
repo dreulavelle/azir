@@ -14,6 +14,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -37,6 +38,10 @@ type Server struct {
 	// Web is the built frontend, embedded in the binary. Nil serves the API
 	// alone, which is what tests want.
 	Web fs.FS
+
+	// Cache serves tool results within the freshness budget each plugin
+	// declares. Nil disables caching entirely.
+	Cache *ToolCache
 }
 
 // actor is the stub identity for this phase.
@@ -349,6 +354,10 @@ func (s *Server) listAudit(w http.ResponseWriter, r *http.Request) {
 type invokeRequest struct {
 	CustomerID string          `json:"customer_id"`
 	Args       json.RawMessage `json:"args,omitempty"`
+	// Refresh bypasses the cache. The UI sets it when a technician opens a
+	// ticket they are about to act on, where a minute of staleness is a
+	// minute too much.
+	Refresh bool `json:"refresh,omitempty"`
 }
 
 func (s *Server) invoke(w http.ResponseWriter, r *http.Request) {
@@ -393,30 +402,74 @@ func (s *Server) invoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-	defer cancel()
+	// The vendor call, wrapped so the cache can decide whether to make it.
+	var toolErr *toolFailure
+	fetch := func(ctx context.Context) (json.RawMessage, error) {
+		callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
 
-	msg, err := s.NC.RequestWithContext(ctx, tool.Subject, payload)
+		msg, err := s.NC.RequestWithContext(callCtx, tool.Subject, payload)
+		if err != nil {
+			s.Log.Warn("tool request failed", "subject", tool.Subject, "error", err)
+			toolErr = &toolFailure{status: http.StatusBadGateway, body: errBody("tool did not respond")}
+			return nil, err
+		}
+		if code := msg.Header.Get("Nats-Service-Error-Code"); code != "" {
+			toolErr = &toolFailure{
+				status: http.StatusBadGateway,
+				body: map[string]string{
+					"error": msg.Header.Get("Nats-Service-Error"),
+					"code":  code,
+				},
+				detail: code,
+			}
+			return nil, errors.New("tool returned an error")
+		}
+		return msg.Data, nil
+	}
+
+	var customerUUID *uuid.UUID
+	if id, err := uuid.Parse(body.CustomerID); err == nil {
+		customerUUID = &id
+	}
+
+	var result Result
+	if s.Cache != nil {
+		result, err = s.Cache.Do(r.Context(), tool, customerUUID, body.Args, body.Refresh, fetch)
+	} else {
+		var raw json.RawMessage
+		raw, err = fetch(r.Context())
+		result = Result{Payload: raw, Source: "live"}
+	}
+
 	if err != nil {
-		s.Log.Warn("tool request failed", "subject", tool.Subject, "error", err)
-		s.recordInvoke(r.Context(), pluginName, toolName, body.CustomerID, audit.OutcomeFailed, "no response")
-		writeJSON(w, http.StatusBadGateway, errBody("tool did not respond"))
+		detail := "no response"
+		status, failBody := http.StatusBadGateway, errBody("tool did not respond")
+		if toolErr != nil {
+			status, failBody, detail = toolErr.status, toolErr.body, toolErr.detail
+		}
+		s.recordInvoke(r.Context(), pluginName, toolName, body.CustomerID, audit.OutcomeFailed, detail)
+		writeJSON(w, status, failBody)
 		return
 	}
 
-	if code := msg.Header.Get("Nats-Service-Error-Code"); code != "" {
-		s.recordInvoke(r.Context(), pluginName, toolName, body.CustomerID, audit.OutcomeFailed, code)
-		writeJSON(w, http.StatusBadGateway, map[string]string{
-			"error": msg.Header.Get("Nats-Service-Error"),
-			"code":  code,
-		})
-		return
-	}
+	s.recordInvoke(r.Context(), pluginName, toolName, body.CustomerID, audit.OutcomeOK, result.Source)
 
-	s.recordInvoke(r.Context(), pluginName, toolName, body.CustomerID, audit.OutcomeOK, "")
+	// How the answer was obtained travels with it. A caller — a person or a
+	// model — reasons differently about a number that is four minutes old than
+	// about one that is live, and it can only do that if it is told.
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Azir-Source", result.Source)
+	w.Header().Set("X-Azir-Age-Seconds", strconv.Itoa(result.AgeSeconds))
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(msg.Data)
+	_, _ = w.Write(result.Payload)
+}
+
+// toolFailure carries an error shape from inside the fetch closure.
+type toolFailure struct {
+	status int
+	body   map[string]string
+	detail string
 }
 
 func (s *Server) recordInvoke(ctx context.Context, pluginName, toolName, customerID, outcome, detail string) {

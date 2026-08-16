@@ -15,6 +15,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
+	"time"
 )
 
 // Handler executes one tool invocation. Returning a [*Error] produces a
@@ -69,7 +71,50 @@ type Tool struct {
 	// Secrets names Schema properties that must never reach the model.
 	Secrets []string
 
+	// Freshness declares how long a result may be reused. Nil means never
+	// cache, which is the right default for anything whose answer is expected
+	// to be live.
+	//
+	// The plugin declares it because only the plugin knows how volatile its
+	// data is: a ticket status changes while you are reading it, a customer's
+	// phone number does not. Core implements it, because caching is generic
+	// and every plugin would otherwise reinvent it slightly differently.
+	Freshness *Freshness
+
 	Handler Handler
+}
+
+// Freshness is a two-level staleness budget.
+//
+// Below Soft a cached result is served immediately. Between Soft and Hard it is
+// still served immediately, and a refresh runs behind it — the caller gets a
+// fast answer and the next one gets a current answer. Beyond Hard the caller
+// waits for fresh data.
+//
+// Serving something slightly stale is fine. Serving it while implying it is
+// live is not, so every cached response carries the age of the data.
+type Freshness struct {
+	Soft time.Duration
+	Hard time.Duration
+}
+
+// String renders a freshness budget for service metadata.
+func (f Freshness) String() string {
+	return f.Soft.String() + "/" + f.Hard.String()
+}
+
+// ParseFreshness reads what String wrote.
+func ParseFreshness(s string) (Freshness, bool) {
+	soft, hard, ok := strings.Cut(s, "/")
+	if !ok {
+		return Freshness{}, false
+	}
+	sd, err1 := time.ParseDuration(soft)
+	hd, err2 := time.ParseDuration(hard)
+	if err1 != nil || err2 != nil {
+		return Freshness{}, false
+	}
+	return Freshness{Soft: sd, Hard: hd}, true
 }
 
 // Plugin describes a whole service.

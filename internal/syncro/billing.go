@@ -4,6 +4,7 @@ import (
 	"context"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/dreulavelle/azir/pkg/plugin"
 )
@@ -236,6 +237,16 @@ func truthy(v any) bool {
 // that fails with an opaque 401 at call time is a bad experience for both the
 // technician and whoever has to diagnose it. Declaring requirements lets a
 // tool say precisely which permission is missing instead.
+// KnownTools returns every tool the permission map accounts for, so a test can
+// assert the two never drift apart.
+func KnownTools() []string {
+	out := make([]string, 0, len(grantsFor))
+	for tool := range grantsFor {
+		out = append(out, tool)
+	}
+	return out
+}
+
 var grantsFor = map[string][]string{
 	"customers.search":   {"customer.read"},
 	"customers.get":      {"customer.read"},
@@ -250,6 +261,24 @@ var grantsFor = map[string][]string{
 	"docs.search":  nil,
 	"time.entries": nil,
 	"access.check": nil,
+}
+
+// cachedAccess returns the permission matrix, refreshing at most once a
+// minute. Permissions change when an administrator edits a token, which is
+// rare and never urgent.
+func (c *Client) cachedAccess(ctx context.Context) (Access, error) {
+	c.accessMu.Lock()
+	defer c.accessMu.Unlock()
+
+	if c.accessOK && time.Since(c.accessAt) < time.Minute {
+		return c.access, nil
+	}
+	access, err := c.CheckAccess(ctx)
+	if err != nil {
+		return Access{}, err
+	}
+	c.access, c.accessAt, c.accessOK = access, time.Now(), true
+	return access, nil
 }
 
 // ToolAvailability reports which tools the current token can actually use.
@@ -287,7 +316,10 @@ func (c *Client) RequireGrants(ctx context.Context, tool string) error {
 	if len(needs) == 0 {
 		return nil
 	}
-	access, err := c.CheckAccess(ctx)
+	// Cached: preflight and every guarded call ask the same question, and
+	// spending a vendor request on it each time would waste the rate limit
+	// this cache exists to protect.
+	access, err := c.cachedAccess(ctx)
 	if err != nil {
 		// If permissions cannot be read, let the call proceed: a working tool
 		// blocked by a failed precondition check is worse than a clear 401.

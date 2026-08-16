@@ -174,6 +174,13 @@ func run(log *slog.Logger) error {
 		assets = nil
 	}
 
+	toolCache := api.NewToolCache(db, log)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		toolCache.Prune(ctx, time.Hour, 7*24*time.Hour)
+	}()
+
 	srv := &http.Server{
 		Addr: envOr("AZIR_HTTP_ADDR", ":8080"),
 		Handler: (&api.Server{
@@ -184,6 +191,7 @@ func run(log *slog.Logger) error {
 			Audit: recorder,
 			Log:   log,
 			Web:   assets,
+			Cache: toolCache,
 		}).Routes(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
