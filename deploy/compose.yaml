@@ -1,0 +1,89 @@
+name: azir
+
+services:
+  nats:
+    image: nats:2.12-alpine
+    # JetStream carries ingest, events and audit from phase 2 onward; it is
+    # enabled now so the stack never has to be reconfigured underneath data.
+    command:
+      - "--jetstream"
+      - "--store_dir=/data"
+      - "--http_port=8222"
+    ports:
+      - "4222:4222"   # client
+      - "8222:8222"   # monitoring
+    volumes:
+      - nats-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: azir
+      POSTGRES_PASSWORD: azir_dev_only
+      POSTGRES_DB: azir
+    ports:
+      # Published for psql access during development. Defaults off 5432 so a
+      # Postgres already running on the host does not collide.
+      - "${AZIR_PG_PORT:-5433}:5432"
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U azir -d azir"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  core:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        CMD: azir-core
+    environment:
+      NATS_URL: nats://nats:4222
+      AZIR_HTTP_ADDR: ":8080"
+      DATABASE_URL: postgres://azir:azir_dev_only@postgres:5432/azir?sslmode=disable
+    ports:
+      - "8080:8080"
+    depends_on:
+      nats:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  plugin-echo:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        CMD: plugin-echo
+    environment:
+      NATS_URL: nats://nats:4222
+      # Set to 1 to watch the read-only invariant refuse to boot.
+      AZIR_ECHO_TRY_MUTATE: "0"
+    depends_on:
+      nats:
+        condition: service_healthy
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ../web
+      dockerfile: Dockerfile
+    environment:
+      # The gateway core exposes; Vite proxies /api to it in dev.
+      VITE_API_BASE: http://localhost:8080
+    ports:
+      - "5173:5173"
+    depends_on:
+      - core
+
+volumes:
+  nats-data:
+  pg-data:
