@@ -38,3 +38,7 @@ logs: ## Tail stack logs
 .PHONY: smoke
 smoke: ## Verify discovery and a tool round-trip against a running stack
 	@./scripts/smoke.sh
+
+.PHONY: keygen
+keygen: ## Generate a master key for AZIR_MASTER_KEY
+	@openssl rand -base64 32

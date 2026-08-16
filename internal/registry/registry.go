@@ -55,14 +55,26 @@ type Snapshot struct {
 	At         time.Time           `json:"at"`
 }
 
+// Observer is notified of every tool seen in discovery, so the approval gate
+// can record it as a candidate. Discovery proposes; it never grants.
+type Observer func(ctx context.Context, plugin, tool string, provides []string) error
+
 // Registry polls service discovery and caches the result.
 type Registry struct {
 	nc     *nats.Conn
 	log    *slog.Logger
 	window time.Duration
 
-	mu   sync.RWMutex
-	snap Snapshot
+	mu       sync.RWMutex
+	snap     Snapshot
+	observer Observer
+}
+
+// SetObserver installs a callback invoked for each discovered tool.
+func (r *Registry) SetObserver(o Observer) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.observer = o
 }
 
 // New returns a Registry. The window is how long discovery waits to collect
@@ -156,7 +168,25 @@ func (r *Registry) Refresh(ctx context.Context) error {
 
 	r.mu.Lock()
 	r.snap = Snapshot{Plugins: plugins, Capability: caps, At: time.Now().UTC()}
+	observer := r.observer
 	r.mu.Unlock()
+
+	// Recording candidates must not fail discovery: core stays useful with a
+	// stale approval view, but not with no registry at all.
+	if observer != nil {
+		for _, p := range plugins {
+			for _, t := range p.Tools {
+				provides := make([]string, len(t.Provides))
+				for i, c := range t.Provides {
+					provides[i] = string(c)
+				}
+				if err := observer(ctx, p.Name, t.Name, provides); err != nil {
+					r.log.Warn("could not record discovered tool",
+						"plugin", p.Name, "tool", t.Name, "error", err)
+				}
+			}
+		}
+	}
 	return nil
 }
 

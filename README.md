@@ -10,9 +10,41 @@ already knowing all of it.
 
 ## Status
 
-**Phase 0 — skeleton.** No business logic. The plumbing is real and proven:
-plugins register themselves with NATS service discovery, core finds them, and
-tool calls round-trip. Everything else is scaffolding waiting for phase 1.
+**Phase 1.** No business logic yet — no Syncro, no 3CX, no model. What exists
+is the foundation everything else needs: a credential vault, the customer
+spine, the capability approval gate, an audit trail, and redaction that is
+tested rather than asserted.
+
+## One container
+
+Azir is a single binary in a single image. It embeds a NATS server with
+JetStream, a SQLite store, the HTTP API, the built frontend, and a supervisor
+that runs bundled plugins as child processes.
+
+That is a deployment decision, not an architectural one. Plugins are still
+separate processes speaking NATS, so crash isolation is unchanged and a
+third-party plugin can still run as its own container against the same server.
+Setting `NATS_URL` points everything at an external cluster, so the
+single-binary default never becomes a ceiling.
+
+Three choices worth knowing about:
+
+**SQLite, not Postgres.** `modernc.org/sqlite` is pure Go, so the binary is
+static and the image is small. For a handful of technicians the write volume is
+trivial and a backup is a file copy. The cost is real: no `pgvector`, so the
+semantic search in phase 5 will brute-force cosine similarity in Go. At MSP
+corpus sizes that is tens of milliseconds, and the store is behind an interface
+if it ever needs to move.
+
+**A Go supervisor, not s6.** A child's stdout is piped through the same
+redacting log handler core uses, so a plugin that logs carelessly still cannot
+put a credential on the container's stdout. An external init system would write
+those bytes straight out and silently undo the guarantee the rest of the system
+is built around. It also needs no root and no second init.
+
+**No entrypoint script.** The binary validates its own configuration, creates
+its own directories, and fails with real errors. A shell wrapper would add a
+moving part to a design whose point is having fewer of them.
 
 ## Design rules
 
@@ -30,18 +62,26 @@ plugin, server-side, and every handler return value passes the SDK redactor
 before reaching the wire.
 
 **Discovery proposes; an administrator approves.** A plugin appearing in `$SRV`
-becomes a candidate capability, not a granted one. (The approval gate lands in
-phase 1; today discovery is direct.)
+becomes a candidate capability, not a granted one — it lands as `pending` and
+is unusable until someone activates it. Without this, anyone able to start a
+container could extend what Azir can do. Rediscovery never overwrites a
+decision, so restarting a plugin cannot launder a rejection back into pending.
 
 ## Layout
 
 ```
-cmd/azir-core/      hub: discovery, HTTP, tool round-trip
-cmd/plugin-echo/    diagnostic plugin proving the transport
-internal/registry/  service discovery and the capability index
-pkg/plugin/         the SDK — importable from outside this module
-web/                React + TypeScript frontend
-deploy/             Docker Compose stack
+cmd/azir-core/        the whole application
+cmd/plugin-echo/      diagnostic plugin proving the transport
+internal/api/         HTTP surface and SPA serving
+internal/audit/       append-only trail, JetStream to SQLite
+internal/logging/     the redacting slog handler
+internal/natsd/       embedded NATS server
+internal/registry/    service discovery and the capability index
+internal/store/       SQLite: spine, credentials, capabilities, audit
+internal/supervisor/  bundled plugins as supervised children
+internal/vault/       envelope encryption and key rotation
+pkg/plugin/           the SDK — importable from outside this module
+web/                  React + TypeScript, embedded into the binary
 ```
 
 `pkg/` rather than `internal/` for the SDK is deliberate: it is the one package
@@ -50,15 +90,29 @@ that must be importable from a plugin living in another repository.
 ## Running it
 
 ```sh
-make up      # build and start nats, postgres, core, plugin-echo, web
-make smoke   # verify discovery, transport and redaction
+make keygen              # generate a master key
+export AZIR_MASTER_KEY=…
+make up                  # build and start the one container
+make smoke               # eleven checks against the running stack
 make down
 ```
 
-Then open <http://localhost:5173>.
+Then open <http://localhost:8080> — API and UI on the same port.
 
-Postgres publishes on **5433** by default so it does not collide with a
-Postgres already running on the host. Override with `AZIR_PG_PORT`.
+Everything durable lives in one volume at `/var/lib/azir`: the SQLite database
+and JetStream's store. That directory is the entire backup surface.
+
+### Configuration
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `AZIR_MASTER_KEY` | — | base64 32-byte key sealing the vault. Required. |
+| `AZIR_MASTER_KEYS` | — | `1:<b64>,2:<b64>` when more than one key version is loaded |
+| `AZIR_DATA_DIR` | `/var/lib/azir` | SQLite and JetStream storage |
+| `AZIR_HTTP_ADDR` | `:8080` | API and UI listener |
+| `NATS_URL` | embedded | set to use an external NATS instead |
+| `AZIR_PLUGIN_DIR` | `/usr/local/lib/azir/plugins` | bundled plugins to supervise |
+| `AZIR_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 
 ## Development
 
@@ -67,8 +121,15 @@ make check   # gofmt, go vet, go test -race
 make build   # binaries into bin/
 ```
 
-Tests run an in-process NATS server, so the discovery round-trip is verified
-against the real protocol without Docker.
+Tests need no external services: NATS runs in-process and SQLite writes to a
+temp directory, so the discovery round-trip and every SQL path are verified
+against the real implementations.
+
+The canary tests are the ones that matter. A sentinel credential is pushed
+through every route that could leak it — messages, attributes, errors, groups,
+derived loggers, the database file — and asserted absent. One test deliberately
+proves the *detector* works, so a green suite means redaction ran rather than
+that the check was vacuous.
 
 ## Writing a plugin
 

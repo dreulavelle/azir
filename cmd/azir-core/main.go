@@ -1,29 +1,45 @@
-// Command azir-core is the Azir hub: it discovers plugins from the NATS
-// service registry, exposes that view over HTTP, and round-trips tool calls.
+// Command azir-core is Azir.
 //
-// Phase 0 deliberately contains no business logic. Its job is to prove the
-// plumbing: a plugin container appears in discovery, and a call reaches it.
+// One binary, one container. It embeds a NATS server with JetStream, the
+// SQLite store, the HTTP API, the built frontend, and a supervisor for
+// bundled plugins. Plugins remain separate processes speaking NATS, so the
+// architecture is unchanged — there is simply nothing else to deploy.
+//
+// Point NATS_URL at an external cluster to opt out of the embedded server.
 package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/nats-io/nats.go"
 
+	"github.com/dreulavelle/azir/internal/api"
+	"github.com/dreulavelle/azir/internal/audit"
+	"github.com/dreulavelle/azir/internal/logging"
+	"github.com/dreulavelle/azir/internal/natsd"
 	"github.com/dreulavelle/azir/internal/registry"
-	"github.com/dreulavelle/azir/pkg/plugin"
+	"github.com/dreulavelle/azir/internal/store"
+	"github.com/dreulavelle/azir/internal/supervisor"
+	"github.com/dreulavelle/azir/internal/vault"
+	"github.com/dreulavelle/azir/web"
 )
 
 func main() {
-	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	// Every logger in this process — including the ones carrying supervised
+	// plugins' stdout — descends from the redacting handler, so a credential
+	// cannot reach the container's output even by accident.
+	redactor := logging.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel()}))
+	log := slog.New(redactor)
 	slog.SetDefault(log)
 
 	if err := run(log); err != nil {
@@ -36,8 +52,43 @@ func run(log *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	natsURL := envOr("NATS_URL", nats.DefaultURL)
-	addr := envOr("AZIR_HTTP_ADDR", ":8080")
+	dataDir := envOr("AZIR_DATA_DIR", "/var/lib/azir")
+
+	v, err := vault.FromEnv()
+	if err != nil {
+		return err
+	}
+	log.Info("vault ready", "key_version", v.CurrentVersion())
+
+	db, err := store.Open(ctx, envOr("AZIR_DB_PATH", filepath.Join(dataDir, "azir.db")))
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	if err := db.Migrate(ctx); err != nil {
+		return err
+	}
+	log.Info("store ready", "path", db.Path())
+
+	// Embedded NATS unless an external one is configured.
+	natsURL := os.Getenv("NATS_URL")
+	if natsURL == "" {
+		embedded, err := natsd.Start(natsd.Options{
+			StoreDir:    filepath.Join(dataDir, "nats"),
+			Host:        envOr("AZIR_NATS_HOST", "127.0.0.1"),
+			Port:        envInt("AZIR_NATS_PORT", 4222),
+			MonitorPort: envInt("AZIR_NATS_MONITOR_PORT", 0),
+			Logger:      log,
+		})
+		if err != nil {
+			return err
+		}
+		defer embedded.Shutdown()
+		natsURL = embedded.URL()
+	} else {
+		log.Info("using external nats", "url", natsURL)
+	}
 
 	nc, err := nats.Connect(natsURL,
 		nats.Name("azir-core"),
@@ -54,20 +105,71 @@ func run(log *slog.Logger) error {
 		return err
 	}
 	defer nc.Drain() //nolint:errcheck // best effort on shutdown
-	log.Info("connected to nats", "url", nc.ConnectedUrl())
+
+	recorder, js, err := audit.Setup(ctx, nc, log)
+	if err != nil {
+		return err
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := audit.Mirror(ctx, js, db, log); err != nil && ctx.Err() == nil {
+			log.Error("audit mirror stopped", "error", err)
+		}
+	}()
 
 	reg := registry.New(nc, log, 500*time.Millisecond)
-	go reg.Run(ctx, 10*time.Second)
+	// Discovery proposes: every tool seen becomes a candidate awaiting an
+	// administrator's decision.
+	reg.SetObserver(db.Observe)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		reg.Run(ctx, 10*time.Second)
+	}()
+
+	// Bundled plugins run as supervised children, sharing this process's
+	// lifecycle and its redacting logger. Third-party plugins still run
+	// wherever they like and connect to the same NATS.
+	children, err := supervisor.Discover(envOr("AZIR_PLUGIN_DIR", "/usr/local/lib/azir/plugins"))
+	if err != nil {
+		log.Warn("could not scan plugin directory", "error", err)
+	}
+	for i := range children {
+		children[i].Env = []string{"NATS_URL=" + natsURL}
+	}
+	sup := supervisor.New(log, children...)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		sup.Run(ctx)
+	}()
+
+	assets, err := web.Assets()
+	if err != nil {
+		log.Warn("frontend assets unavailable; serving api only", "error", err)
+		assets = nil
+	}
 
 	srv := &http.Server{
-		Addr:              addr,
-		Handler:           routes(nc, reg, log),
+		Addr: envOr("AZIR_HTTP_ADDR", ":8080"),
+		Handler: (&api.Server{
+			NC:    nc,
+			Reg:   reg,
+			DB:    db,
+			Creds: store.NewCredentials(db, v),
+			Audit: recorder,
+			Log:   log,
+			Web:   assets,
+		}).Routes(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
 	errCh := make(chan error, 1)
 	go func() {
-		log.Info("http listening", "addr", addr)
+		log.Info("azir listening", "addr", srv.Addr, "plugins", len(children))
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
@@ -78,119 +180,51 @@ func run(log *slog.Logger) error {
 		return err
 	case <-ctx.Done():
 		log.Info("shutting down")
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		return srv.Shutdown(shutdownCtx)
-	}
-}
-
-func routes(nc *nats.Conn, reg *registry.Registry, log *slog.Logger) http.Handler {
-	mux := http.NewServeMux()
-
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		status := "ok"
-		code := http.StatusOK
-		if !nc.IsConnected() {
-			status, code = "nats disconnected", http.StatusServiceUnavailable
-		}
-		writeJSON(w, code, map[string]string{"status": status})
-	})
-
-	// The discovered view of the deployment. In phase 1 this gains an
-	// approved/pending distinction; today everything discovered is a candidate.
-	mux.HandleFunc("GET /api/registry", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, reg.Snapshot())
-	})
-
-	// Which tools satisfy a capability. Features use this to report themselves
-	// unavailable with a reason rather than failing opaquely.
-	mux.HandleFunc("GET /api/capabilities/{cap}", func(w http.ResponseWriter, r *http.Request) {
-		c := plugin.Capability(r.PathValue("cap"))
-		writeJSON(w, http.StatusOK, map[string]any{
-			"capability": c,
-			"known":      c.Valid(),
-			"providers":  reg.Providers(c),
-		})
-	})
-
-	mux.HandleFunc("POST /api/invoke/{plugin}/{tool}", func(w http.ResponseWriter, r *http.Request) {
-		invoke(w, r, nc, reg, log)
-	})
-
-	return mux
-}
-
-// invokeRequest is the HTTP shape of a tool call. Actor is stubbed here; phase
-// 6 supplies it from the authenticated session, and it is never trusted from
-// the client.
-type invokeRequest struct {
-	CustomerID string          `json:"customer_id"`
-	Args       json.RawMessage `json:"args,omitempty"`
-}
-
-func invoke(w http.ResponseWriter, r *http.Request, nc *nats.Conn, reg *registry.Registry, log *slog.Logger) {
-	pluginName := r.PathValue("plugin")
-	toolName := r.PathValue("tool")
-
-	tool, ok := reg.Lookup(pluginName, toolName)
-	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{
-			"error": "no such tool in the current registry snapshot",
-		})
-		return
 	}
 
-	var body invokeRequest
-	if r.ContentLength > 0 {
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
-			return
-		}
-	}
-
-	payload, err := json.Marshal(plugin.Request{
-		CustomerID: body.CustomerID,
-		Actor:      plugin.Actor{UserID: "phase0", Role: "admin"},
-		Args:       body.Args,
-	})
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "encode failed"})
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-
-	msg, err := nc.RequestWithContext(ctx, tool.Subject, payload)
-	if err != nil {
-		log.Warn("tool request failed", "subject", tool.Subject, "error", err)
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "tool did not respond"})
-		return
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Error("http shutdown", "error", err)
 	}
 
-	// micro reports handler errors via headers rather than the body.
-	if code := msg.Header.Get("Nats-Service-Error-Code"); code != "" {
-		writeJSON(w, http.StatusBadGateway, map[string]string{
-			"error": msg.Header.Get("Nats-Service-Error"),
-			"code":  code,
-		})
-		return
+	// Wait for the supervisor to reap children before the embedded NATS goes
+	// away underneath them.
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-shutdownCtx.Done():
+		log.Warn("shutdown timed out waiting for background workers")
 	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(msg.Data)
+	return nil
 }
 
-func writeJSON(w http.ResponseWriter, code int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(v)
+func logLevel() slog.Level {
+	switch envOr("AZIR_LOG_LEVEL", "info") {
+	case "debug":
+		return slog.LevelDebug
+	case "warn":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
 }
 
 func envOr(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return fallback
+}
+
+func envInt(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
 	}
 	return fallback
 }

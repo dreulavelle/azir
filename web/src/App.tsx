@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
+type Status = "pending" | "approved" | "rejected";
+
 type Tool = {
   plugin: string;
   name: string;
@@ -7,6 +9,7 @@ type Tool = {
   description: string;
   provides: string[] | null;
   mutates: boolean;
+  status: Status;
 };
 
 type Plugin = {
@@ -53,12 +56,23 @@ export function App() {
       const res = await fetch(`/api/invoke/${tool.plugin}/${tool.name}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ customer_id: "cust_demo", args: {} }),
+        body: JSON.stringify({ args: {} }),
       });
       setResult(JSON.stringify(await res.json(), null, 2));
     } catch (e) {
       setResult(e instanceof Error ? e.message : "call failed");
     }
+  }
+
+  // Discovery proposes; an administrator disposes. Nothing a plugin announces
+  // is usable until someone here decides it should be.
+  async function decide(tool: Tool, status: Status) {
+    await fetch(`/api/capabilities/${tool.plugin}/${tool.name}/decide`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status }),
+    });
+    await load();
   }
 
   const capabilities = Object.entries(snapshot?.capabilities ?? {});
@@ -96,7 +110,7 @@ export function App() {
               <tr>
                 <th>Tool</th>
                 <th>Provides</th>
-                <th>Subject</th>
+                <th>Status</th>
                 <th />
               </tr>
             </thead>
@@ -108,9 +122,20 @@ export function App() {
                     <div className="muted small">{t.description}</div>
                   </td>
                   <td className="mono small">{(t.provides ?? []).join(", ")}</td>
-                  <td className="mono small">{t.subject}</td>
                   <td>
-                    <button onClick={() => void invoke(t)}>Call</button>
+                    <span className={`status status-${t.status}`}>{t.status}</span>
+                  </td>
+                  <td className="actions">
+                    {t.status === "approved" ? (
+                      <>
+                        <button onClick={() => void invoke(t)}>Call</button>
+                        <button className="ghost" onClick={() => void decide(t, "rejected")}>
+                          Revoke
+                        </button>
+                      </>
+                    ) : (
+                      <button onClick={() => void decide(t, "approved")}>Approve</button>
+                    )}
                   </td>
                 </tr>
               ))}

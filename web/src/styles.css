@@ -177,3 +177,40 @@ pre {
   font-size: 12.5px;
   border: 1px solid var(--rule);
 }
+
+.status {
+  font-family: var(--mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  border-radius: 3px;
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+
+/* Approval state has to read at a glance: it is the difference between a
+   tool the model can reach and one it cannot. */
+.status-approved {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.status-pending {
+  color: var(--ink-mid);
+  background: var(--sunk);
+}
+.status-rejected {
+  color: var(--alert);
+  background: color-mix(in srgb, var(--alert) 14%, transparent);
+}
+
+.actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+button.ghost {
+  color: var(--ink-mid);
+  background: transparent;
+  border: 1px solid var(--rule);
+}

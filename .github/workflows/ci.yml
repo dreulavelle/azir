@@ -1,0 +1,65 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+          cache: true
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-clean:"; echo "$unformatted"; exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      # The canary test is the reason this job exists. It asserts that a
+      # sentinel credential never reaches a log line, a persisted row, or an
+      # outbound payload — turning "credentials do not leak" from a claim into
+      # a check that fails the build.
+      - name: test
+        run: go test ./... -race -count=1
+
+      - name: no canary in the built binaries
+        run: |
+          go build -o /tmp/azir-bin ./cmd/...
+          if grep -rq "AZIR-CANARY" /tmp/azir-bin 2>/dev/null; then
+            echo "a canary sentinel was compiled into a shipped binary"; exit 1
+          fi
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+      - run: npm install
+      - run: npm run typecheck
+      - run: npm run build
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: build the single image
+        run: docker build -t azir:ci .
+      - name: it starts, serves the ui, and supervises its plugins
+        run: ./scripts/ci-image-check.sh azir:ci
