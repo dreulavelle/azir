@@ -111,13 +111,16 @@ func definition() plugin.Plugin {
 				Summary:   "Finds tickets by text, status or customer. No message contents.",
 				Freshness: &plugin.Freshness{Soft: 60 * time.Second, Hard: 5 * time.Minute},
 				Description: "Search tickets by free text, status, or customer. Returns summaries without " +
-					"comment threads; use tickets.get for the full conversation on one ticket.",
+					"comment threads; use tickets.get for the full conversation on one ticket. " +
+					"Set open_only when the question is about work still outstanding — resolved " +
+					"tickets otherwise fill the page and push older open ones out of reach.",
 				Provides: []plugin.Capability{plugin.CapWorkItemsSearch},
 				Schema: json.RawMessage(`{
 					"type": "object",
 					"properties": {
 						"query": {"type": "string", "description": "Free-text search across subject and body"},
 						"status": {"type": "string", "description": "Filter by ticket status, e.g. New, In Progress, Resolved"},
+						"open_only": {"type": "boolean", "description": "Drop tickets whose status means the work is finished, reading further into the list to make up the difference"},
 						"customer_id": {"type": "integer", "description": "Restrict to one Syncro customer"},
 						"page": {"type": "integer", "minimum": 1, "default": 1},
 						"per_page": {"type": "integer", "minimum": 1, "maximum": 100, "default": 25}
@@ -449,6 +452,7 @@ func searchTickets(ctx context.Context, req plugin.Request) (any, error) {
 		pageArgs
 		Query      string `json:"query"`
 		Status     string `json:"status"`
+		OpenOnly   bool   `json:"open_only"`
 		CustomerID int64  `json:"customer_id"`
 	}](req)
 	if err != nil {
@@ -473,6 +477,7 @@ func searchTickets(ctx context.Context, req plugin.Request) (any, error) {
 	return c.SearchTickets(ctx, syncro.TicketSearch{
 		Query:      a.Query,
 		Status:     a.Status,
+		OpenOnly:   a.OpenOnly,
 		CustomerID: customerID,
 		Page:       a.Page,
 		PerPage:    a.PerPage,

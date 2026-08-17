@@ -33,6 +33,10 @@ type Ticket struct {
 	AssignedTo  string `json:"assigned_to,omitempty"`
 	CreatedAt   string `json:"created_at,omitempty"`
 	UpdatedAt   string `json:"updated_at,omitempty"`
+	// URL is where a person opens this ticket in Syncro. Stamped by the client,
+	// which knows the account's own address; a trimmed record has no idea where
+	// it came from.
+	URL string `json:"url,omitempty"`
 	// Comments are only populated by a single-ticket fetch. A search returning
 	// every comment for every hit would swamp the context window.
 	Comments []Comment `json:"comments,omitempty"`

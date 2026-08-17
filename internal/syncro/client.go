@@ -30,6 +30,11 @@ const maxPerPage = 100
 type Client struct {
 	http *plugin.HTTPClient
 
+	// site is where a person opens this account in a browser, kept so a result
+	// can carry a link back to the record it came from. Blank in tests, which
+	// build a client against an arbitrary base URL and have no site to name.
+	site string
+
 	// The permission matrix, cached: preflight and every guarded call ask the
 	// same question, and an administrator editing a token is rare.
 	accessMu sync.Mutex
@@ -80,7 +85,7 @@ func New(subdomain string, credential CredentialFunc) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Client{http: httpClient}, nil
+	return &Client{http: httpClient, site: "https://" + subdomain + ".syncromsp.com"}, nil
 }
 
 // NewForTest builds a client against an arbitrary base URL.
@@ -194,7 +199,47 @@ func (c *Client) GetCustomer(ctx context.Context, id int64) (Customer, error) {
 // returning every thread for every hit would swamp the context window, and the
 // caller can fetch the one ticket it cares about.
 func (c *Client) SearchTickets(ctx context.Context, opts TicketSearch) (Result[Ticket], error) {
-	q := paging(opts.Page, opts.PerPage)
+	if !opts.OpenOnly {
+		return c.ticketPage(ctx, opts, opts.Page)
+	}
+
+	want := opts.PerPage
+	if want <= 0 || want > maxPerPage {
+		want = maxPerPage
+	}
+	from := opts.Page
+	if from <= 0 {
+		from = 1
+	}
+
+	out := Result[Ticket]{Items: []Ticket{}}
+	for read := range maxOpenScan {
+		got, err := c.ticketPage(ctx, opts, from+read)
+		if err != nil {
+			return Result[Ticket]{}, err
+		}
+		for _, t := range got.Items {
+			if !IsDone(t.Status) {
+				out.Items = append(out.Items, t)
+			}
+		}
+		// Page reports how far through Syncro's own list this reached, which is
+		// what a caller asking for more has to say next. It is deliberately not
+		// a count of open tickets: nobody knows that without reading all of
+		// them, and inventing the number would be the same lie as before.
+		out.Page = got.Page
+
+		done := len(got.Items) == 0 || got.Page.Page >= got.Page.TotalPages
+		if len(out.Items) >= want || done {
+			break
+		}
+	}
+	return out, nil
+}
+
+// ticketPage fetches exactly one page of Syncro's ticket list.
+func (c *Client) ticketPage(ctx context.Context, opts TicketSearch, page int) (Result[Ticket], error) {
+	q := paging(page, opts.PerPage)
 	if opts.Query != "" {
 		q.Set("query", opts.Query)
 	}
@@ -215,10 +260,31 @@ func (c *Client) SearchTickets(ctx context.Context, opts TicketSearch) (Result[T
 
 	out := Result[Ticket]{Items: make([]Ticket, 0, len(body.Tickets))}
 	for _, w := range body.Tickets {
-		out.Items = append(out.Items, w.trim(false))
+		out.Items = append(out.Items, c.withLink(w.trim(false)))
 	}
-	out.Page = pageOf(body.Meta, opts.Page, opts.PerPage)
+	out.Page = pageOf(body.Meta, page, opts.PerPage)
 	return out, nil
+}
+
+// maxOpenScan bounds how many of Syncro's pages an open-only search will read.
+//
+// Filtering belongs here rather than in the browser because the alternative
+// spends the whole page budget on tickets nobody will act on: a hundred rows
+// fetched, eighty of them resolved, and the open ticket from three months ago —
+// the one most worth finding — never reached at all. Five pages fills a screen
+// from any realistic queue and stays far inside Syncro's rate limit.
+const maxOpenScan = 5
+
+// withLink stamps a ticket with where a person can open it in Syncro.
+//
+// A technician reading a ticket here regularly needs to do something to it that
+// Azir deliberately cannot, and the alternative to a link is retyping a number
+// into another tab.
+func (c *Client) withLink(t Ticket) Ticket {
+	if c.site != "" && t.ID > 0 {
+		t.URL = c.site + "/tickets/" + strconv.FormatInt(t.ID, 10)
+	}
+	return t
 }
 
 // TicketSearch are the filters SearchTickets understands.
@@ -226,8 +292,11 @@ type TicketSearch struct {
 	Query      string
 	CustomerID int64
 	Status     string
-	Page       int
-	PerPage    int
+	// OpenOnly drops tickets whose status means the work is finished, reading
+	// further into Syncro's list to make up the difference.
+	OpenOnly bool
+	Page     int
+	PerPage  int
 }
 
 // GetTicket returns one ticket including its comment thread.
@@ -238,7 +307,7 @@ func (c *Client) GetTicket(ctx context.Context, id int64) (Ticket, error) {
 	if err := c.get(ctx, "/tickets/"+strconv.FormatInt(id, 10), nil, &body); err != nil {
 		return Ticket{}, err
 	}
-	return body.Ticket.trim(true), nil
+	return c.withLink(body.Ticket.trim(true)), nil
 }
 
 // ListAssets returns a page of customer assets.
