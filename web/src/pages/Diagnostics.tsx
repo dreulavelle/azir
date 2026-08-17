@@ -182,6 +182,9 @@ function Collect({ onDone }: { onDone: () => void }) {
   const [customers, setCustomers] = useState<Customer[] | null>(null);
   const [customerId, setCustomerId] = useState("");
   const [busy, setBusy] = useState<"upload" | "pull" | null>(null);
+  // Assumed ready until the registry says otherwise, so a slow load never
+  // makes a working button look broken.
+  const [collecting, setCollecting] = useState<"ready" | "pending" | "absent">("ready");
   const picker = useRef<HTMLInputElement>(null);
   const toast = useToast();
 
@@ -196,6 +199,31 @@ function Collect({ onDone }: { onDone: () => void }) {
       .customers()
       .then(setCustomers)
       .catch(() => setCustomers([]));
+
+    /*
+      Whether collecting is switched on at all.
+
+      Every tool is discovered before it is allowed, and between those two
+      moments the button is present and refused. Finding that out by pressing
+      it — and being told the phone system could not be read — sends somebody
+      to look at a PBX that is perfectly well. Better to say so on the face of
+      the control, before it is worth pressing.
+    */
+    api
+      .registry()
+      .then((reg) => {
+        const collects = reg.plugins
+          .flatMap((p) => p.tools)
+          .filter((tool) => tool.provides?.includes("phone_system.capture"));
+        setCollecting(
+          collects.length === 0
+            ? "absent"
+            : collects.some((tool) => tool.status === "approved")
+              ? "ready"
+              : "pending",
+        );
+      })
+      .catch(() => setCollecting("ready"));
   }, []);
 
   function announce(findings: Finding[], prefix: string) {
@@ -237,9 +265,14 @@ function Collect({ onDone }: { onDone: () => void }) {
       }
       onDone();
     } catch (e) {
-      toast("That phone system could not be read", {
-        tone: "bad",
-        detail: e instanceof Error ? e.message : undefined,
+      // An unapproved capability is not a broken phone system, and telling
+      // somebody it is sends them to look at the PBX for a problem that is in
+      // Azir's own settings. The server distinguishes them; so should this.
+      const reason = e instanceof Error ? e.message : "";
+      const waiting = reason.includes("approved first");
+      toast(waiting ? "Not approved yet" : "That phone system could not be read", {
+        tone: waiting ? "info" : "bad",
+        detail: reason || undefined,
       });
     } finally {
       setBusy(null);
@@ -279,9 +312,17 @@ function Collect({ onDone }: { onDone: () => void }) {
           ))}
         </Picker>
       </label>
-      <Button disabled={busy !== null || !customerId} onClick={() => void pull()}>
+      <Button
+        disabled={busy !== null || !customerId || collecting !== "ready"}
+        onClick={() => void pull()}
+      >
         {busy === "pull" ? "Collecting… this can take minutes" : "Collect from their PBX"}
       </Button>
+      {collecting === "pending" && (
+        <span className="text-xs text-attention">
+          Needs approving in Settings → Capabilities first.
+        </span>
+      )}
 
       <span className="w-full text-xs text-ink-faint sm:w-auto">
         The bundle is read and discarded either way. Findings are kept for 14

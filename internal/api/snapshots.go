@@ -408,6 +408,23 @@ func (s *Server) pullSnapshot(w http.ResponseWriter, r *http.Request, actor iden
 	}
 	raw, err := s.readForCustomer(r.Context(), actor, string(plugin.CapPhoneCapture), customerID, args)
 	if err != nil {
+		/*
+			A capability nobody has approved is not a phone system that failed.
+
+			Answering it as a bad gateway sent somebody looking at their PBX for
+			a problem that was in Azir's own settings, and the message named a
+			capability rather than the thing to do about it. Approval is the
+			deliberate gate every tool passes through once; it should say so and
+			say where.
+		*/
+		if waiting, pending := s.awaitingApproval(r.Context(), string(plugin.CapPhoneCapture)); pending {
+			writeJSON(w, http.StatusForbidden, map[string]string{
+				"error": "Collecting a bundle needs " + waiting + " approved first. " +
+					"An administrator can do that in Settings, under Capabilities.",
+				"awaiting_approval": waiting,
+			})
+			return
+		}
 		writeJSON(w, http.StatusBadGateway, errBody(err.Error()))
 		return
 	}
@@ -537,4 +554,32 @@ func (s *Server) readForCustomer(
 	}
 	s.recordInvoke(ctx, actor, tool.Plugin, tool.Name, "", audit.OutcomeOK, "")
 	return msg.Data, nil
+}
+
+/*
+awaitingApproval reports a capability that is here but not switched on.
+
+The registry discovers what a plugin can do; an administrator decides what it
+may do. Between those two moments a tool is present, working and refused, and
+the difference between that and a system that cannot be reached is the whole
+difference between reading a settings page and telephoning a customer.
+
+Returns the qualified plugin.tool name, so the message can name the thing to
+approve rather than the capability nobody typed.
+*/
+func (s *Server) awaitingApproval(ctx context.Context, capability string) (string, bool) {
+	providers := s.Reg.Providers(plugin.Capability(capability))
+	if len(providers) == 0 {
+		return "", false
+	}
+	approved, err := s.DB.ApprovedTools(ctx)
+	if err != nil {
+		return "", false
+	}
+	for _, qualified := range providers {
+		if _, ok := approved[qualified]; ok {
+			return "", false
+		}
+	}
+	return providers[0], true
 }
