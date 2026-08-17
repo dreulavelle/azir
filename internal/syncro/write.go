@@ -82,15 +82,7 @@ func (c *Client) PostComment(ctx context.Context, req CommentRequest) (Comment, 
 		return Comment{}, plugin.Errorf("502", "syncro accepted the comment but returned an unreadable response")
 	}
 
-	w := body.Comment
-	return Comment{
-		ID:        w.ID,
-		Subject:   w.Subject,
-		Body:      truncate(firstNonEmpty(w.Body, w.PlainText), 4000),
-		Hidden:    w.Hidden,
-		TechName:  w.TechName,
-		CreatedAt: w.CreatedAt,
-	}, nil
+	return body.Comment.trim(), nil
 }
 
 // TicketUpdate changes a ticket's fields. Only the set ones are sent, so an

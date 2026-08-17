@@ -282,27 +282,7 @@ func (w wireTicket) trim(withComments bool) Ticket {
 	}
 	if withComments {
 		for _, c := range w.Comments {
-			body := c.Body
-			if c.IsRichText && c.PlainText != "" {
-				body = c.PlainText
-			}
-			comment := Comment{
-				ID:        c.ID,
-				Subject:   c.Subject,
-				Body:      truncate(body, 4000),
-				Hidden:    c.Hidden,
-				Internal:  c.Hidden,
-				TechName:  c.TechName,
-				CreatedAt: c.CreatedAt,
-			}
-			// Decided once, here, by the same rule the timeline uses. A caller
-			// should never have to know Syncro's subject-line convention to
-			// work out who was speaking.
-			comment.From = "technician"
-			if fromCustomer(comment) {
-				comment.From = "customer"
-			}
-			t.Comments = append(t.Comments, comment)
+			t.Comments = append(t.Comments, c.trim())
 		}
 	}
 	return t
@@ -326,6 +306,35 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// trim turns one comment into the shape a caller gets, attribution included.
+//
+// Shared with the write path. Building the same struct by hand over there
+// produced a comment that was hidden and simultaneously not internal, with
+// nobody recorded as having said it — the same type meaning different things
+// depending on which endpoint returned it.
+func (c wireComment) trim() Comment {
+	body := c.Body
+	if c.IsRichText && c.PlainText != "" {
+		body = c.PlainText
+	}
+	out := Comment{
+		ID:        c.ID,
+		Subject:   c.Subject,
+		Body:      truncate(firstNonEmpty(body, c.PlainText), 4000),
+		Hidden:    c.Hidden,
+		Internal:  c.Hidden,
+		TechName:  c.TechName,
+		CreatedAt: c.CreatedAt,
+	}
+	// A caller should never have to know Syncro's subject-line convention to
+	// work out who was speaking.
+	out.From = "technician"
+	if fromCustomer(out) {
+		out.From = "customer"
+	}
+	return out
 }
 
 func (w wireAsset) trim() Asset {

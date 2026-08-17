@@ -355,6 +355,7 @@ function Console() {
         {route.name === "ticket" && (
           <TicketDetail
             id={route.id}
+            actor={actor}
             go={go}
             ask={(question) => {
               setAsk(question);

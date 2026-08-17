@@ -169,6 +169,11 @@ func (s *Server) Routes() http.Handler {
 	// By capability rather than by name, so the interface never learns which
 	// plugin is behind a screen.
 	mux.HandleFunc("POST /api/do/{capability}", s.require(p, s.invokeCapability))
+	// Changing something, as opposed to reading it. A separate route because it
+	// resolves through a separate index: no way of reading a thing can ever
+	// return a way of writing it. The gate inside is the same one the assistant's
+	// proposals go through.
+	mux.HandleFunc("POST /api/change/{capability}", s.require(p, s.applyChange))
 
 	// The frontend is served by the same binary on the same port, so there is
 	// no proxy to configure and no second origin to authorise.

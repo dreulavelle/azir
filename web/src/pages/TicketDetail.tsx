@@ -3,6 +3,8 @@ import {
   chat,
   NotProvided,
   work,
+  act,
+  type Actor,
   type Contact,
   type CustomerRecord,
   type Ticket,
@@ -11,8 +13,10 @@ import {
 } from "../api";
 import { canGoBack, type Route } from "../router";
 import { useLiveChanges } from "../live";
+import { useHelpdeskSchema } from "../whoami";
+import { useToast } from "../Toast";
 import { cn } from "@/lib/cn";
-import { Chip, Empty, Icon, Label, Loading, Panel, PanelHead, Problem, absolute, ago, duration, isDone, prioritySignal, since, statusTone } from "../ui";
+import { Button, Chip, Empty, Icon, Label, Loading, Panel, PanelHead, Picker, Problem, TextArea, absolute, ago, duration, isDone, prioritySignal, since, statusTone } from "../ui";
 
 /**
  * One ticket, as a history rather than as a form.
@@ -38,10 +42,12 @@ function fromCustomer(entry: TimelineEntry): boolean {
 
 export function TicketDetail({
   id,
+  actor,
   go,
   ask,
 }: {
   id: string;
+  actor: Actor;
   go: (to: Route) => void;
   /** Hands a question to the assistant panel and opens it. */
   ask: (question: string) => void;
@@ -126,10 +132,13 @@ export function TicketDetail({
         <div className="min-w-0">
           {opening && <Opening entry={opening} subject={ticket.subject} />}
           <Thread entries={thread} />
+          <Act ticket={ticket} actor={actor} onDone={() => void load(true)} />
           <AskAzir timeline={timeline} ask={ask} />
         </div>
 
-        <aside className="flex flex-col gap-3">
+        {/* Sticky, because the thread is long and who to call is the thing you
+            want in front of you while reading it — not scrolled off the top. */}
+        <aside className="flex flex-col gap-3 lg:sticky lg:top-16 lg:self-start">
           <Facts ticket={ticket} />
 
           <WhoToCall ticket={ticket} go={go} />
@@ -330,6 +339,10 @@ function Opening({ entry, subject }: { entry: TimelineEntry; subject: string }) 
 const LONG_THREAD = 12;
 
 function Thread({ entries }: { entries: TimelineEntry[] }) {
+  // When every message is filed under a technician — which Syncro does whenever
+  // replies arrive through the API — "us" on every line is a column of the same
+  // word. It only means something when there is another side to contrast with.
+  const twoSided = entries.some(fromCustomer) && entries.some((e) => !fromCustomer(e));
   // A long history opens at the recent end, with the older part folded. What
   // happened last week is context; what happened yesterday is the reason
   // somebody opened the ticket.
@@ -376,7 +389,7 @@ function Thread({ entries }: { entries: TimelineEntry[] }) {
                 <span className="h-px flex-1 bg-attention/25" />
               </div>
             )}
-            <Event entry={entry} first={i === 0} />
+            <Event entry={entry} first={i === 0} twoSided={twoSided} />
           </div>
         );
       })}
@@ -407,7 +420,15 @@ function openedBy(entry: TimelineEntry): string {
   return actor.length > 1 ? `Opened by ${actor}` : "Opened";
 }
 
-function Event({ entry, first }: { entry: TimelineEntry; first: boolean }) {
+function Event({
+  entry,
+  first,
+  twoSided,
+}: {
+  entry: TimelineEntry;
+  first: boolean;
+  twoSided: boolean;
+}) {
   // The kinds a plugin can emit are open-ended, so this reads intent from the
   // word rather than switching on a closed set it does not control.
   const kind = entry.kind.toLowerCase();
@@ -468,7 +489,7 @@ function Event({ entry, first }: { entry: TimelineEntry; first: boolean }) {
             {isCreation ? openedBy(entry) : whoSaidIt(entry, customer, isTime)}
           </span>
           <span className="flex items-center gap-2">
-            {!isTime && !isCreation && (
+            {twoSided && !isTime && !isCreation && (
               <Label className={customer ? "text-ink-dim" : "text-ink-faint"}>
                 {customer ? "customer" : "us"}
               </Label>
@@ -660,6 +681,181 @@ function Reach({ phone, mobile, email }: { phone?: string; mobile?: string; emai
         </a>
       )}
     </div>
+  );
+}
+
+/**
+ * Doing something to the ticket, from here.
+ *
+ * The point of the product, stated plainly: reading a ticket and then opening
+ * the vendor's application to answer it is the trip this exists to remove.
+ *
+ * Reply and note are one control with a switch rather than two boxes, because
+ * they are the same act aimed at different audiences and two boxes invites
+ * typing into the wrong one. The switch defaults to the private side: a note
+ * posted publicly is a far worse mistake than a reply left internal, and the
+ * default should be the one you can recover from.
+ *
+ * Everything is gated server-side by the permission each tool declares. What a
+ * person cannot do is not drawn at all — a disabled control that will not say
+ * why is worse than an absence.
+ */
+function Act({ ticket, actor, onDone }: { ticket: Ticket; actor: Actor; onDone: () => void }) {
+  const [body, setBody] = useState("");
+  const [internal, setInternal] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const toast = useToast();
+
+  const { statuses, technicians } = useHelpdeskSchema();
+  const mayComment = actor.permissions.includes("ticket.comment");
+  const mayMove = actor.permissions.includes("ticket.status");
+  const mayAssign = actor.permissions.includes("ticket.assign");
+
+  if (!mayComment && !mayMove && !mayAssign) return null;
+
+  async function send() {
+    const text = body.trim();
+    if (!text) return;
+    setBusy(true);
+    try {
+      await act.comment(ticket.id, text, internal);
+      setBody("");
+      toast(internal ? "Note added" : "Reply sent to the customer", { tone: "good" });
+      onDone();
+    } catch (e) {
+      toast("That did not go through", {
+        tone: "bad",
+        detail: e instanceof Error ? e.message : undefined,
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function move(fields: { status?: string; user_id?: number }, said: string) {
+    setBusy(true);
+    try {
+      await act.update(ticket.id, fields);
+      toast(said, { tone: "good" });
+      onDone();
+    } catch (e) {
+      toast("That did not go through", {
+        tone: "bad",
+        detail: e instanceof Error ? e.message : undefined,
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const assignedId = technicians?.find((x) => x.name === ticket.assigned_to)?.id;
+
+  return (
+    <section className="mt-8 rounded-lg border border-edge bg-panel">
+      {mayComment && (
+        <div className="p-3.5">
+          {/* Which audience, decided before writing rather than after. */}
+          <div className="mb-2.5 inline-flex items-center gap-1 rounded-md border border-edge bg-sunken p-px">
+            {[
+              { value: true, label: "Internal note" },
+              { value: false, label: "Reply to customer" },
+            ].map((o) => (
+              <button
+                key={o.label}
+                type="button"
+                aria-pressed={internal === o.value}
+                className={cn(
+                  "h-7 rounded-[5px] px-3 text-xs font-medium transition-colors",
+                  internal === o.value
+                    ? o.value
+                      ? "bg-attention/15 text-attention"
+                      : "bg-panel text-ink shadow-e1"
+                    : "text-ink-dim hover:text-ink",
+                )}
+                onClick={() => setInternal(o.value)}
+              >
+                {o.label}
+              </button>
+            ))}
+          </div>
+
+          <TextArea
+            rows={4}
+            value={body}
+            placeholder={
+              internal
+                ? "A note for your team. The customer never sees this."
+                : "This goes to the customer."
+            }
+            onChange={(e) => setBody(e.target.value)}
+          />
+
+          <div className="mt-2.5 flex items-center justify-between gap-3">
+            <Label className={internal ? "text-attention" : "text-ink-faint"}>
+              {internal ? "only your team sees this" : "the customer receives this"}
+            </Label>
+            <Button weight="primary" disabled={busy || !body.trim()} onClick={() => void send()}>
+              {busy ? "Sending…" : internal ? "Add note" : "Send reply"}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {(mayMove || mayAssign) && (
+        <div
+          className={cn(
+            "flex flex-wrap items-center gap-4 px-3.5 py-3",
+            mayComment && "border-t border-edge",
+          )}
+        >
+          {mayMove && statuses && statuses.length > 0 && (
+            <label className="flex items-center gap-2">
+              <Label>Status</Label>
+              <Picker
+                className="w-auto"
+                value={ticket.status ?? ""}
+                disabled={busy}
+                aria-label="Change status"
+                onChange={(e) => void move({ status: e.target.value }, `Moved to ${e.target.value}`)}
+              >
+                {!statuses.includes(ticket.status ?? "") && (
+                  <option value={ticket.status ?? ""}>{ticket.status || "—"}</option>
+                )}
+                {statuses.map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </Picker>
+            </label>
+          )}
+
+          {mayAssign && technicians && technicians.length > 0 && (
+            <label className="flex items-center gap-2">
+              <Label>Assigned</Label>
+              <Picker
+                className="w-auto"
+                value={assignedId ?? ""}
+                disabled={busy}
+                aria-label="Assign to"
+                onChange={(e) => {
+                  const id = Number(e.target.value);
+                  const who = technicians.find((x) => x.id === id);
+                  if (who) void move({ user_id: id }, `Assigned to ${who.name}`);
+                }}
+              >
+                <option value="">Unassigned</option>
+                {technicians.map((x) => (
+                  <option key={x.id} value={x.id}>
+                    {x.name}
+                  </option>
+                ))}
+              </Picker>
+            </label>
+          )}
+        </div>
+      )}
+    </section>
   );
 }
 

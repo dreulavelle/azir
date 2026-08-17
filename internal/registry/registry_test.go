@@ -295,3 +295,77 @@ func TestMutatingToolsStayOutOfTheCapabilityIndex(t *testing.T) {
 		t.Errorf("mutation metadata lost: %+v", tool)
 	}
 }
+
+// The two indexes must never overlap.
+//
+// Reading and changing are separate doors on purpose: /api/do resolves through
+// Providers and /api/change through WriteProviders, and the whole containment
+// argument is that no way of reading a thing can return a way of writing it. A
+// tool appearing in both would collapse that silently, with nothing failing.
+func TestReadAndWriteIndexesDoNotOverlap(t *testing.T) {
+	url := startNATS(t)
+
+	p := testPlugin()
+	p.Tools = append(p.Tools,
+		plugin.Tool{
+			Name:               "tickets.comment",
+			Description:        "writes",
+			Provides:           []plugin.Capability{plugin.CapWorkItemsComment},
+			Mutates:            true,
+			RequiresPermission: "ticket.comment",
+			Handler: func(_ context.Context, _ plugin.Request) (any, error) {
+				return map[string]any{"written": true}, nil
+			},
+		},
+		plugin.Tool{
+			Name:        "tickets.read",
+			Description: "reads",
+			Provides:    []plugin.Capability{plugin.CapWorkItemsGet},
+			Handler: func(_ context.Context, _ plugin.Request) (any, error) {
+				return map[string]any{"read": true}, nil
+			},
+		},
+	)
+	servePlugin(t, url, p)
+
+	nc, err := nats.Connect(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nc.Close()
+
+	reg := registry.New(nc, quietLogger(), 500*time.Millisecond)
+	if err := reg.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// The writer is reachable for changing, and only for changing.
+	writers := reg.WriteProviders(plugin.CapWorkItemsComment)
+	if len(writers) == 0 {
+		t.Fatal("the mutating tool is unreachable for writing, so no button could ever use it")
+	}
+	if got := reg.Providers(plugin.CapWorkItemsComment); len(got) != 0 {
+		t.Errorf("a write capability resolved through the read index: %v", got)
+	}
+
+	// The reader is reachable for reading, and never for changing.
+	if len(reg.Providers(plugin.CapWorkItemsGet)) == 0 {
+		t.Fatal("the read tool is unreachable for reading")
+	}
+	if got := reg.WriteProviders(plugin.CapWorkItemsGet); len(got) != 0 {
+		t.Errorf("a read tool answered a request to change something: %v", got)
+	}
+
+	// And nothing at all appears on both sides.
+	read := map[string]bool{}
+	for _, c := range []plugin.Capability{plugin.CapWorkItemsGet, plugin.CapWorkItemsComment, plugin.CapDiagnostic} {
+		for _, provider := range reg.Providers(c) {
+			read[provider] = true
+		}
+		for _, provider := range reg.WriteProviders(c) {
+			if read[provider] {
+				t.Errorf("%s is in both the read and the write index", provider)
+			}
+		}
+	}
+}

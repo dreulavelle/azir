@@ -246,6 +246,8 @@ export const Cap = {
   assets: "assets.list",
   docs: "documentation.search",
   invoices: "invoices.list",
+  ticketComment: "work_items.comment",
+  ticketUpdate: "work_items.update",
   phoneStatus: "phone_system.status",
   phoneExtensions: "phone_system.extensions",
 } as const;
@@ -447,6 +449,54 @@ async function perform<T>(
     },
   };
 }
+
+/**
+ * Making a change in a connected system, because a person pressed something.
+ *
+ * A separate route from `perform` on purpose: reads resolve through one index
+ * and writes through another, so no way of reading a thing can return a way of
+ * changing it. The server applies the same gate the assistant's proposals go
+ * through — the caller's permission, the plugin's write setting, and approval.
+ */
+async function change<T>(
+  capability: string,
+  args: Record<string, unknown>,
+  customerId?: string,
+): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(`/api/change/${capability}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ args, customer_id: customerId }),
+    });
+  } catch {
+    throw new Unreachable();
+  }
+  if (res.status === 401) {
+    onExpired?.();
+    throw new Unauthorized();
+  }
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    if (res.status === 404 && body?.capability) throw new NotProvided(capability);
+    let message = body?.error ?? `${res.status} ${res.statusText}`;
+    if (body?.required_permission) message += ` (needs ${body.required_permission})`;
+    throw new Error(message);
+  }
+  return (await res.json()) as T;
+}
+
+/** The changes a technician can make from here, rather than in the vendor's app. */
+export const act = {
+  /** Replies to the customer, or leaves a note only your team can see. */
+  comment: (id: number, body: string, hidden: boolean) =>
+    change<Ticket>(Cap.ticketComment, { id, body, hidden }),
+
+  /** Moves a ticket: its status, who owns it, how urgent it is. */
+  update: (id: number, fields: { status?: string; user_id?: number; priority?: string }) =>
+    change<Ticket>(Cap.ticketUpdate, { id, ...fields }),
+};
 
 export const work = {
   /**

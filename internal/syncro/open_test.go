@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/dreulavelle/azir/internal/syncro"
@@ -227,5 +228,154 @@ func TestTicketLinkPointsAtTheAccount(t *testing.T) {
 	}
 	if got := syncro.LinkForTest(client, syncro.Ticket{ID: 4233}); got != "https://acme.syncromsp.com/tickets/4233" {
 		t.Errorf("link = %q", got)
+	}
+}
+
+// A comment means the same thing whichever endpoint returned it.
+//
+// The write path used to build the struct by hand, so posting an internal note
+// came back hidden and simultaneously not internal, with nobody recorded as
+// having said it — while reading that same note a second later gave the right
+// answer for all three.
+func TestPostedCommentIsTrimmedLikeAReadOne(t *testing.T) {
+	_, client := fakeSyncro(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"comment": map[string]any{
+					"id": 99, "body": "a private note", "hidden": true,
+					"tech": "Dreu", "created_at": "2026-08-17T00:00:00Z",
+				},
+			})
+			return
+		}
+		// The same comment, read back on the ticket.
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ticket": map[string]any{
+				"id": 1, "subject": "s",
+				"comments": []map[string]any{{
+					"id": 99, "body": "a private note", "hidden": true,
+					"tech": "Dreu", "created_at": "2026-08-17T00:00:00Z",
+				}},
+			},
+		})
+	})
+
+	posted, err := client.PostComment(context.Background(), syncro.CommentRequest{
+		TicketID: 1, Body: "a private note", Hidden: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	read, err := client.GetTicket(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(read.Comments) != 1 {
+		t.Fatalf("expected the comment back on the ticket, got %d", len(read.Comments))
+	}
+
+	if posted != read.Comments[0] {
+		t.Errorf("the same comment differs by endpoint:\n posted %+v\n read   %+v", posted, read.Comments[0])
+	}
+	if !posted.Internal || posted.From == "" {
+		t.Errorf("a hidden comment came back internal=%v from=%q", posted.Internal, posted.From)
+	}
+}
+
+// A status that this account does not define must be refused before it is sent.
+//
+// Syncro accepts any string, so a typo does not fail — it puts a ticket in a
+// state no filter or report will ever surface again.
+func TestUpdateRefusesAnInventedStatus(t *testing.T) {
+	var wrote bool
+	_, client := fakeSyncro(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut {
+			wrote = true
+		}
+		if strings.HasSuffix(r.URL.Path, "/tickets/settings") {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ticket_status_list": []string{"New", "In Progress", "Resolved"},
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"ticket": map[string]any{"id": 1}})
+	})
+
+	_, err := client.UpdateTicket(context.Background(), syncro.TicketUpdate{
+		TicketID: 1, Status: "Nearly Done",
+	})
+	if err == nil {
+		t.Fatal("an invented status was accepted")
+	}
+	if !strings.Contains(err.Error(), "In Progress") {
+		t.Errorf("the refusal does not say what is valid: %v", err)
+	}
+	if wrote {
+		t.Error("it sent the write anyway")
+	}
+}
+
+// The account's own spelling wins, so "resolved" does not become a second
+// status distinct from "Resolved".
+func TestUpdateUsesTheAccountsCasing(t *testing.T) {
+	var sent map[string]any
+	_, client := fakeSyncro(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/tickets/settings") {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ticket_status_list": []string{"New", "Resolved"},
+			})
+			return
+		}
+		if r.Method == http.MethodPut {
+			_ = json.NewDecoder(r.Body).Decode(&sent)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"ticket": map[string]any{"id": 1}})
+	})
+
+	if _, err := client.UpdateTicket(context.Background(), syncro.TicketUpdate{
+		TicketID: 1, Status: "resolved",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if sent["status"] != "Resolved" {
+		t.Errorf("sent status %q, want the account's own casing", sent["status"])
+	}
+}
+
+// Only the fields somebody set are sent, so changing a status cannot blank an
+// assignee by omission.
+func TestUpdateSendsOnlyWhatChanged(t *testing.T) {
+	var sent map[string]any
+	_, client := fakeSyncro(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/tickets/settings") {
+			_ = json.NewEncoder(w).Encode(map[string]any{"ticket_status_list": []string{"New"}})
+			return
+		}
+		if r.Method == http.MethodPut {
+			_ = json.NewDecoder(r.Body).Decode(&sent)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"ticket": map[string]any{"id": 1}})
+	})
+
+	if _, err := client.UpdateTicket(context.Background(), syncro.TicketUpdate{
+		TicketID: 1, UserID: 7,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := sent["status"]; ok {
+		t.Errorf("an unset status was sent anyway: %v", sent)
+	}
+	if sent["user_id"] != float64(7) {
+		t.Errorf("user_id = %v, want 7", sent["user_id"])
+	}
+}
+
+// Nothing to change is a mistake worth naming rather than an empty write.
+func TestUpdateWithNothingSetIsRefused(t *testing.T) {
+	_, client := fakeSyncro(t, func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"ticket": map[string]any{"id": 1}})
+	})
+	if _, err := client.UpdateTicket(context.Background(), syncro.TicketUpdate{TicketID: 1}); err == nil {
+		t.Error("an update with no fields was accepted")
 	}
 }

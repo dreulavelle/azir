@@ -93,12 +93,20 @@ func New(subdomain string, credential CredentialFunc) (*Client, error) {
 // Exported for tests only: New derives the hostname from a validated
 // subdomain, which is exactly the property worth keeping, so tests of trimming
 // and paging need a way past it that production code never uses.
+//
+// It carries the same write allowlist as New, deliberately. A test client that
+// refused every write could not cover the write path at all — which is how the
+// write path came to have no tests.
 func NewForTest(baseURL string, credential CredentialFunc) (*Client, error) {
 	httpClient, err := plugin.NewHTTPClient(plugin.HTTPConfig{
 		BaseURL:           baseURL,
 		RequestsPerMinute: 60000,
 		Burst:             100,
 		MaxRetries:        0,
+		AllowedWritePaths: []plugin.MethodPath{
+			{Method: http.MethodPost, Prefix: "/tickets", Why: "post a comment to a ticket"},
+			{Method: http.MethodPut, Prefix: "/tickets", Why: "change status, assignee or customer"},
+		},
 	}, func(ctx context.Context, r *http.Request) error {
 		token, err := credential(ctx)
 		if err != nil {
