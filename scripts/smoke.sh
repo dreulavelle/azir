@@ -12,8 +12,20 @@ step() { printf '%-2s %s\n' "$1" "$2"; }
 
 # Everything below the setup routes requires a session, so sign in first —
 # either completing first-run setup or logging in as the smoke account.
-SMOKE_EMAIL="${AZIR_SMOKE_EMAIL:-smoke@azir.local}"
-SMOKE_PASS="${AZIR_SMOKE_PASSWORD:-smoke-test-password-1}"
+#
+# Read from .env, which `make init` generates and version control ignores.
+# There is deliberately no fallback value: a default password in a repository
+# is a working account on every deployment that never changed it.
+if [ -f .env ]; then
+  # shellcheck disable=SC1091 # generated locally, not in version control
+  set -a && . ./.env && set +a
+fi
+
+SMOKE_EMAIL="${AZIR_SMOKE_EMAIL:-}"
+SMOKE_PASS="${AZIR_SMOKE_PASSWORD:-}"
+if [ -z "$SMOKE_EMAIL" ] || [ -z "$SMOKE_PASS" ]; then
+  fail "set AZIR_SMOKE_EMAIL and AZIR_SMOKE_PASSWORD, or run \`make init\` to generate .env"
+fi
 
 if curl -fsS "$BASE/api/setup" | grep -q '"needs_setup":true'; then
   curl -fsS -c "$JAR" -X POST "$BASE/api/setup" -H 'Content-Type: application/json' \
@@ -22,7 +34,10 @@ if curl -fsS "$BASE/api/setup" | grep -q '"needs_setup":true'; then
 else
   curl -fsS -c "$JAR" -X POST "$BASE/api/login" -H 'Content-Type: application/json' \
     -d "{\"email\":\"$SMOKE_EMAIL\",\"password\":\"$SMOKE_PASS\"}" >/dev/null \
-    || fail "could not sign in as $SMOKE_EMAIL (set AZIR_SMOKE_EMAIL/PASSWORD)"
+    || fail "could not sign in as $SMOKE_EMAIL.
+  This deployment already has accounts, so first-run setup is closed. Point
+  AZIR_SMOKE_EMAIL and AZIR_SMOKE_PASSWORD in .env at an administrator, or
+  start from a clean stack with: make down-hard && make up"
 fi
 
 # Authenticated wrappers.

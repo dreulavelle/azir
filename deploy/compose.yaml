@@ -10,12 +10,19 @@ services:
       context: ..
       dockerfile: Dockerfile
     image: azir:local
+    # Named so `docker logs azir` works without hunting for a generated
+    # suffix. Overridable because a fixed name is exclusive on a host: a second
+    # instance — a staging copy, or a clean one to reproduce something against —
+    # cannot start while the name is taken.
+    container_name: ${AZIR_CONTAINER_NAME:-azir}
     environment:
-      DATABASE_URL: postgres://azir:${POSTGRES_PASSWORD:-azir_dev_only}@postgres:5432/azir?sslmode=disable
-      # Development key only. Generate a real one with `make keygen` and pass
-      # it as a Docker secret or platform secret anywhere that will hold a
-      # customer's credentials.
-      AZIR_MASTER_KEY: ${AZIR_MASTER_KEY:-YXppci1kZXZlbG9wbWVudC1rZXktbm90LXNlY3JldCE=}
+      DATABASE_URL: postgres://azir:${POSTGRES_PASSWORD:?run `make init` to generate .env}@postgres:5432/azir?sslmode=disable
+      # No default, deliberately. A default here would be a working encryption
+      # key published in the repository, and every deployment that never
+      # changed it would be holding customer credentials sealed with a key
+      # anyone can read. `make init` generates one; the vault refuses to start
+      # without it.
+      AZIR_MASTER_KEY: ${AZIR_MASTER_KEY:?run `make init` to generate .env}
       AZIR_LOG_LEVEL: ${AZIR_LOG_LEVEL:-info}
       # Set NATS_URL to point at an external cluster instead of the embedded
       # server. Everything else is unchanged when you do.
@@ -29,13 +36,32 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # Private search, so the assistant can look up a vendor advisory without a
+  # search provider learning what your customers are having trouble with. No
+  # published port: the only thing that talks to it is Azir, over the internal
+  # network, and an instance reachable from outside would be one somebody else
+  # could use to search on your behalf.
+  searxng:
+    image: searxng/searxng:latest
+    container_name: ${AZIR_SEARCH_CONTAINER_NAME:-azir-search}
+    environment:
+      # SearXNG refuses to start without one, and a shared default would mean
+      # every Azir deployment signing its sessions with the same key.
+      SEARXNG_SECRET: ${SEARXNG_SECRET:?run `make init` to generate .env}
+      SEARXNG_BASE_URL: http://searxng:8080/
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+      - searxng-cache:/var/cache/searxng
+    restart: unless-stopped
+
   postgres:
     # pgvector is why this is Postgres; the image ships the extension so the
     # migration can simply CREATE EXTENSION.
     image: pgvector/pgvector:pg18
+    container_name: ${AZIR_DB_CONTAINER_NAME:-azir-db}
     environment:
       POSTGRES_USER: azir
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-azir_dev_only}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run `make init` to generate .env}
       POSTGRES_DB: azir
     command:
       - "postgres"
@@ -62,3 +88,4 @@ services:
 volumes:
   azir-data:
   pg-data:
+  searxng-cache:
