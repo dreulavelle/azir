@@ -1,6 +1,8 @@
 package api
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"net/http"
 	"strings"
@@ -82,15 +84,39 @@ func (s *Server) getBranding(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resolve(b))
 }
 
+/*
+getLogo serves the uploaded mark.
+
+Revalidated rather than re-sent. The logo is the largest single thing this
+application serves — a few hundred kilobytes is normal for something exported at
+512 pixels square — and it was carrying a sixty second lifetime, so every
+browser refetched all of it once a minute forever to be told nothing had
+changed. An entity tag over the bytes answers the same question in a 304 with no
+body at all, which keeps the "an operator changing their logo expects to see it
+change" property that the short lifetime was protecting, without paying for it
+on every single load.
+*/
 func (s *Server) getLogo(w http.ResponseWriter, r *http.Request) {
 	image, kind, err := s.DB.Logo(r.Context())
 	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
+
+	sum := sha256.Sum256(image)
+	etag := `"` + hex.EncodeToString(sum[:16]) + `"`
+	w.Header().Set("ETag", etag)
+	// must-revalidate rather than a lifetime: the browser always asks, and
+	// almost always gets a 304 costing a few hundred bytes instead of hundreds
+	// of kilobytes.
+	w.Header().Set("Cache-Control", "public, no-cache, must-revalidate")
+
+	if match := r.Header.Get("If-None-Match"); match != "" && strings.Contains(match, etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+
 	w.Header().Set("Content-Type", kind)
-	// Short, because an operator changing their logo expects to see it change.
-	w.Header().Set("Cache-Control", "public, max-age=60")
 	_, _ = w.Write(image)
 }
 
