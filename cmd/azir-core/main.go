@@ -11,6 +11,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -181,18 +182,49 @@ func run(log *slog.Logger) error {
 		toolCache.Prune(ctx, time.Hour, 7*24*time.Hour)
 	}()
 
+	// Abandoned sign-in attempts. Each is already unusable once it expires, so
+	// this only keeps the table from growing; it is not what makes them safe.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		t := time.NewTicker(15 * time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if n, err := db.PurgeExpiredOIDCStates(ctx); err != nil {
+					log.Warn("could not purge abandoned sign-ins", "error", err)
+				} else if n > 0 {
+					log.Info("purged abandoned sign-ins", "count", n)
+				}
+			}
+		}
+	}()
+
+	server := &api.Server{
+		NC:    nc,
+		Reg:   reg,
+		DB:    db,
+		Creds: creds,
+		Audit: recorder,
+		Log:   log,
+		Web:   assets,
+		Cache: toolCache,
+	}
+
+	// Relays "something changed" from wherever it happened to every browser
+	// currently looking at a screen it affects.
+	stopWatching, err := server.WatchChanges()
+	if err != nil {
+		return fmt.Errorf("could not watch for changes: %w", err)
+	}
+	defer stopWatching()
+
 	srv := &http.Server{
-		Addr: envOr("AZIR_HTTP_ADDR", ":8080"),
-		Handler: (&api.Server{
-			NC:    nc,
-			Reg:   reg,
-			DB:    db,
-			Creds: creds,
-			Audit: recorder,
-			Log:   log,
-			Web:   assets,
-			Cache: toolCache,
-		}).Routes(),
+		Addr:              envOr("AZIR_HTTP_ADDR", ":8080"),
+		Handler:           server.Routes(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

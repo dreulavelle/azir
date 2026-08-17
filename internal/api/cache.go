@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -95,8 +96,8 @@ func (c *ToolCache) Do(
 	if err != nil {
 		// A vendor outage should not erase a usable answer. Serving something
 		// stale and saying so beats serving nothing, so long as the age is
-		// visible.
-		if hit, cacheErr := c.db.GetCached(ctx, tool.Plugin, tool.Name, key); cacheErr == nil {
+		// visible. A caller error is not an outage and gets no such kindness.
+		if hit, cacheErr := c.db.GetCached(ctx, tool.Plugin, tool.Name, key); cacheErr == nil && !mistaken(err) {
 			c.log.Warn("serving stale result after a vendor failure",
 				"plugin", tool.Plugin, "tool", tool.Name, "age", hit.Age().String(), "error", err)
 			return Result{
@@ -178,4 +179,17 @@ func (c *ToolCache) Prune(ctx context.Context, every, olderThan time.Duration) {
 			}
 		}
 	}
+}
+
+// callerMistake marks a plugin error that was the caller's fault rather than a
+// vendor's. Serving a stale answer over one of these would hide the mistake
+// behind something that looks like a result.
+type callerMistake struct{ code string }
+
+func (e callerMistake) Error() string { return "the request was not valid: " + e.code }
+
+// mistaken reports whether an error came from the caller getting it wrong.
+func mistaken(err error) bool {
+	var m callerMistake
+	return errors.As(err, &m)
 }

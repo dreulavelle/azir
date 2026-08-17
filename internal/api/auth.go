@@ -56,20 +56,15 @@ func (s *Server) require(permission string, next func(http.ResponseWriter, *http
 	}
 }
 
-// setupState tells the frontend whether anyone has signed up yet.
-func (s *Server) setupState(w http.ResponseWriter, r *http.Request) {
-	count, err := s.DB.CountUsers(r.Context())
-	if err != nil {
-		s.fail(w, err, "could not check setup state")
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"needs_setup": count == 0})
-}
-
 // setup creates the first administrator.
 //
 // Open only while no account exists, so it cannot be used to add a second
 // administrator to a running deployment.
+//
+// Deliberately a local account, even in a deployment that will run entirely on
+// single sign-on. Someone has to be able to configure the identity provider
+// before the identity provider works, and that same account is what remains
+// when the provider is the thing that is broken.
 func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 	count, err := s.DB.CountUsers(r.Context())
 	if err != nil {
@@ -142,7 +137,14 @@ func (s *Server) issueSession(w http.ResponseWriter, r *http.Request, userID uui
 		s.fail(w, err, "could not start a session")
 		return
 	}
+	s.setSessionCookie(w, r, token, expires)
+	writeJSON(w, http.StatusOK, map[string]string{"email": email})
+}
 
+// setSessionCookie writes the session cookie. Shared with the single sign-on
+// path, which answers with a redirect rather than a body but must land the
+// browser in exactly the same signed-in state.
+func (s *Server) setSessionCookie(w http.ResponseWriter, r *http.Request, token string, expires time.Time) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookie,
 		Value:    token,
@@ -155,7 +157,6 @@ func (s *Server) issueSession(w http.ResponseWriter, r *http.Request, userID uui
 		// log in at all, which is worse than the cookie lacking the flag there.
 		Secure: r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https",
 	})
-	writeJSON(w, http.StatusOK, map[string]string{"email": email})
 }
 
 // logout ends the current session.

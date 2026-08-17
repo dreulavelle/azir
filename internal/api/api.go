@@ -1,10 +1,10 @@
 // Package api serves core's HTTP surface: the administrator's control plane
 // and the tool invocation path.
 //
-// Authorization is stubbed at this phase — every caller is treated as an
-// administrator. Phase 6 supplies the actor from an authenticated session.
-// Handlers already take the actor from the server side rather than the request
-// body, so that swap does not change any handler.
+// Every route declares the permission it requires, and the actor is resolved
+// from the session server-side rather than taken from the request. A caller
+// cannot name itself, and a handler cannot forget to check — the wrapper it is
+// registered with has already done so.
 package api
 
 import (
@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/dreulavelle/azir/internal/audit"
 	"github.com/dreulavelle/azir/internal/identity"
+	"github.com/dreulavelle/azir/internal/oidc"
 	"github.com/dreulavelle/azir/internal/registry"
 	"github.com/dreulavelle/azir/internal/store"
 	"github.com/dreulavelle/azir/pkg/plugin"
@@ -43,6 +45,9 @@ type Server struct {
 	// Cache serves tool results within the freshness budget each plugin
 	// declares. Nil disables caching entirely.
 	Cache *ToolCache
+
+	// OIDC holds the discovered identity provider between sign-ins.
+	OIDC oidc.Cache
 }
 
 // Routes builds the mux.
@@ -58,11 +63,23 @@ func (s *Server) Routes() http.Handler {
 
 	// Open by necessity: you cannot require a session to find out whether an
 	// account exists yet, or to create one.
-	mux.HandleFunc("GET /api/setup", s.setupState)
+	mux.HandleFunc("GET /api/setup", s.authState)
 	mux.HandleFunc("POST /api/setup", s.setup)
 	mux.HandleFunc("POST /api/login", s.login)
 	mux.HandleFunc("POST /api/logout", s.logout)
 	mux.HandleFunc("GET /api/me", s.whoami)
+
+	// The single sign-on round trip. Both ends are necessarily open: the first
+	// is reached by someone who is not signed in, and the second by a browser
+	// the identity provider redirected. Neither trusts its input — the state,
+	// nonce and PKCE verifier were recorded here before the browser left.
+	mux.HandleFunc("GET /api/auth/oidc/start", s.oidcStart)
+	mux.HandleFunc("GET "+callbackPath, s.oidcCallback)
+
+	mux.HandleFunc("GET /api/auth/settings",
+		s.require(identity.PermPluginConfigure, ignoreActor(s.getAuthSettings)))
+	mux.HandleFunc("PUT /api/auth/settings",
+		s.require(identity.PermPluginConfigure, s.putAuthSettings))
 
 	p := identity.PermToolRead
 	mux.HandleFunc("GET /api/registry", s.require(p, ignoreActor(s.getRegistry)))
@@ -95,6 +112,8 @@ func (s *Server) Routes() http.Handler {
 		s.require(identity.PermPluginConfigure, s.putSettings))
 	mux.HandleFunc("DELETE /api/plugins/{plugin}/settings/{field}",
 		s.require(identity.PermPluginConfigure, s.deleteSettingSecret))
+	mux.HandleFunc("PUT /api/plugins/{plugin}/writes",
+		s.require(identity.PermPluginConfigure, s.putWrites))
 
 	mux.HandleFunc("GET /api/users", s.require(identity.PermUserManage, ignoreActor(s.listUsers)))
 	mux.HandleFunc("POST /api/users", s.require(identity.PermUserManage, s.createUser))
@@ -102,7 +121,54 @@ func (s *Server) Routes() http.Handler {
 
 	mux.HandleFunc("GET /api/audit", s.require(identity.PermAuditRead, ignoreActor(s.listAudit)))
 
+	// The assistant. Chats belong to the person who started them, so every
+	// route here resolves ownership from the session rather than trusting an id.
+	mux.HandleFunc("GET /api/assistant/status", s.require(p, ignoreActor(s.assistantStatus)))
+	mux.HandleFunc("GET /api/chats", s.require(p, s.listConversations))
+	mux.HandleFunc("POST /api/chats", s.require(p, s.createConversation))
+	mux.HandleFunc("GET /api/chats/{id}", s.require(p, s.getConversation))
+	mux.HandleFunc("DELETE /api/chats/{id}", s.require(p, s.deleteConversation))
+	mux.HandleFunc("POST /api/chats/{id}/messages", s.require(p, s.sendMessage))
+	mux.HandleFunc("POST /api/chats/{id}/stream", s.require(p, s.sendMessageStreaming))
+	mux.HandleFunc("GET /api/chats/{id}/changes", s.require(p, s.listProposals))
+	// Applying is guarded by the tool's own permission rather than by a blanket
+	// one: approving a ticket comment and approving a change to a customer's
+	// phone system are different decisions and should need different rights.
+	mux.HandleFunc("POST /api/changes/{id}", s.require(p, s.decideProposal))
+
+	mux.HandleFunc("GET /api/assistant/settings",
+		s.require(identity.PermPluginConfigure, ignoreActor(s.getAssistantSettings)))
+	mux.HandleFunc("PUT /api/assistant/settings",
+		s.require(identity.PermPluginConfigure, s.putAssistantSettings))
+	mux.HandleFunc("POST /api/assistant/test",
+		s.require(identity.PermPluginConfigure, s.testAssistant))
+	// Readable before signing in, because the sign-in page has to know what
+	// this deployment calls itself before it knows who is looking.
+	mux.HandleFunc("GET /api/branding", s.getBranding)
+	mux.HandleFunc("GET /api/branding/logo", s.getLogo)
+	mux.HandleFunc("PUT /api/branding",
+		s.require(identity.PermPluginConfigure, s.putBranding))
+	mux.HandleFunc("PUT /api/branding/logo",
+		s.require(identity.PermPluginConfigure, s.putLogo))
+
+	// Unauthenticated as well, and safe because nothing it is sent is
+	// believed: see internal/api/webhooks.go.
+	mux.HandleFunc("POST /api/hooks/{secret}", s.receiveWebhook)
+
+	mux.HandleFunc("GET /api/events", s.require(p, s.streamChanges))
+
+	mux.HandleFunc("GET /api/webhooks/{plugin}",
+		s.require(identity.PermPluginConfigure, ignoreActor(s.getWebhook)))
+	mux.HandleFunc("POST /api/webhooks/{plugin}/rotate",
+		s.require(identity.PermPluginConfigure, s.rotateWebhook))
+
+	mux.HandleFunc("GET /api/assistant/models",
+		s.require(identity.PermPluginConfigure, s.listAssistantModels))
+
 	mux.HandleFunc("POST /api/invoke/{plugin}/{tool}", s.require(p, s.invoke))
+	// By capability rather than by name, so the interface never learns which
+	// plugin is behind a screen.
+	mux.HandleFunc("POST /api/do/{capability}", s.require(p, s.invokeCapability))
 
 	// The frontend is served by the same binary on the same port, so there is
 	// no proxy to configure and no second origin to authorise.
@@ -392,6 +458,55 @@ type invokeRequest struct {
 	Refresh bool `json:"refresh,omitempty"`
 }
 
+// invokeCapability calls whichever approved tool provides a capability.
+//
+// This is what lets the interface be a helpdesk rather than a Syncro client.
+// A screen asks for "work_items.search" and never learns which plugin answered,
+// so swapping the PSA is a configuration change rather than a rewrite — the
+// same promise the capability index makes to the agent, kept to the UI too.
+func (s *Server) invokeCapability(w http.ResponseWriter, r *http.Request, actor identity.Actor) {
+	capability := r.PathValue("capability")
+
+	providers := s.Reg.Providers(plugin.Capability(capability))
+	if len(providers) == 0 {
+		writeJSON(w, http.StatusNotFound, map[string]string{
+			"error":      "nothing in this deployment provides that capability",
+			"capability": capability,
+		})
+		return
+	}
+
+	approved, err := s.DB.ApprovedTools(r.Context())
+	if err != nil {
+		s.fail(w, err, "could not check approvals")
+		return
+	}
+
+	// Approval is per tool, so a capability with several providers may have
+	// only some of them usable. Taking the first approved one keeps the choice
+	// deterministic: providers are sorted, so the same call routes the same way
+	// until an administrator changes something.
+	for _, qualified := range providers {
+		if _, ok := approved[qualified]; !ok {
+			continue
+		}
+		pluginName, toolName, ok := strings.Cut(qualified, ".")
+		if !ok {
+			continue
+		}
+		if tool, found := s.Reg.Lookup(pluginName, toolName); found && tool.Available {
+			s.invokeTool(w, r, actor, tool)
+			return
+		}
+	}
+
+	writeJSON(w, http.StatusForbidden, map[string]any{
+		"error":      "no approved and available tool provides that capability",
+		"capability": capability,
+		"candidates": providers,
+	})
+}
+
 func (s *Server) invoke(w http.ResponseWriter, r *http.Request, actor identity.Actor) {
 	pluginName, toolName := r.PathValue("plugin"), r.PathValue("tool")
 
@@ -400,55 +515,88 @@ func (s *Server) invoke(w http.ResponseWriter, r *http.Request, actor identity.A
 		writeJSON(w, http.StatusNotFound, errBody("no such tool in the current registry snapshot"))
 		return
 	}
+	s.invokeTool(w, r, actor, tool)
+}
 
-	// A write requires three independent conditions, because this is the one
-	// place where being wrong is irreversible: the caller holds the tool's
-	// declared permission, an administrator has enabled writes for this
-	// plugin, and the tool was approved like any other.
+// invokeTool is the one path a tool call takes, whether it was reached by name
+// or by capability. Sharing it is what keeps the write gate, the approval gate
+// and the audit trail from having a second implementation to forget about.
+// gateError is a refusal with the status a caller should be told.
+type gateError struct {
+	status int
+	body   map[string]string
+}
+
+func (e *gateError) Error() string { return e.body["error"] }
+
+// mayUse applies every condition that stands between somebody and a change.
+//
+// One implementation, used by the button on a screen and by approving something
+// the assistant proposed, because two copies of a permission check is two
+// places to forget one. A write needs three independent conditions, because
+// this is the one place where being wrong is irreversible: the caller holds the
+// tool's declared permission, an administrator has enabled writes for this
+// plugin, and the tool was approved like any other.
+func (s *Server) mayUse(ctx context.Context, actor identity.Actor, tool registry.Tool) error {
+	pluginName, toolName := tool.Plugin, tool.Name
+
 	if tool.Mutates {
 		if err := actor.Require(tool.RequiresPermission); err != nil {
-			s.Audit.Record(r.Context(), audit.Event{
+			s.Audit.Record(ctx, audit.Event{
 				ActorUserID: actor.Email, Action: "tool.write",
 				Plugin: pluginName, Tool: toolName,
 				Outcome: audit.OutcomeDenied, Detail: "missing " + tool.RequiresPermission,
 			})
-			writeJSON(w, http.StatusForbidden, map[string]string{
+			return &gateError{status: http.StatusForbidden, body: map[string]string{
 				"error":               "your role does not permit this action",
 				"required_permission": tool.RequiresPermission,
-			})
-			return
+			}}
 		}
-		enabled, err := s.writesEnabled(r.Context(), pluginName)
+		enabled, err := s.writesEnabled(ctx, pluginName)
 		if err != nil {
-			s.fail(w, err, "could not check whether writes are enabled")
-			return
+			return &gateError{status: http.StatusInternalServerError,
+				body: map[string]string{"error": "could not check whether writes are enabled"}}
 		}
 		if !enabled {
-			s.Audit.Record(r.Context(), audit.Event{
+			s.Audit.Record(ctx, audit.Event{
 				ActorUserID: actor.Email, Action: "tool.write",
 				Plugin: pluginName, Tool: toolName,
 				Outcome: audit.OutcomeRefused, Detail: "writes disabled for this plugin",
 			})
-			writeJSON(w, http.StatusForbidden, errBody(
-				"writes are disabled for this plugin; an administrator can enable them in plugin settings"))
-			return
+			return &gateError{status: http.StatusForbidden, body: map[string]string{
+				"error": "writes are disabled for this plugin; an administrator can enable them in plugin settings"}}
 		}
 	}
 
 	// The approval gate. Discovery made this tool visible; only an
 	// administrator makes it usable.
-	approved, err := s.DB.ApprovedTools(r.Context())
+	approved, err := s.DB.ApprovedTools(ctx)
 	if err != nil {
-		s.fail(w, err, "could not check approvals")
-		return
+		return &gateError{status: http.StatusInternalServerError,
+			body: map[string]string{"error": "could not check approvals"}}
 	}
 	if _, ok := approved[pluginName+"."+toolName]; !ok {
-		s.Audit.Record(r.Context(), audit.Event{
+		s.Audit.Record(ctx, audit.Event{
 			ActorUserID: actor.Email, Action: "tool.invoke",
 			Plugin: pluginName, Tool: toolName,
 			Outcome: audit.OutcomeDenied, Detail: "not approved",
 		})
-		writeJSON(w, http.StatusForbidden, errBody("tool is not approved by an administrator"))
+		return &gateError{status: http.StatusForbidden,
+			body: map[string]string{"error": "tool is not approved by an administrator"}}
+	}
+	return nil
+}
+
+func (s *Server) invokeTool(w http.ResponseWriter, r *http.Request, actor identity.Actor, tool registry.Tool) {
+	pluginName, toolName := tool.Plugin, tool.Name
+
+	if err := s.mayUse(r.Context(), actor, tool); err != nil {
+		var gate *gateError
+		if errors.As(err, &gate) {
+			writeJSON(w, gate.status, gate.body)
+			return
+		}
+		s.fail(w, err, "could not check whether that is allowed")
 		return
 	}
 
@@ -488,6 +636,14 @@ func (s *Server) invoke(w http.ResponseWriter, r *http.Request, actor identity.A
 					"code":  code,
 				},
 				detail: code,
+			}
+			// A 4xx from a plugin is "you asked wrongly", not "the vendor is
+			// down". Answering it from cache would hide the mistake behind a
+			// stale but plausible answer — which is how somebody ends up
+			// reading one customer's phone system while looking at another.
+			// Only an outage earns the stale fallback.
+			if strings.HasPrefix(code, "4") {
+				return nil, callerMistake{code: code}
 			}
 			return nil, errors.New("tool returned an error")
 		}

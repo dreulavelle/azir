@@ -14,6 +14,19 @@ import (
 	"github.com/dreulavelle/azir/pkg/plugin"
 )
 
+// settingWritesEnabled is the core-owned switch that permits a plugin's
+// mutating tools to run at all.
+const settingWritesEnabled = "writes_enabled"
+
+// coreSettings are keys Azir owns rather than the plugin. They share the
+// plugin's config row — one plugin, one set of settings — but they are not part
+// of any published schema, so the schema form neither renders nor sends them.
+//
+// They are therefore restored from storage on every save rather than taken from
+// the request. Otherwise saving an unrelated field would silently switch writes
+// off, and a form post would become a way to switch them on.
+var coreSettings = map[string]bool{settingWritesEnabled: true}
+
 // settingsView is what the admin console renders. The schema comes from the
 // plugin itself, so the console needs no knowledge of any particular
 // integration — adding a plugin requires no frontend change.
@@ -29,6 +42,13 @@ type settingsView struct {
 	// empty input, which is the only honest way to render a write-only field.
 	SecretsSet map[string]bool `json:"secrets_set"`
 	CustomerID *uuid.UUID      `json:"customer_id,omitempty"`
+
+	// WritesEnabled and HasMutatingTools drive the write switch. A plugin with
+	// no mutating tools has nothing to switch, and showing the control anyway
+	// would suggest the deployment is one toggle away from writing when it is
+	// not.
+	WritesEnabled    bool `json:"writes_enabled"`
+	HasMutatingTools bool `json:"has_mutating_tools"`
 }
 
 // secretFields returns the property names a plugin marked as credential
@@ -50,6 +70,24 @@ func secretFields(schema json.RawMessage) []string {
 		}
 	}
 	return out
+}
+
+// announceConfigChange tells a plugin its settings moved, so it drops its
+// caches now instead of when they happen to expire.
+//
+// Best effort on purpose: the settings are already saved and the caches expire
+// on their own, so a failure here costs a delay, never correctness.
+func (s *Server) announceConfigChange(pluginName string) {
+	if err := s.NC.Publish(plugin.ConfigChangedSubject(pluginName), nil); err != nil {
+		s.Log.Warn("could not announce a settings change",
+			"plugin", pluginName, "error", err)
+		return
+	}
+	// Flushed so the plugin has dropped its caches before the console reloads
+	// and asks what changed.
+	if err := s.NC.Flush(); err != nil {
+		s.Log.Warn("could not flush the settings announcement", "error", err)
+	}
 }
 
 func (s *Server) findPlugin(name string) (registry.Plugin, bool) {
@@ -102,6 +140,19 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		Values:       settings.Values,
 		SecretsSet:   map[string]bool{},
 		CustomerID:   customerID,
+	}
+
+	for _, t := range p.Tools {
+		if t.Mutates {
+			view.HasMutatingTools = true
+			break
+		}
+	}
+	// Always the deployment-wide value, even when a customer scope is being
+	// viewed, because that is the one the write gate actually consults.
+	if view.WritesEnabled, err = s.writesEnabled(r.Context(), name); err != nil {
+		s.fail(w, err, "could not read the write setting")
+		return
 	}
 
 	// Report only whether each secret exists. There is deliberately no path
@@ -171,9 +222,25 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request, actor ident
 		isSecret[f] = true
 	}
 
+	// Core-owned keys come from storage, never from the request, so this form
+	// can neither clear the write switch nor set it.
+	current, err := s.DB.GetPluginConfig(r.Context(), name, customerID)
+	if err != nil {
+		s.fail(w, err, "could not load current settings")
+		return
+	}
 	plain := map[string]any{}
+	for key := range coreSettings {
+		if value, ok := current.Values[key]; ok {
+			plain[key] = value
+		}
+	}
+
 	stored := 0
 	for key, value := range body.Values {
+		if coreSettings[key] {
+			continue
+		}
 		if !isSecret[key] {
 			plain[key] = value
 			continue
@@ -196,6 +263,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request, actor ident
 		s.fail(w, err, "could not save settings")
 		return
 	}
+	s.announceConfigChange(name)
 
 	s.Audit.Record(r.Context(), audit.Event{
 		ActorUserID: actor.Email,
@@ -215,9 +283,81 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request, actor ident
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"saved":             len(plain),
+		"saved":             len(plain) - len(coreSettings),
 		"credentials_saved": stored,
 	})
+}
+
+// putWrites turns a plugin's mutating tools on or off for the whole deployment.
+//
+// Deliberately its own endpoint rather than a field on the settings form. It is
+// the single decision that moves Azir from reading a customer's systems to
+// changing them, and it deserves its own audit line rather than being folded
+// into a generic "settings were saved".
+func (s *Server) putWrites(w http.ResponseWriter, r *http.Request, actor identity.Actor) {
+	name := r.PathValue("plugin")
+	p, ok := s.findPlugin(name)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, errBody("no such plugin is running"))
+		return
+	}
+
+	var body struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := decode(r, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, errBody("invalid json body"))
+		return
+	}
+
+	// Enabling writes on a plugin that has none would be a setting with no
+	// meaning, and a reader of the audit log would reasonably conclude that
+	// this deployment can now write.
+	if body.Enabled {
+		hasWrites := false
+		for _, t := range p.Tools {
+			if t.Mutates {
+				hasWrites = true
+				break
+			}
+		}
+		if !hasWrites {
+			writeJSON(w, http.StatusBadRequest, errBody("this plugin has no tools that write"))
+			return
+		}
+	}
+
+	// Deployment-wide, matching the gate in invoke. A per-customer write switch
+	// would read as narrower than it is.
+	settings, err := s.DB.GetPluginConfig(r.Context(), name, nil)
+	if err != nil {
+		s.fail(w, err, "could not load settings")
+		return
+	}
+	values := settings.Values
+	if values == nil {
+		values = map[string]any{}
+	}
+	values[settingWritesEnabled] = body.Enabled
+
+	if err := s.DB.SetPluginConfig(r.Context(), name, nil, values, actor.Email); err != nil {
+		s.fail(w, err, "could not save the write setting")
+		return
+	}
+	s.announceConfigChange(name)
+
+	outcome := "disabled"
+	if body.Enabled {
+		outcome = "enabled"
+	}
+	s.Audit.Record(r.Context(), audit.Event{
+		ActorUserID: actor.Email,
+		Action:      "plugin.writes",
+		Plugin:      name,
+		Outcome:     audit.OutcomeOK,
+		Detail:      outcome,
+	})
+	writeJSON(w, http.StatusOK, map[string]bool{"writes_enabled": body.Enabled})
 }
 
 // deleteSettingSecret clears one stored credential.
@@ -241,6 +381,7 @@ func (s *Server) deleteSettingSecret(w http.ResponseWriter, r *http.Request, act
 				s.fail(w, err, "could not delete credential")
 				return
 			}
+			s.announceConfigChange(name)
 			s.Audit.Record(r.Context(), audit.Event{
 				ActorUserID: actor.Email, Action: "credential.delete",
 				Plugin: name, CustomerID: customerID, Outcome: audit.OutcomeOK,
