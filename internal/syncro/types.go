@@ -40,10 +40,28 @@ type Ticket struct {
 
 // Comment is one entry on a ticket thread.
 type Comment struct {
-	ID        int64  `json:"id"`
-	Subject   string `json:"subject,omitempty"`
-	Body      string `json:"body"`
-	Hidden    bool   `json:"hidden"`
+	ID      int64  `json:"id"`
+	Subject string `json:"subject,omitempty"`
+	Body    string `json:"body"`
+	Hidden  bool   `json:"hidden"`
+
+	// From is who wrote this: "customer" or "technician".
+	//
+	// Stated outright because it cannot be worked out from the fields around
+	// it. Syncro stamps `tech` with the API key's owner on everything created
+	// through the API, including the customer's own replies — so a reader
+	// looking at TechName sees our name on their message. The only reliable
+	// signal is Syncro's own subject-line convention, and expecting every
+	// caller to know that is expecting them to get it wrong. The assistant in
+	// particular has to know who said what: half a conversation read as if one
+	// side wrote all of it produces a confident summary of the wrong thing.
+	From string `json:"from"`
+
+	// Internal marks a note the customer never saw. Distinct from From: a
+	// technician writes both kinds, and drafting a reply to something the
+	// customer cannot see is a mistake worth making impossible to make.
+	Internal bool `json:"internal"`
+
 	TechName  string `json:"tech,omitempty"`
 	CreatedAt string `json:"created_at,omitempty"`
 }
@@ -221,14 +239,23 @@ func (w wireTicket) trim(withComments bool) Ticket {
 			if c.IsRichText && c.PlainText != "" {
 				body = c.PlainText
 			}
-			t.Comments = append(t.Comments, Comment{
+			comment := Comment{
 				ID:        c.ID,
 				Subject:   c.Subject,
 				Body:      truncate(body, 4000),
 				Hidden:    c.Hidden,
+				Internal:  c.Hidden,
 				TechName:  c.TechName,
 				CreatedAt: c.CreatedAt,
-			})
+			}
+			// Decided once, here, by the same rule the timeline uses. A caller
+			// should never have to know Syncro's subject-line convention to
+			// work out who was speaking.
+			comment.From = "technician"
+			if fromCustomer(comment) {
+				comment.From = "customer"
+			}
+			t.Comments = append(t.Comments, comment)
 		}
 	}
 	return t

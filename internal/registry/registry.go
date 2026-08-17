@@ -28,13 +28,16 @@ const srvInfoSubject = "$SRV.INFO"
 
 // Tool is a discovered endpoint.
 type Tool struct {
-	Plugin      string              `json:"plugin"`
-	Name        string              `json:"name"`
-	Subject     string              `json:"subject"`
-	Description string              `json:"description"`
-	Provides    []plugin.Capability `json:"provides"`
-	Mutates     bool                `json:"mutates"`
-	Schema      json.RawMessage     `json:"schema,omitempty"`
+	Plugin      string `json:"plugin"`
+	Name        string `json:"name"`
+	Subject     string `json:"subject"`
+	Description string `json:"description"`
+	// Summary is the human-facing wording for the settings screen. Description
+	// is written for the model and reads oddly to anyone else.
+	Summary  string              `json:"summary,omitempty"`
+	Provides []plugin.Capability `json:"provides"`
+	Mutates  bool                `json:"mutates"`
+	Schema   json.RawMessage     `json:"schema,omitempty"`
 
 	// Available reports whether the plugin says this tool can currently do its
 	// job. Partial capability is normal — a token granted only ticket access
@@ -59,7 +62,10 @@ type Plugin struct {
 	ID          string          `json:"id"`
 	Description string          `json:"description"`
 	Category    plugin.Category `json:"category"`
-	SDK         string          `json:"sdk"`
+	// ConfigScope is "customer" when this plugin is configured once per
+	// customer rather than once for the deployment.
+	ConfigScope plugin.ConfigScope `json:"config_scope,omitempty"`
+	SDK         string             `json:"sdk"`
 	// Ready is false when the plugin cannot work at all, with Reason saying why.
 	Ready  bool   `json:"ready"`
 	Reason string `json:"not_ready_reason,omitempty"`
@@ -74,7 +80,14 @@ type Plugin struct {
 type Snapshot struct {
 	Plugins    []Plugin            `json:"plugins"`
 	Capability map[string][]string `json:"capabilities"`
-	At         time.Time           `json:"at"`
+	// Write is the same index for tools that change something, kept separate
+	// on purpose. Anything looking for information consults Capability and
+	// therefore cannot reach a write, whatever a plugin declares — that was
+	// true when writes were indexed nowhere and stays true now that they are
+	// indexed here. Only the path that stages a change for human approval
+	// looks in this one.
+	Write map[string][]string `json:"write_capabilities,omitempty"`
+	At    time.Time           `json:"at"`
 }
 
 // Observer is notified of every tool seen in discovery, so the approval gate
@@ -110,7 +123,7 @@ func New(nc *nats.Conn, log *slog.Logger, window time.Duration) *Registry {
 		nc:     nc,
 		log:    log,
 		window: window,
-		snap:   Snapshot{Capability: map[string][]string{}},
+		snap:   Snapshot{Capability: map[string][]string{}, Write: map[string][]string{}},
 	}
 }
 
@@ -143,6 +156,7 @@ func (r *Registry) Refresh(ctx context.Context) error {
 
 	plugins := make([]Plugin, 0, len(infos))
 	caps := map[string][]string{}
+	writes := map[string][]string{}
 
 	for _, info := range infos {
 		p := Plugin{
@@ -151,6 +165,7 @@ func (r *Registry) Refresh(ctx context.Context) error {
 			ID:          info.ID,
 			Description: info.Description,
 			Category:    plugin.Category(info.Metadata[plugin.MetaCategory]),
+			ConfigScope: plugin.ConfigScope(info.Metadata[plugin.MetaConfigScope]),
 			SDK:         info.Metadata[plugin.MetaSDK],
 		}
 		if schema := info.Metadata[plugin.MetaConfigSchema]; schema != "" {
@@ -173,6 +188,7 @@ func (r *Registry) Refresh(ctx context.Context) error {
 				Name:        name,
 				Subject:     ep.Subject,
 				Description: ep.Metadata[plugin.MetaDescription],
+				Summary:     ep.Metadata[plugin.MetaSummary],
 				Mutates:     ep.Metadata[plugin.MetaMutates] == "true",
 				Provides:    parseCaps(ep.Metadata[plugin.MetaProvides]),
 			}
@@ -201,10 +217,16 @@ func (r *Registry) Refresh(ctx context.Context) error {
 				t.Available, t.Reason = status.Available, status.Reason
 			}
 
-			// A mutating tool never enters the capability index. The index is
-			// what a feature — and later the agent — consults to find a tool,
-			// and a write must never be discoverable that way.
+			// A mutating tool never enters the capability index. That index is
+			// what a feature consults to find a tool, and a write must never
+			// be discoverable that way. It goes into the write index instead,
+			// which only the propose-a-change path reads.
 			if t.Mutates {
+				if t.Available {
+					for _, c := range t.Provides {
+						writes[string(c)] = append(writes[string(c)], info.Name+"."+t.Name)
+					}
+				}
 				p.Tools = append(p.Tools, t)
 				continue
 			}
@@ -235,9 +257,12 @@ func (r *Registry) Refresh(ctx context.Context) error {
 	for k := range caps {
 		slices.Sort(caps[k])
 	}
+	for k := range writes {
+		slices.Sort(writes[k])
+	}
 
 	r.mu.Lock()
-	r.snap = Snapshot{Plugins: plugins, Capability: caps, At: time.Now().UTC()}
+	r.snap = Snapshot{Plugins: plugins, Capability: caps, Write: writes, At: time.Now().UTC()}
 	observer := r.observer
 	r.mu.Unlock()
 
@@ -291,6 +316,17 @@ func (r *Registry) Providers(c plugin.Capability) []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return slices.Clone(r.snap.Capability[string(c)])
+}
+
+// WriteProviders returns the tools that can change this capability.
+//
+// Separate from Providers so that finding a way to read something can never
+// return a way to change it. Only the path that stages a change for approval
+// calls this.
+func (r *Registry) WriteProviders(c plugin.Capability) []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return slices.Clone(r.snap.Write[string(c)])
 }
 
 // discover publishes a single $SRV.INFO request and collects replies for the

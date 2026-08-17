@@ -33,11 +33,14 @@ type Timeline struct {
 
 	// Computed signals. These are arithmetic rather than judgement, so they
 	// belong here and not in a model call.
-	FirstResponseMinutes int  `json:"first_response_minutes,omitempty"`
-	LongestGapHours      int  `json:"longest_gap_hours,omitempty"`
-	RoundTrips           int  `json:"round_trips"`
-	TotalLoggedMinutes   int  `json:"total_logged_minutes"`
-	Stale                bool `json:"stale"`
+	FirstResponseMinutes int `json:"first_response_minutes,omitempty"`
+	LongestGapHours      int `json:"longest_gap_hours,omitempty"`
+	RoundTrips           int `json:"round_trips"`
+	// RoundTripsUnknown means the sides could not be told apart, so RoundTrips
+	// is absence of evidence rather than evidence of absence.
+	RoundTripsUnknown  bool `json:"round_trips_unknown,omitempty"`
+	TotalLoggedMinutes int  `json:"total_logged_minutes"`
+	Stale              bool `json:"stale"`
 
 	// Notes explains anything the timeline could not include, so a caller is
 	// never left assuming completeness it does not have.
@@ -59,12 +62,13 @@ func (c *Client) GetTimeline(ctx context.Context, id int64) (Timeline, error) {
 		})
 	}
 
+	customerMessages := 0
 	for _, cm := range ticket.Comments {
 		actor := cm.TechName
 		kind := "comment"
-		if actor == "" {
-			// No tech means it came from the customer side.
+		if fromCustomer(cm) {
 			actor, kind = ticket.Customer, "customer_message"
+			customerMessages++
 		}
 		tl.Entries = append(tl.Entries, TimelineEntry{
 			At: cm.CreatedAt, Kind: kind, Actor: actor,
@@ -77,7 +81,7 @@ func (c *Client) GetTimeline(ctx context.Context, id int64) (Timeline, error) {
 	// this degrades rather than fails.
 	timers, err := c.TicketTimers(ctx, TimerSearch{TicketID: id, PerPage: 100})
 	if err != nil {
-		tl.Notes = append(tl.Notes, "time entries could not be read; the timeline is otherwise complete")
+		tl.Notes = append(tl.Notes, "Logged time could not be read, so it is missing from this history. Everything else is here.")
 	} else {
 		for _, t := range timers.Items {
 			tl.TotalLoggedMinutes += t.Minutes
@@ -94,11 +98,23 @@ func (c *Client) GetTimeline(ctx context.Context, id int64) (Timeline, error) {
 
 	tl.computeSignals()
 
+	// Which side a message came from is what makes "back and forth" mean
+	// anything. Syncro stamps a technician name on every comment created
+	// through its API — including ones marked as coming from the customer — so
+	// a thread can arrive with no distinguishable customer side at all.
+	// Reporting zero round trips there would be a finding rather than a gap,
+	// so the gap is named instead.
+	if customerMessages == 0 && len(ticket.Comments) > 0 {
+		tl.RoundTripsUnknown = true
+		tl.Notes = append(tl.Notes,
+			"Every message on this ticket is filed under a technician, so the customer's replies cannot be told apart from ours.")
+	}
+
 	// Syncro exposes no per-change history, so status transitions cannot be
 	// placed on the timeline. Saying so is better than letting a reader assume
 	// the sequence is complete.
 	tl.Notes = append(tl.Notes,
-		"status changes are not in this timeline: Syncro's API exposes no per-change history")
+		"Status changes are not shown here. Syncro does not keep a record of them that we can read.")
 
 	return tl, nil
 }
@@ -369,3 +385,18 @@ func hoursBetween(from, to string) int {
 }
 
 func nowRFC3339() string { return time.Now().UTC().Format(time.RFC3339) }
+
+// fromCustomer decides which side a comment came from.
+//
+// Syncro's own convention is the subject line: its portal writes "Customer
+// Reply" on anything the customer sends and "Reply" on a technician's. That is
+// more reliable than the tech field, which is filled in with the API key's
+// owner for everything created through the API — so a thread built by an
+// integration would otherwise look entirely one-sided.
+func fromCustomer(cm Comment) bool {
+	if strings.Contains(strings.ToLower(cm.Subject), "customer") {
+		return true
+	}
+	// No technician attributed at all is the other clear case.
+	return strings.TrimSpace(cm.TechName) == ""
+}

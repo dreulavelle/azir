@@ -42,6 +42,16 @@ const (
 	PermTicketComment    = "ticket.comment"
 	PermTicketStatus     = "ticket.status"
 	PermTicketAssign     = "ticket.assign"
+
+	// PermPhoneManage is changing a customer's phone system.
+	//
+	// Separate from PermToolWrite because they are different sizes of mistake:
+	// commenting on the wrong ticket is embarrassing, disabling the wrong
+	// extension takes a business's phones off the air. An MSP that trusts every
+	// technician with the first does not necessarily trust every technician
+	// with the second, and a role system that cannot express that forces the
+	// looser answer.
+	PermPhoneManage = "phone.manage"
 )
 
 // AllPermissions is every permission the application defines, for the admin UI
@@ -51,6 +61,7 @@ var AllPermissions = []string{
 	PermCustomerManage, PermCredentialManage, PermAuditRead,
 	PermToolRead, PermToolWrite,
 	PermTicketComment, PermTicketStatus, PermTicketAssign,
+	PermPhoneManage,
 }
 
 var (
