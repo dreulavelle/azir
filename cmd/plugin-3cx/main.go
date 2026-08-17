@@ -157,7 +157,7 @@ func main() {
 				Description: "Recent events the phone system logged — failed registrations, licence warnings, service problems. " +
 					"Use it when the status looks wrong and you need to know since when, or why.",
 				Summary:  "Reads what a customer's phone system has been complaining about.",
-				Provides: []plugin.Capability{plugin.CapPhoneStatus},
+				Provides: []plugin.Capability{plugin.CapPhoneEvents},
 				Freshness: &plugin.Freshness{
 					Soft: 2 * time.Minute,
 					Hard: 30 * time.Minute,

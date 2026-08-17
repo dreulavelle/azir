@@ -387,6 +387,13 @@ function PhonePanel({ customerId }: { customerId: string }) {
   }
   if (!status) return <div className="mb-6 h-28 animate-pulse rounded-lg bg-sunken" />;
 
+  // Read defensively. These arrive from a plugin over the wire, and a list that
+  // is absent rather than empty used to take the whole page down with it — the
+  // panel is one part of a customer's record and should not be able to blank
+  // the rest of it whatever a phone system answers.
+  const concerns = status.concerns ?? [];
+  const offline = status.trunks_offline ?? [];
+
   const licence = status.licence;
   const expires = licence?.expires ? new Date(licence.expires) : null;
   const days = expires ? Math.round((expires.getTime() - Date.now()) / 86_400_000) : null;
@@ -454,9 +461,9 @@ function PhonePanel({ customerId }: { customerId: string }) {
         ))}
       </div>
 
-      {status.concerns.length > 0 && (
+      {concerns.length > 0 && (
         <ul className="mt-3 flex flex-col gap-1.5">
-          {status.concerns.map((c: string) => (
+          {concerns.map((c: string) => (
             <li key={c} className="flex items-start gap-2 text-xs text-attention">
               <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-attention" />
               {c}
@@ -468,7 +475,7 @@ function PhonePanel({ customerId }: { customerId: string }) {
       <p className="mt-3 text-2xs text-ink-faint">
         {status.address} · 3CX {status.version}
         {licence?.product ? ` · ${licence.product}` : ""}
-        {status.trunks_offline.length > 0 ? ` · offline: ${status.trunks_offline.join(", ")}` : ""}
+        {offline.length > 0 ? ` · offline: ${offline.join(", ")}` : ""}
       </p>
     </div>
   );

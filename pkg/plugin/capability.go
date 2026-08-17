@@ -63,6 +63,12 @@ const (
 	CapPhoneRingGroupWrite  Capability = "phone_system.ring_group_create"
 	CapPhoneExtensionDelete Capability = "phone_system.extension_delete"
 	CapPhoneRingGroupDelete Capability = "phone_system.ring_group_delete"
+	// CapPhoneEvents is what a phone system has been logging. Distinct from
+	// CapPhoneStatus: both once answered to the same name, providers are sorted,
+	// and "events.recent" sorts before "system.status" — so every request for a
+	// system's health was answered with a list of log lines, and the screen that
+	// asked for health crashed on a shape it had no reason to expect.
+	CapPhoneEvents Capability = "phone_system.events"
 
 	// CapPhoneStatus is whether a customer's phone system is healthy: how many
 	// extensions and trunks are registered against how many exist, how many
@@ -119,6 +125,7 @@ var vocabulary = map[Capability]struct{}{
 	CapPhoneRingGroupWrite:  {},
 	CapPhoneExtensionDelete: {},
 	CapPhoneRingGroupDelete: {},
+	CapPhoneEvents:          {},
 	CapCallsList:            {},
 	CapDocsSearch:           {},
 	CapInvoicesList:         {},

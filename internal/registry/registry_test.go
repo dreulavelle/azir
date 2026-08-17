@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"slices"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -367,5 +368,61 @@ func TestReadAndWriteIndexesDoNotOverlap(t *testing.T) {
 				t.Errorf("%s is in both the read and the write index", provider)
 			}
 		}
+	}
+}
+
+// Two tools answering to one capability is answered by whichever sorts first.
+//
+// That is deterministic, which is the property the resolver was designed for,
+// and it is also how a request for a phone system's health came back as a list
+// of log lines: "events.recent" sorts before "system.status", both claimed
+// phone_system.status, and the screen crashed on a shape it had no reason to
+// expect. Deterministic is not the same as correct, so a collision is worth
+// being able to see.
+func TestCapabilityWithSeveralProvidersIsVisible(t *testing.T) {
+	url := startNATS(t)
+
+	p := testPlugin()
+	p.Tools = append(p.Tools,
+		plugin.Tool{
+			Name:        "aaa.first",
+			Description: "sorts first",
+			Provides:    []plugin.Capability{plugin.CapPhoneStatus},
+			Handler: func(_ context.Context, _ plugin.Request) (any, error) {
+				return map[string]any{"who": "first"}, nil
+			},
+		},
+		plugin.Tool{
+			Name:        "zzz.second",
+			Description: "sorts last",
+			Provides:    []plugin.Capability{plugin.CapPhoneStatus},
+			Handler: func(_ context.Context, _ plugin.Request) (any, error) {
+				return map[string]any{"who": "second"}, nil
+			},
+		},
+	)
+	servePlugin(t, url, p)
+
+	nc, err := nats.Connect(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nc.Close()
+
+	reg := registry.New(nc, quietLogger(), 500*time.Millisecond)
+	if err := reg.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	providers := reg.Providers(plugin.CapPhoneStatus)
+	if len(providers) != 2 {
+		t.Fatalf("got %d providers, want both: %v", len(providers), providers)
+	}
+	// Sorted, so the choice is stable rather than whichever replied first.
+	if !sort.StringsAreSorted(providers) {
+		t.Errorf("providers are not sorted, so the same call could route two ways: %v", providers)
+	}
+	if !strings.Contains(providers[0], "aaa.first") {
+		t.Errorf("the first provider is %q; resolution does not follow the sort", providers[0])
 	}
 }

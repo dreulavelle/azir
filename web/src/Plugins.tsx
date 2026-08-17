@@ -170,6 +170,7 @@ function Connection({
 
   const allowed = (t: Tool) => pending[t.name] ?? t.status === "approved";
   const onCount = reads.filter(allowed).length;
+  const changeCount = writes.filter(allowed).length;
 
   async function set(tool: Tool, next: boolean) {
     setPending((p) => ({ ...p, [tool.name]: next }));
@@ -243,11 +244,23 @@ function Connection({
           <span className="mt-0.5 truncate text-xs text-ink-faint">{plugin.description}</span>
         </span>
 
-        <span
-          className="shrink-0 font-mono text-2xs tabular-nums text-ink-faint"
-          title="How many of the things this system offers Azir is currently allowed to use."
-        >
-          {onCount}/{reads.length} allowed
+        {/* Both halves, because the summary used to count only the readable
+            tools — so a plugin allowed to create and delete extensions read as
+            "5/5 allowed" with the six changes nowhere on the line. The question
+            this is meant to answer at a glance is whether Azir can change
+            anything here, and the old number could not answer it. */}
+        <span className="flex shrink-0 items-center gap-2 font-mono text-2xs tabular-nums">
+          <span className="text-ink-faint" title="Things Azir may read from this system.">
+            {onCount}/{reads.length} reads
+          </span>
+          {writes.length > 0 && (
+            <span
+              className={changeCount > 0 ? "text-attention" : "text-ink-faint"}
+              title="Things Azir may change in this system. Each one still needs a person's permission at the moment it is used."
+            >
+              · {changeCount}/{writes.length} changes
+            </span>
+          )}
         </span>
 
         <ChevronDown
