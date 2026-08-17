@@ -69,6 +69,12 @@ const (
 	// system's health was answered with a list of log lines, and the screen that
 	// asked for health crashed on a shape it had no reason to expect.
 	CapPhoneEvents Capability = "phone_system.events"
+	// The four questions most phone tickets actually turn on.
+	CapPhoneCallHistory     Capability = "phone_system.call_history"
+	CapPhoneExtensionDetail Capability = "phone_system.extension_detail"
+	CapPhoneDevices         Capability = "phone_system.devices"
+	CapPhoneServices        Capability = "phone_system.services"
+	CapPhoneLogSearch       Capability = "phone_system.log_search"
 
 	// CapPhoneStatus is whether a customer's phone system is healthy: how many
 	// extensions and trunks are registered against how many exist, how many
@@ -126,6 +132,11 @@ var vocabulary = map[Capability]struct{}{
 	CapPhoneExtensionDelete: {},
 	CapPhoneRingGroupDelete: {},
 	CapPhoneEvents:          {},
+	CapPhoneCallHistory:     {},
+	CapPhoneExtensionDetail: {},
+	CapPhoneDevices:         {},
+	CapPhoneServices:        {},
+	CapPhoneLogSearch:       {},
 	CapCallsList:            {},
 	CapDocsSearch:           {},
 	CapInvoicesList:         {},

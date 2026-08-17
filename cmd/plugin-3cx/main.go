@@ -176,6 +176,91 @@ func main() {
 			// Marked Mutates, which keeps them out of the assistant's hands
 			// entirely and behind the write switch for everybody else.
 			{
+				Name: "calls.history",
+				Description: "Call records: who rang, who it reached, whether it was answered and for how long. " +
+					"Filter by extension, by phone number, by date, or to missed calls only. This is the tool for " +
+					"any question about whether a call happened or what became of it.",
+				Summary:   "Looks up call records — who rang whom, and what became of it.",
+				Provides:  []plugin.Capability{plugin.CapPhoneCallHistory},
+				Freshness: &plugin.Freshness{Soft: 60 * time.Second, Hard: 10 * time.Minute},
+				Schema: json.RawMessage(`{
+					"type": "object",
+					"properties": {
+						"extension": {"type": "string", "description": "Only calls involving this extension, either end."},
+						"number": {"type": "string", "description": "Only calls involving this phone number, either end. Partial matches count."},
+						"since": {"type": "string", "description": "ISO 8601 timestamp; calls at or after it."},
+						"until": {"type": "string", "description": "ISO 8601 timestamp; calls at or before it."},
+						"missed_only": {"type": "boolean", "description": "Only calls that were never answered."},
+						"limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50}
+					}
+				}`),
+				Handler: callHistory,
+			},
+			{
+				Name: "extension.detail",
+				Description: "Everything about one extension that explains how it behaves: whether it is registered, " +
+					"its status profile, forwarding, queue login state, voicemail, groups, and outbound caller ID. " +
+					"Reach for this when somebody is not receiving calls. Never returns SIP credentials.",
+				Summary:   "Explains why one extension is behaving the way it is.",
+				Provides:  []plugin.Capability{plugin.CapPhoneExtensionDetail},
+				Freshness: &plugin.Freshness{Soft: 60 * time.Second, Hard: 10 * time.Minute},
+				Schema: json.RawMessage(`{
+					"type": "object",
+					"required": ["extension"],
+					"properties": {
+						"extension": {"type": "string", "description": "The extension number."}
+					}
+				}`),
+				Handler: extensionDetail,
+			},
+			{
+				Name: "devices.list",
+				Description: "The handsets this phone system has seen: make, model, firmware, network address, " +
+					"which extension each belongs to and when it was last detected. Use it for a phone that will " +
+					"not register, or to find out what hardware is on a site.",
+				Summary:   "Lists handsets, their firmware and who they belong to.",
+				Provides:  []plugin.Capability{plugin.CapPhoneDevices},
+				Freshness: &plugin.Freshness{Soft: 5 * time.Minute, Hard: time.Hour},
+				Schema: json.RawMessage(`{
+					"type": "object",
+					"properties": {
+						"unassigned_only": {"type": "boolean", "description": "Only handsets not yet attached to an extension."}
+					}
+				}`),
+				Handler: listDevices,
+			},
+			{
+				Name: "logs.search",
+				Description: "Searches the phone system's log for lines matching a phrase — an extension number, " +
+					"a trunk name, a phrase from an error — optionally narrowed by source or a time window. " +
+					"Reach for this to find out when something started, or what the system said about it. " +
+					"Prefer it over reading recent events: searching happens on the PBX, so the answer is the " +
+					"handful of lines that matter rather than the last hundred of everything.",
+				Summary:   "Searches the phone system's log for lines that mention something.",
+				Provides:  []plugin.Capability{plugin.CapPhoneLogSearch},
+				Freshness: &plugin.Freshness{Soft: 60 * time.Second, Hard: 10 * time.Minute},
+				Schema: json.RawMessage(`{
+					"type": "object",
+					"properties": {
+						"query": {"type": "string", "description": "Text to look for — an extension, a trunk name, part of an error."},
+						"source": {"type": "string", "description": "Only lines from this part of the system, e.g. SIP Server."},
+						"since": {"type": "string", "description": "ISO 8601 timestamp; lines at or after it."},
+						"until": {"type": "string", "description": "ISO 8601 timestamp; lines at or before it."},
+						"limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50}
+					}
+				}`),
+				Handler: searchLogs,
+			},
+			{
+				Name:        "system.services",
+				Description: "Which of the phone system's own services are running, and which are not.",
+				Summary:     "Reports which parts of the phone system are running.",
+				Provides:    []plugin.Capability{plugin.CapPhoneServices},
+				Freshness:   &plugin.Freshness{Soft: 60 * time.Second, Hard: 10 * time.Minute},
+				Schema:      json.RawMessage(`{"type": "object", "properties": {}}`),
+				Handler:     listServices,
+			},
+			{
 				Name: "extension.update",
 				Description: "Changes settings on one extension: the name shown to colleagues, the email address, " +
 					"and whether the extension is enabled.",
