@@ -219,6 +219,114 @@ func main() {
 				}`),
 				Handler: bulkUpdateExtensions,
 			},
+			{
+				Name: "extensions.create",
+				Description: "Creates one or more new extensions. Numbers are named explicitly, or a starting " +
+					"number and a count are given and the extensions are made in sequence. Reports what was " +
+					"created and what was skipped, one line each.",
+				Summary:            "Creates new extensions, one or several at a time.",
+				Provides:           []plugin.Capability{plugin.CapPhoneExtensionCreate},
+				Mutates:            true,
+				RequiresPermission: "phone.manage",
+				Schema: json.RawMessage(`{
+					"type": "object",
+					"properties": {
+						"extensions": {
+							"type": "array",
+							"description": "The extensions to create. Use this, or start_at with count.",
+							"items": {
+								"type": "object",
+								"required": ["number"],
+								"properties": {
+									"number": {"type": "string"},
+									"first_name": {"type": "string"},
+									"last_name": {"type": "string"},
+									"email": {"type": "string"}
+								}
+							}
+						},
+						"start_at": {"type": "string", "description": "First extension number when creating a run of them."},
+						"count": {"type": "integer", "minimum": 1, "maximum": 50, "description": "How many to create from start_at."},
+						"name_prefix": {"type": "string", "description": "Display name for a created run; the number is appended."}
+					}
+				}`),
+				Handler: createExtensions,
+			},
+			{
+				Name:        "ringgroups.list",
+				Description: "The ring groups on this phone system: what each is called, its number, how it rings, and who is in it.",
+				Summary:     "Lists ring groups and their members.",
+				Provides:    []plugin.Capability{plugin.CapPhoneRingGroups},
+				Schema:      json.RawMessage(`{"type": "object", "properties": {}}`),
+				Handler:     listRingGroups,
+			},
+			{
+				Name: "ringgroups.create",
+				Description: "Creates a ring group: a number that rings a set of extensions together, or one after " +
+					"another, until somebody answers.",
+				Summary:            "Creates a ring group from a set of extensions.",
+				Provides:           []plugin.Capability{plugin.CapPhoneRingGroupWrite},
+				Mutates:            true,
+				RequiresPermission: "phone.manage",
+				Schema: json.RawMessage(`{
+					"type": "object",
+					"required": ["number", "name", "members"],
+					"properties": {
+						"number": {"type": "string", "description": "The number that will ring the group."},
+						"name": {"type": "string", "description": "What the group is called."},
+						"members": {
+							"type": "array",
+							"items": {"type": "string"},
+							"description": "Extension numbers in the group."
+						},
+						"strategy": {
+							"type": "string",
+							"enum": ["RingAll", "Hunt", "PairedRinging", "Paging"],
+							"default": "RingAll",
+							"description": "RingAll rings everyone at once; Hunt tries them in turn."
+						},
+						"ring_seconds": {"type": "integer", "minimum": 5, "maximum": 300, "default": 30}
+					}
+				}`),
+				Handler: createRingGroup,
+			},
+			{
+				Name: "extensions.delete",
+				Description: "Removes extensions, named one at a time. There is no way to say all, and no " +
+					"pattern or range — every extension to be removed has to be written out.",
+				Summary:            "Removes extensions you name explicitly.",
+				Provides:           []plugin.Capability{plugin.CapPhoneExtensionDelete},
+				Mutates:            true,
+				RequiresPermission: "phone.manage",
+				Schema: json.RawMessage(`{
+					"type": "object",
+					"required": ["extensions"],
+					"properties": {
+						"extensions": {
+							"type": "array",
+							"items": {"type": "string"},
+							"description": "The extension numbers to remove, written out one by one."
+						}
+					}
+				}`),
+				Handler: deleteExtensions,
+			},
+			{
+				Name:               "ringgroups.delete",
+				Description:        "Removes one ring group, named by its number. The extensions in it are left alone.",
+				Summary:            "Removes a ring group.",
+				Provides:           []plugin.Capability{plugin.CapPhoneRingGroupDelete},
+				Mutates:            true,
+				RequiresPermission: "phone.manage",
+				Schema: json.RawMessage(`{
+					"type": "object",
+					"required": ["number"],
+					"properties": {
+						"number": {"type": "string", "description": "The ring group's number."}
+					}
+				}`),
+				Handler: deleteRingGroup,
+			},
 		},
 	}
 
@@ -407,6 +515,96 @@ func (c pbx) get(ctx context.Context, path string, query url.Values, into any) e
 
 	if err := json.NewDecoder(io.LimitReader(res.Body, 8<<20)).Decode(into); err != nil {
 		return plugin.Errorf("502", "the phone system returned something unreadable")
+	}
+	return nil
+}
+
+// post creates something on the PBX and returns what it made.
+//
+// Separate from patch because creating and changing fail differently: a create
+// that collides with an existing extension comes back as a 400 whose body is
+// the only thing that says which number was taken, and that detail is the
+// difference between a usable error and "the phone system would not accept
+// that".
+func (c pbx) post(ctx context.Context, path string, body any, into any) error {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return plugin.Errorf("500", "the request could not be prepared")
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.base+"/xapi/v1/"+path, bytes.NewReader(payload))
+	if err != nil {
+		return plugin.Errorf("500", "the request could not be prepared")
+	}
+	req.Header.Set("authorization", "Bearer "+c.token)
+	req.Header.Set("content-type", "application/json")
+	// Without these 3CX refuses every create with "The delta field is
+	// required", which is not about the body at all: the delta it means is
+	// OData's change-tracking, and it only engages once the request declares
+	// which OData version it speaks and asks for the created object back.
+	// Hours are lost to this error because it names a field that never existed.
+	// Assigned to the map directly rather than through Set, which canonicalises
+	// to "Odata-Version". 3CX's OData stack looks for the exact spelling, and
+	// the difference between the two is a create that always fails.
+	req.Header["OData-Version"] = []string{"4.0"}
+	req.Header["OData-MaxVersion"] = []string{"4.0"}
+	req.Header["Prefer"] = []string{"return=representation"}
+
+	res, err := (&http.Client{Timeout: 25 * time.Second}).Do(req)
+	if err != nil {
+		return plugin.Errorf("502", "the phone system could not be reached")
+	}
+	defer res.Body.Close() //nolint:errcheck // best effort
+
+	switch {
+	case res.StatusCode == http.StatusForbidden:
+		return plugin.Errorf("403", "that extension does not have permission to create this")
+	case res.StatusCode >= 400:
+		raw, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
+		detail := strings.TrimSpace(string(raw))
+		if len(detail) > 300 {
+			detail = detail[:300]
+		}
+		return plugin.Errorf("400", "the phone system would not create that: %s", detail)
+	}
+
+	if into == nil {
+		return nil
+	}
+	// A create can legitimately answer 204 with no body.
+	if err := json.NewDecoder(io.LimitReader(res.Body, 8<<20)).Decode(into); err != nil {
+		return nil
+	}
+	return nil
+}
+
+// remove deletes something from the PBX.
+func (c pbx) remove(ctx context.Context, path string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.base+"/xapi/v1/"+path, nil)
+	if err != nil {
+		return plugin.Errorf("500", "the request could not be prepared")
+	}
+	req.Header.Set("authorization", "Bearer "+c.token)
+
+	res, err := (&http.Client{Timeout: 25 * time.Second}).Do(req)
+	if err != nil {
+		return plugin.Errorf("502", "the phone system could not be reached")
+	}
+	defer res.Body.Close() //nolint:errcheck // best effort
+
+	switch {
+	case res.StatusCode == http.StatusForbidden:
+		return plugin.Errorf("403", "that extension does not have permission to remove this")
+	case res.StatusCode == http.StatusNotFound:
+		return plugin.Errorf("404", "that no longer exists on this phone system")
+	case res.StatusCode >= 400:
+		raw, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
+		detail := strings.TrimSpace(string(raw))
+		if len(detail) > 200 {
+			detail = detail[:200]
+		}
+		return plugin.Errorf("400", "the phone system would not remove that: %s", detail)
 	}
 	return nil
 }

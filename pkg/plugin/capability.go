@@ -57,7 +57,12 @@ const (
 	CapWorkItemsUpdate  Capability = "work_items.update"
 	// CapPhoneExtensionWrite is creating or changing extensions on a customer's
 	// phone system.
-	CapPhoneExtensionWrite Capability = "phone_system.extension_change"
+	CapPhoneExtensionWrite  Capability = "phone_system.extension_change"
+	CapPhoneExtensionCreate Capability = "phone_system.extension_create"
+	CapPhoneRingGroups      Capability = "phone_system.ring_groups"
+	CapPhoneRingGroupWrite  Capability = "phone_system.ring_group_create"
+	CapPhoneExtensionDelete Capability = "phone_system.extension_delete"
+	CapPhoneRingGroupDelete Capability = "phone_system.ring_group_delete"
 
 	// CapPhoneStatus is whether a customer's phone system is healthy: how many
 	// extensions and trunks are registered against how many exist, how many
@@ -94,28 +99,33 @@ const (
 )
 
 var vocabulary = map[Capability]struct{}{
-	CapCustomersList:       {},
-	CapCustomersGet:        {},
-	CapCustomersContacts:   {},
-	CapWorkItemsSearch:     {},
-	CapWorkItemsGet:        {},
-	CapWorkItemsTimeline:   {},
-	CapWorkItemsSchema:     {},
-	CapTimeEntriesList:     {},
-	CapAssetsList:          {},
-	CapWebSearch:           {},
-	CapPhoneStatus:         {},
-	CapPhoneExtensions:     {},
-	CapWorkItemsComment:    {},
-	CapWorkItemsUpdate:     {},
-	CapPhoneExtensionWrite: {},
-	CapCallsList:           {},
-	CapDocsSearch:          {},
-	CapInvoicesList:        {},
-	CapCustomerStanding:    {},
-	CapAccessCheck:         {},
-	CapRecordingsGet:       {},
-	CapDiagnostic:          {},
+	CapCustomersList:        {},
+	CapCustomersGet:         {},
+	CapCustomersContacts:    {},
+	CapWorkItemsSearch:      {},
+	CapWorkItemsGet:         {},
+	CapWorkItemsTimeline:    {},
+	CapWorkItemsSchema:      {},
+	CapTimeEntriesList:      {},
+	CapAssetsList:           {},
+	CapWebSearch:            {},
+	CapPhoneStatus:          {},
+	CapPhoneExtensions:      {},
+	CapWorkItemsComment:     {},
+	CapWorkItemsUpdate:      {},
+	CapPhoneExtensionWrite:  {},
+	CapPhoneExtensionCreate: {},
+	CapPhoneRingGroups:      {},
+	CapPhoneRingGroupWrite:  {},
+	CapPhoneExtensionDelete: {},
+	CapPhoneRingGroupDelete: {},
+	CapCallsList:            {},
+	CapDocsSearch:           {},
+	CapInvoicesList:         {},
+	CapCustomerStanding:     {},
+	CapAccessCheck:          {},
+	CapRecordingsGet:        {},
+	CapDiagnostic:           {},
 }
 
 // Valid reports whether c belongs to Azir's vocabulary.
