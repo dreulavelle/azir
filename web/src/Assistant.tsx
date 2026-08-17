@@ -879,7 +879,9 @@ function ChangeCard({ change, onDecided }: { change: Proposal; onDecided: () => 
   }
 
   return (
-    <div className="rounded-lg border border-attention/40 bg-attention/[0.05]">
+    // A change waiting for approval is the one thing in this panel that must
+    // not be scrolled past, so it is the one thing that announces itself.
+    <div className="arriving rounded-lg border border-attention/40 bg-attention/[0.05]">
       <div className="flex items-center gap-2 border-b border-attention/25 px-3.5 py-2">
         <Label className="text-attention">Waiting for you</Label>
         <Label className="opacity-70">
@@ -1014,7 +1016,7 @@ function Message({
 
   if (mine) {
     return (
-      <div className="flex items-start justify-end gap-3">
+      <div className="arriving flex items-start justify-end gap-3">
         <div className="flex min-w-0 flex-col items-end gap-1">
           <Label>{pending ? "sending…" : ago(message.created_at)}</Label>
           <div className="max-w-[46rem] whitespace-pre-wrap break-words rounded-lg rounded-tr-sm border border-edge bg-sunken px-3.5 py-2.5 text-sm">
@@ -1029,7 +1031,10 @@ function Message({
   }
 
   return (
-    <div className="flex items-start gap-3">
+    // Rises into place rather than fading, so the direction itself says the
+    // message is new. Keyed on the message id, so a re-render during streaming
+    // does not restart it under the words being read.
+    <div className="arriving flex items-start gap-3">
       <span className="mt-5 grid size-7 shrink-0 place-items-center rounded-md bg-azir/15 text-azir">
         <Icon.spark />
       </span>

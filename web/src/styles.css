@@ -336,6 +336,80 @@
 }
 
 /* ---------------------------------------------------------------------------
+   Motion.
+
+   Three durations, and nothing outside them. Every animation here is a reply to
+   something — a row that changed under you, a panel you opened, an answer that
+   arrived — because ambient movement beside a queue competes with the queue,
+   and the queue is what the eye is meant to be scanning. If a technician's
+   attention moves, it should be because something asked for it.
+--------------------------------------------------------------------------- */
+
+@theme {
+  /* Acknowledgement: hover, focus, a value ticking over. */
+  --ease-quick: 120ms;
+  /* Something appearing or leaving. */
+  --ease-enter: 220ms;
+  /* A change that happened without you, and has to be noticed across a page. */
+  --ease-notice: 900ms;
+  --ease-out-soft: cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+/* A row whose ticket moved while you were looking elsewhere. It warms once and
+   settles, rather than pulsing forever — a permanent animation stops being
+   information and becomes something you learn to ignore. */
+@keyframes settle {
+  0% {
+    background: color-mix(in srgb, var(--azir) 16%, transparent);
+  }
+  100% {
+    background: transparent;
+  }
+}
+
+.just-changed {
+  animation: settle var(--ease-notice) var(--ease-out-soft);
+}
+
+/* Something arriving in a list: the assistant's next message, a proposal, a
+   row appended by a refresh. It rises a little rather than fading in place, so
+   the direction says "this is new" without a label. */
+@keyframes arrive {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.arriving {
+  animation: arrive var(--ease-enter) var(--ease-out-soft);
+}
+
+/* A count that changed. One short lift, so a number moving is visible in
+   peripheral vision without a colour change that would mean "wrong". */
+@keyframes tick {
+  50% {
+    transform: translateY(-2px);
+  }
+}
+
+.ticked {
+  animation: tick var(--ease-enter) var(--ease-out-soft);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .just-changed,
+  .arriving,
+  .ticked {
+    animation: none;
+  }
+}
+
+/* ---------------------------------------------------------------------------
    Markdown, as the assistant writes it.
 
    The model answers in markdown, so the panel renders markdown — but at the
