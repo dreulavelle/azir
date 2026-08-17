@@ -280,10 +280,20 @@ func (c *HTTPClient) Do(ctx context.Context, method, path string, query url.Valu
 			// denial rather than 403, so this cannot claim the credential is
 			// wrong. Naming both causes is the only honest message.
 			return nil, &Error{Code: strconv.Itoa(resp.StatusCode),
-				Message: "the stored credential was rejected, or lacks permission for this data; check it in settings"}
+				Message: "The stored credential was rejected, or lacks permission for this data. Check it in settings."}
+
+		case resp.StatusCode == http.StatusNotFound:
+			// The commonest 4xx a person meets, and the one where a generic
+			// message is least useful: they followed a link to something that
+			// is not there any more.
+			return nil, &Error{Code: "404",
+				Message: "That no longer exists in the connected system."}
 
 		case resp.StatusCode >= 400:
-			message := "the vendor rejected this request"
+			// Written for the technician who meets it, not for whoever is
+			// reading a log. "Vendor" is our word for the connected system;
+			// they only know it by name.
+			message := "The connected system would not accept that request."
 			if c.cfg.ExplainError != nil && readErr == nil {
 				if explained := strings.TrimSpace(c.cfg.ExplainError(resp.StatusCode, data)); explained != "" {
 					message = explained
@@ -293,11 +303,11 @@ func (c *HTTPClient) Do(ctx context.Context, method, path string, query url.Valu
 		}
 
 		if readErr != nil {
-			return nil, errors.New("plugin: could not read vendor response")
+			return nil, errors.New("the connected system sent a reply that could not be read")
 		}
 		return data, nil
 	}
-	return nil, fmt.Errorf("plugin: vendor returned %d", lastStatus)
+	return nil, fmt.Errorf("the connected system is not responding (last answer was %d)", lastStatus)
 }
 
 // backoff grows exponentially with a cap.

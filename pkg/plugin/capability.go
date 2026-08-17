@@ -25,6 +25,66 @@ const (
 	CapAccessCheck     Capability = "access.check"
 	CapRecordingsGet   Capability = "recordings.get"
 
+	// CapWorkItemsTimeline is one work item's history as a single ordered
+	// sequence, with whatever the plugin can compute about its shape.
+	//
+	// Distinct from CapWorkItemsGet rather than a flag on it, because a caller
+	// asking for a capability must get exactly one kind of answer. When several
+	// tools answered to one tag, the choice between "fetch this ticket" and
+	// "reconstruct its history" fell to whichever sorted first.
+	CapWorkItemsTimeline Capability = "work_items.timeline"
+
+	// CapCustomerStanding is a customer's financial position as a summary,
+	// which is a different question from listing their invoices.
+	CapCustomerStanding Capability = "customers.standing"
+
+	// CapWorkItemsSchema is what a connected system will accept for a work
+	// item — its statuses, its people — so an interface can offer real choices
+	// instead of asking someone to type a status and hope.
+	CapWorkItemsSchema Capability = "work_items.schema"
+
+	// Capabilities that change something.
+	//
+	// Separate tags from the ones that read, because a caller asking to read a
+	// ticket and a caller asking to comment on one want different things and a
+	// shared tag makes them indistinguishable. It also matters to the
+	// assistant: a write is offered to it as "propose.<capability>", and
+	// "propose.work_items.get" is a phrase nobody can act on — it reads as
+	// proposing to fetch something. Naming the action makes the offer legible.
+	CapWorkItemsComment Capability = "work_items.comment"
+	CapWorkItemsUpdate  Capability = "work_items.update"
+	// CapPhoneExtensionWrite is creating or changing extensions on a customer's
+	// phone system.
+	CapPhoneExtensionWrite Capability = "phone_system.extension_change"
+
+	// CapPhoneStatus is whether a customer's phone system is healthy: how many
+	// extensions and trunks are registered against how many exist, how many
+	// calls are running against what the licence allows, and whether anything
+	// has stopped.
+	//
+	// One capability rather than several because the question a helpdesk asks
+	// is "is their phone system all right", and answering it in four calls
+	// makes four ways to answer it wrong.
+	CapPhoneStatus Capability = "phone_system.status"
+
+	// CapPhoneExtensions is who has an extension and whether their handset is
+	// currently registered — the difference between "the phone is broken" and
+	// "the phone is unplugged".
+	CapPhoneExtensions Capability = "phone_system.extensions"
+
+	// CapWebSearch is the public internet, as search results.
+	//
+	// The only capability whose answers come from outside the customer's own
+	// systems, which makes it the only one that can carry information *out*.
+	// Two rules follow from that and are enforced by the plugin rather than
+	// left to a prompt: the caller supplies a query, never a destination, so
+	// the model cannot choose which host is contacted; and nothing is fetched
+	// from a URL the search did not return. Without those, a customer who
+	// writes "look up evil.example/?data=" into a ticket has an exfiltration
+	// channel, in a product whose whole claim is that their data does not
+	// leave.
+	CapWebSearch Capability = "web.search"
+
 	// CapDiagnostic is for tools that expose no customer data at all, such as
 	// the echo plugin. It exists so that trivial plugins need not misuse a
 	// domain tag.
@@ -32,18 +92,27 @@ const (
 )
 
 var vocabulary = map[Capability]struct{}{
-	CapCustomersList:   {},
-	CapCustomersGet:    {},
-	CapWorkItemsSearch: {},
-	CapWorkItemsGet:    {},
-	CapTimeEntriesList: {},
-	CapAssetsList:      {},
-	CapCallsList:       {},
-	CapDocsSearch:      {},
-	CapInvoicesList:    {},
-	CapAccessCheck:     {},
-	CapRecordingsGet:   {},
-	CapDiagnostic:      {},
+	CapCustomersList:       {},
+	CapCustomersGet:        {},
+	CapWorkItemsSearch:     {},
+	CapWorkItemsGet:        {},
+	CapWorkItemsTimeline:   {},
+	CapWorkItemsSchema:     {},
+	CapTimeEntriesList:     {},
+	CapAssetsList:          {},
+	CapWebSearch:           {},
+	CapPhoneStatus:         {},
+	CapPhoneExtensions:     {},
+	CapWorkItemsComment:    {},
+	CapWorkItemsUpdate:     {},
+	CapPhoneExtensionWrite: {},
+	CapCallsList:           {},
+	CapDocsSearch:          {},
+	CapInvoicesList:        {},
+	CapCustomerStanding:    {},
+	CapAccessCheck:         {},
+	CapRecordingsGet:       {},
+	CapDiagnostic:          {},
 }
 
 // Valid reports whether c belongs to Azir's vocabulary.
@@ -77,5 +146,14 @@ const (
 	CategoryTelephony     Category = "telephony"
 	CategoryRMM           Category = "rmm"
 	CategoryDocumentation Category = "documentation"
-	CategoryOther         Category = "other"
+	// CategoryAI is for connections that exist to make the assistant better
+	// rather than to reach a customer's system — a search backend, a knowledge
+	// source. Worth its own group because the question an administrator asks
+	// about them is different: not "can we reach the customer" but "what is
+	// the assistant allowed to consult".
+	CategoryAI Category = "ai"
+	// CategoryInternal is for connections that report on Azir itself and hold
+	// no customer data at all.
+	CategoryInternal Category = "internal"
+	CategoryOther    Category = "other"
 )

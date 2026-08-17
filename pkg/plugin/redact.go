@@ -18,6 +18,13 @@ const redactedMarker = "[redacted]"
 var sensitiveKeys = []string{
 	"password", "passwd", "secret", "token", "apikey", "api_key",
 	"authorization", "credential", "private_key", "session", "cookie",
+	// Telephony puts credentials behind names that none of the above catch.
+	// A SIP AuthID is half of a SIP credential pair, a voicemail PIN opens a
+	// mailbox from any phone in the world, and a licence key is worth money.
+	// Added when the 3CX plugin was written, because its extension list
+	// returns all three by default and one forgotten field is a breach.
+	"authid", "auth_id", "vmpin", "sipid", "sip_id", "licensekey", "license_key",
+	"pin",
 }
 
 // Redactor scrubs handler return values before they reach the wire. It runs

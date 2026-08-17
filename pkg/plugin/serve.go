@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -25,12 +26,14 @@ const SDKVersion = "0.1.0"
 const (
 	MetaName         = "azir.name"
 	MetaDescription  = "azir.description"
+	MetaSummary      = "azir.summary"
 	MetaProvides     = "azir.provides"
 	MetaMutates      = "azir.mutates"
 	MetaSchema       = "azir.schema"
 	MetaFreshness    = "azir.freshness"
 	MetaPermission   = "azir.permission"
 	MetaCategory     = "azir.category"
+	MetaConfigScope  = "azir.config_scope"
 	MetaConfigSchema = "azir.config_schema"
 	MetaSDK          = "azir.sdk"
 )
@@ -154,11 +157,28 @@ func Serve(ctx context.Context, p Plugin, opts ...Option) error {
 	// settings and resolve a credential to decide what works. Without this it
 	// can only ever report "not configured".
 	pluginCtx := withIdentity(withConfig(withVault(context.Background(), vault), cfg), ident)
-	healthSub, err := serveHealth(nc, p.Name, newHealthCache(p.Preflight), pluginCtx)
+	health := newHealthCache(p.Preflight)
+	healthSub, err := serveHealth(nc, p.Name, health, pluginCtx)
 	if err != nil {
 		return err
 	}
 	defer healthSub.Unsubscribe() //nolint:errcheck // best effort on shutdown
+
+	// An administrator pressing save takes effect now rather than whenever the
+	// caches happen to expire. Health is dropped too: what a plugin can do is
+	// mostly a function of what it has been configured with, so a stale answer
+	// there would report the old capability set just as misleadingly.
+	changedSub, err := nc.Subscribe(ConfigChangedSubject(p.Name), func(*nats.Msg) {
+		cfg.Invalidate()
+		vault.Forget("", "")
+		vault.ForgetAll()
+		health.invalidate()
+		log.Info("settings changed; caches dropped")
+	})
+	if err != nil {
+		return err
+	}
+	defer changedSub.Unsubscribe() //nolint:errcheck // best effort on shutdown
 
 	for _, t := range p.Tools {
 		if err := svc.AddEndpoint(
@@ -186,9 +206,12 @@ func toolMetadata(t Tool) map[string]string {
 		// The true name, since the endpoint name has had its dots removed.
 		MetaName:        t.Name,
 		MetaDescription: t.Description,
-		MetaProvides:    strings.Join(capsToStrings(t.Provides), ","),
-		MetaMutates:     strconv.FormatBool(t.Mutates),
-		MetaSchema:      string(stripSecretFields(t.Schema, t.Secrets)),
+		// Falls back to the model-facing text, so a plugin that has not written
+		// a human summary still says something rather than nothing.
+		MetaSummary:  cmp.Or(t.Summary, t.Description),
+		MetaProvides: strings.Join(capsToStrings(t.Provides), ","),
+		MetaMutates:  strconv.FormatBool(t.Mutates),
+		MetaSchema:   string(stripSecretFields(t.Schema, t.Secrets)),
 	}
 	if t.Freshness != nil {
 		meta[MetaFreshness] = t.Freshness.String()
@@ -206,6 +229,7 @@ func toolMetadata(t Tool) map[string]string {
 func serviceMetadata(p Plugin) map[string]string {
 	return map[string]string{
 		MetaCategory:     string(categoryOrOther(p.Category)),
+		MetaConfigScope:  string(p.ConfigScope),
 		MetaSDK:          SDKVersion,
 		MetaConfigSchema: string(p.ConfigSchema),
 	}

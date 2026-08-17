@@ -50,8 +50,20 @@ type Tool struct {
 	Name string
 
 	// Description is surfaced to the model. Write it for a reader who knows
-	// the domain but not this vendor's API.
+	// the domain but not this vendor's API, and say when to reach for this
+	// rather than something else — that steer is most of its value.
 	Description string
+
+	// Summary is surfaced to people, in the settings screen where an
+	// administrator decides whether to allow this.
+	//
+	// Separate from Description because the two have different readers with
+	// different questions. The model needs to be told when to choose this tool;
+	// an administrator needs to know what it will touch. Writing one string for
+	// both means an admin screen full of instructions addressed to somebody
+	// else. Empty falls back to Description, so a plugin that has not thought
+	// about it still shows something.
+	Summary string
 
 	// Schema is a JSON Schema for Args. Properties named in Secrets are
 	// stripped before publication, so the model cannot request them.
@@ -115,6 +127,16 @@ func (f Freshness) String() string {
 	return f.Soft.String() + "/" + f.Hard.String()
 }
 
+// MarshalJSON writes durations as "30m0s" rather than as a nanosecond count,
+// because this reaches the admin console and a reader should be able to see
+// what the budget is without dividing by a billion.
+func (f Freshness) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Soft string `json:"soft"`
+		Hard string `json:"hard"`
+	}{f.Soft.String(), f.Hard.String()})
+}
+
 // ParseFreshness reads what String wrote.
 func ParseFreshness(s string) (Freshness, bool) {
 	soft, hard, ok := strings.Cut(s, "/")
@@ -136,6 +158,17 @@ type Plugin struct {
 	Description string
 	Category    Category
 
+	// ConfigScope says whose settings these are.
+	//
+	// Most connections are one per deployment: an MSP has one Syncro tenant
+	// and one search service. A phone system is not — every customer has their
+	// own PBX with its own address and its own credentials, and a single
+	// global setting would mean the MSP could only ever reach one of them.
+	//
+	// Declared by the plugin rather than special-cased in the console, so the
+	// second per-customer system needs no frontend work either.
+	ConfigScope ConfigScope
+
 	// ConfigSchema is a JSON Schema for this plugin's connection settings —
 	// Syncro needs a subdomain and API key, 3CX an FQDN plus extension and
 	// password. The admin console renders the form from this, which is what
@@ -153,6 +186,18 @@ type Plugin struct {
 	// Optional: nil means every tool is assumed available.
 	Preflight Preflight
 }
+
+// ConfigScope is whether a plugin is configured once or once per customer.
+type ConfigScope string
+
+const (
+	// ScopeDeployment is one set of settings for the whole installation. The
+	// zero value, because it is the common case.
+	ScopeDeployment ConfigScope = ""
+	// ScopeCustomer is one set of settings per customer, held against that
+	// customer and used only when acting on their behalf.
+	ScopeCustomer ConfigScope = "customer"
+)
 
 // Error is a controlled error response. Handlers should return these rather
 // than wrapping vendor errors, which routinely carry request URLs and auth

@@ -22,6 +22,21 @@ func ConfigSubject(pluginName string) string {
 	return ConfigSubjectPrefix + "." + pluginName
 }
 
+// ConfigChangedPrefix is where core announces that an administrator changed a
+// plugin's settings.
+//
+// Without it, a plugin keeps serving from its cache for the length of the TTL
+// after someone presses save — so the administrator who has just typed the
+// right credential is told the plugin is not configured, and reasonably
+// concludes they typed it wrong. Correct after thirty seconds is the wrong
+// answer at the only moment anybody is watching.
+const ConfigChangedPrefix = "azir.config.changed"
+
+// ConfigChangedSubject returns the announcement subject for a plugin.
+func ConfigChangedSubject(pluginName string) string {
+	return ConfigChangedPrefix + "." + pluginName
+}
+
 // SecretMarker flags a property in a plugin's ConfigSchema as credential
 // material. Marked fields are stored in the vault rather than the config
 // table, are never returned by the settings API, and never appear in a

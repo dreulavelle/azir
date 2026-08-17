@@ -72,6 +72,15 @@ func newHealthCache(fn Preflight) *healthCache {
 	return &healthCache{fn: fn, ttl: 60 * time.Second}
 }
 
+// invalidate forces the next check to run for real. What a plugin can do is
+// largely decided by what it has been configured with, so a settings change
+// makes the previous answer obsolete rather than merely old.
+func (h *healthCache) invalidate() {
+	h.mu.Lock()
+	h.hasLast = false
+	h.mu.Unlock()
+}
+
 func (h *healthCache) get(ctx context.Context) Health {
 	h.mu.Lock()
 	defer h.mu.Unlock()

@@ -80,6 +80,25 @@ func newVault(nc *nats.Conn, pluginName string, red *Redactor, onLearn func(stri
 	}
 }
 
+// Learn registers a value that was derived from a stored credential.
+//
+// A plugin that exchanges a password for a session token holds a second
+// credential the vault never issued: the token opens the same system, and a
+// future change here that put it in an error message would leak it. Handing it
+// back means the redactor strips it wherever it turns up, on the same terms as
+// the password it came from.
+func (v *Vault) Learn(value string) {
+	if value == "" {
+		return
+	}
+	if v.red != nil {
+		v.red.Learn(value)
+	}
+	if v.onLearn != nil {
+		v.onLearn(value)
+	}
+}
+
 // For resolves a credential for a customer. Pass an empty customerID for a
 // deployment-wide secret.
 //
@@ -146,6 +165,15 @@ func (v *Vault) For(ctx context.Context, customerID, kind string) (string, error
 func (v *Vault) Forget(customerID, kind string) {
 	v.mu.Lock()
 	delete(v.cache, customerID+"\x00"+kind)
+	v.mu.Unlock()
+}
+
+// ForgetAll drops every cached credential. Called when an administrator changes
+// this plugin's settings, since the credential they just replaced is exactly
+// the one still sitting in the cache.
+func (v *Vault) ForgetAll() {
+	v.mu.Lock()
+	v.cache = map[string]cachedSecret{}
 	v.mu.Unlock()
 }
 
