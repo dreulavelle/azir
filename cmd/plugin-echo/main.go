@@ -30,8 +30,8 @@ func main() {
 	p := plugin.Plugin{
 		Name:        "echo",
 		Version:     "0.1.0",
-		Description: "Diagnostic plugin used to verify discovery and transport",
-		Category:    plugin.CategoryOther,
+		Description: "Built-in checks that confirm Azir itself is working",
+		Category:    plugin.CategoryInternal,
 		// Published to core, which renders the settings form from it. Fields
 		// marked x-azir-secret are sealed into the vault instead of the config
 		// table, so one admin form can hold both kinds safely.
@@ -60,7 +60,7 @@ func main() {
 		Tools: []plugin.Tool{
 			{
 				Name:        "ping",
-				Description: "Returns a timestamped acknowledgement. Confirms the plugin is reachable.",
+				Description: "Confirms Azir can reach this connection and get an answer back.",
 				Provides:    []plugin.Capability{plugin.CapDiagnostic},
 				Schema: json.RawMessage(`{
 					"type": "object",
@@ -72,14 +72,14 @@ func main() {
 			},
 			{
 				Name:        "secret.check",
-				Description: "Reports whether this plugin's demo credential is configured, without revealing it.",
+				Description: "Confirms a stored password can be read back without ever revealing it.",
 				Provides:    []plugin.Capability{plugin.CapDiagnostic},
 				Schema:      json.RawMessage(`{"type": "object", "properties": {}}`),
 				Handler:     secretCheck,
 			},
 			{
 				Name:        "leak",
-				Description: "Deliberately returns credential-shaped fields. Proves SDK redaction runs on the return path.",
+				Description: "Deliberately tries to return password-shaped text, to prove Azir strips it before anything sees it.",
 				Provides:    []plugin.Capability{plugin.CapDiagnostic},
 				Schema:      json.RawMessage(`{"type": "object", "properties": {}}`),
 				Handler:     leak,
