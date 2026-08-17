@@ -178,6 +178,12 @@ func (s *Server) Routes() http.Handler {
 	// proposals go through.
 	mux.HandleFunc("POST /api/change/{capability}", s.require(p, s.applyChange))
 
+	// Diagnostic snapshots: a phone system's support bundle, read.
+	mux.HandleFunc("GET /api/snapshots", s.require(p, ignoreActor(s.listSnapshots)))
+	mux.HandleFunc("GET /api/snapshots/{id}", s.require(p, ignoreActor(s.getSnapshot)))
+	mux.HandleFunc("POST /api/snapshots", s.require(p, s.uploadSnapshot))
+	mux.HandleFunc("DELETE /api/snapshots/{id}", s.require(p, s.deleteSnapshot))
+
 	// Recall over finished work. Reading it needs no more than reading a
 	// ticket; filling it is an administrator's decision, because it costs
 	// thousands of requests against somebody else's API.

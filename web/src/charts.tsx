@@ -45,6 +45,8 @@ export function Trend({
   tone = "idle",
   againstTone = "steady",
   legend,
+  spanLabel = "days",
+  zeroed = true,
 }: {
   points: Point[];
   against?: Point[];
@@ -54,6 +56,18 @@ export function Trend({
   againstTone?: Signal;
   /** What the two series are called, when there are two. */
   legend?: { points: string; against: string };
+  /** What one point is. Readings are not days, and saying "5040 days" of a
+   *  week's metrics is worse than saying nothing. */
+  spanLabel?: string;
+  /**
+   * Whether the floor is zero.
+   *
+   * Right for a count, wrong for a level. Free disk moving from 262 GB to 256
+   * over a week is the whole story, and against a zero floor it is a flat line
+   * — the chart draws truthfully and shows nothing. Scaling to the range the
+   * data actually occupies is what makes the slope visible.
+   */
+  zeroed?: boolean;
 }) {
   const gradientId = useId();
   const [hover, setHover] = useState<number | null>(null);
@@ -65,11 +79,15 @@ export function Trend({
 
     // Both series share one scale, or the comparison would be a lie: a fill
     // drawn against its own maximum can sit above a line that is twice its size.
-    const peak = Math.max(...points.map((p) => p.value), ...(against ?? []).map((p) => p.value), 1);
+    const all = [...points, ...(against ?? [])].map((p) => p.value);
+    const peak = Math.max(...all, 1);
+    // The floor: zero for a count, the low reading for a level.
+    const floor = zeroed ? 0 : Math.min(...all);
+    const span = Math.max(peak - floor, 1e-9);
     const stepX = 100 / Math.max(points.length - 1, 1);
     // 8% of headroom so a peak is not glued to the top edge.
     const plot = (series: Point[]) =>
-      series.map((p, i) => ({ x: i * stepX, y: 100 - (p.value / peak) * 92, point: p }));
+      series.map((p, i) => ({ x: i * stepX, y: 100 - ((p.value - floor) / span) * 92, point: p }));
 
     const coords = plot(points);
     const line = coords.map((c, i) => `${i === 0 ? "M" : "L"}${c.x},${c.y}`).join(" ");
@@ -85,7 +103,7 @@ export function Trend({
       againstArea: againstLine ? `${againstLine} L100,100 L0,100 Z` : "",
       peak,
     };
-  }, [points, against]);
+  }, [points, against, zeroed]);
 
   if (points.length === 0) return null;
 
@@ -206,7 +224,7 @@ export function Trend({
         ) : (
           <Label>
             peak {peak}
-            {unit} · {points.length} days
+            {unit} · {points.length} {spanLabel}
           </Label>
         )}
       </div>

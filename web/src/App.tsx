@@ -23,6 +23,7 @@ import { Tickets } from "./pages/Tickets";
 import { TicketDetail } from "./pages/TicketDetail";
 import { Customers, CustomerDetail } from "./pages/CustomerPages";
 import { Chats } from "./pages/Chats";
+import { Diagnostics } from "./pages/Diagnostics";
 import { settingsTabsFor } from "./pages/settingsTabs";
 
 /**
@@ -228,6 +229,17 @@ function Console() {
           onClick={() => go({ name: "customers" })}
         />
 
+        {/* Tools are the things a technician opens to do a job, as opposed to
+            the queue they work through. A section of their own because they are
+            a different kind of thing, and because there will be more of them. */}
+        <NavGroup label="Tools" />
+        <NavItem
+          icon={<Icon.diagnostics />}
+          label="Diagnostics"
+          active={route.name === "diagnostics" || route.name === "snapshot"}
+          onClick={() => go({ name: "diagnostics" })}
+        />
+
         <NavGroup label="Assistant" />
         <NavItem
           icon={<Icon.spark />}
@@ -366,6 +378,9 @@ function Console() {
         {route.name === "customers" && <Customers query={route.query} go={go} />}
         {route.name === "customer" && <CustomerDetail id={route.id} go={go} actor={actor} />}
         {route.name === "chats" && <Chats go={go} />}
+        {(route.name === "diagnostics" || route.name === "snapshot") && (
+          <Diagnostics openId={route.name === "snapshot" ? route.id : undefined} go={go} />
+        )}
         {route.name === "settings" && (
           <Suspense fallback={<div className="mx-auto max-w-[1180px] px-6 py-6"><div className="h-40 animate-pulse rounded-lg bg-sunken" /></div>}>
             <Settings actor={actor} tab={route.tab} go={go} />

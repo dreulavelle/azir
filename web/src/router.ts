@@ -37,6 +37,8 @@ export type Route =
   | { name: "customers"; query?: string }
   | { name: "customer"; id: string }
   | { name: "chats" }
+  | { name: "diagnostics" }
+  | { name: "snapshot"; id: string }
   | { name: "settings"; tab?: string };
 
 export function parse(path: string, search: string): Route {
@@ -63,6 +65,8 @@ export function parse(path: string, search: string): Route {
         : { name: "customers", query: params.get("q") ?? undefined };
     case "chats":
       return { name: "chats" };
+    case "diagnostics":
+      return tail ? { name: "snapshot", id: tail } : { name: "diagnostics" };
     case "settings":
       return { name: "settings", tab: tail || "plugins" };
     default:
@@ -92,6 +96,10 @@ export function href(route: Route): string {
       return `/customers/${route.id}`;
     case "chats":
       return "/chats";
+    case "diagnostics":
+      return "/diagnostics";
+    case "snapshot":
+      return `/diagnostics/${route.id}`;
     case "settings":
       return `/settings/${route.tab ?? "plugins"}`;
   }

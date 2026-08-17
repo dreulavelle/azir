@@ -498,6 +498,93 @@ export const act = {
     change<Ticket>(Cap.ticketUpdate, { id, ...fields }),
 };
 
+/** One thing a diagnostic capture found wrong. */
+export type Finding = {
+  severity: "critical" | "warning" | "note";
+  title: string;
+  detail: string;
+  evidence?: string[];
+  occurrences?: number;
+  source?: string;
+};
+
+export type SnapshotReport = {
+  system: {
+    version?: string;
+    os?: string;
+    cpu_model?: string;
+    cpu_count?: number;
+    total_memory_gb?: number;
+    free_memory_gb?: number;
+    total_disk_gb?: number;
+    free_disk_gb?: number;
+    extensions?: number;
+    queues?: number;
+    ring_groups?: number;
+    ivrs?: number;
+    virtualised?: string;
+    captured_at?: string;
+  };
+  health: { name: string; says: string; ok: boolean }[];
+  findings: Finding[];
+  series: {
+    cpu_percent?: { at: string; value: number }[];
+    free_memory_gb?: { at: string; value: number }[];
+    free_disk_gb?: { at: string; value: number }[];
+  };
+  files_read: string[];
+  files_missing?: string[];
+};
+
+/** A capture of one phone system at one moment. */
+export type Snapshot = {
+  id: string;
+  customer_id: string;
+  kind: string;
+  filename?: string;
+  captured_at?: string;
+  report?: SnapshotReport;
+  findings: number;
+  worst?: string;
+  uploaded_by?: string;
+  uploaded_at: string;
+};
+
+export const snapshots = {
+  list: (customerId?: string) =>
+    request<Snapshot[]>(`/api/snapshots${customerId ? `?customer_id=${customerId}` : ""}`),
+
+  get: (id: string) => request<Snapshot>(`/api/snapshots/${id}`),
+
+  remove: (id: string) => request<void>(`/api/snapshots/${id}`, { method: "DELETE" }),
+
+  /**
+   * Uploads a support bundle.
+   *
+   * Not through `request`, because that sets a JSON content type and a
+   * multipart body needs the browser to set its own with the boundary in it.
+   */
+  upload: async (customerId: string, file: File) => {
+    const body = new FormData();
+    body.append("bundle", file);
+    let res: Response;
+    try {
+      res = await fetch(`/api/snapshots?customer_id=${customerId}`, { method: "POST", body });
+    } catch {
+      throw new Unreachable();
+    }
+    if (res.status === 401) {
+      onExpired?.();
+      throw new Unauthorized();
+    }
+    if (!res.ok) {
+      const problem = await res.json().catch(() => ({}));
+      throw new Error(problem?.error ?? `${res.status} ${res.statusText}`);
+    }
+    return (await res.json()) as { snapshot: Snapshot; report: SnapshotReport };
+  },
+};
+
 export const work = {
   /**
    * Finds tickets.
