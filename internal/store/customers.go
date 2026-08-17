@@ -70,7 +70,12 @@ func (db *DB) GetCustomer(ctx context.Context, id uuid.UUID) (Customer, error) {
 	return c, nil
 }
 
-// ListCustomers returns every customer, without identities.
+// ListCustomers returns every customer with the identities each is known by.
+//
+// Hydrated in one extra query rather than left empty: the type promises
+// identities and a caller matching a customer to the id a connected system
+// knows them by has no other way to do it. Returning an empty slice looked like
+// "this customer is not linked" and was indistinguishable from the truth.
 func (db *DB) ListCustomers(ctx context.Context) ([]Customer, error) {
 	rows, err := db.pool.Query(ctx,
 		`SELECT id, display_name, created_at FROM customers ORDER BY display_name`)
@@ -80,14 +85,43 @@ func (db *DB) ListCustomers(ctx context.Context) ([]Customer, error) {
 	defer rows.Close()
 
 	out := []Customer{}
+	at := map[uuid.UUID]int{}
 	for rows.Next() {
 		c := Customer{Identities: []Identity{}}
 		if err := rows.Scan(&c.ID, &c.DisplayName, &c.CreatedAt); err != nil {
 			return nil, err
 		}
+		at[c.ID] = len(out)
 		out = append(out, c)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(out) == 0 {
+		return out, nil
+	}
+
+	// One query for every identity rather than one per customer: a list of two
+	// hundred customers should not be two hundred round trips.
+	links, err := db.pool.Query(ctx,
+		`SELECT customer_id, plugin, external_id, created_at
+		 FROM customer_identities ORDER BY plugin, external_id`)
+	if err != nil {
+		return nil, fmt.Errorf("store: list customer identities: %w", err)
+	}
+	defer links.Close()
+
+	for links.Next() {
+		var owner uuid.UUID
+		var i Identity
+		if err := links.Scan(&owner, &i.Plugin, &i.ExternalID, &i.CreatedAt); err != nil {
+			return nil, err
+		}
+		if idx, ok := at[owner]; ok {
+			out[idx].Identities = append(out[idx].Identities, i)
+		}
+	}
+	return out, links.Err()
 }
 
 // SearchCustomers finds customers by fuzzy name, backed by the trigram index.
