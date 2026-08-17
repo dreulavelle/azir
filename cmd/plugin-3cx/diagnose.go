@@ -289,6 +289,7 @@ func extensionDetail(ctx context.Context, req plugin.Request) (any, error) {
 		"lan_only":                u.LanOnly,
 		"records_calls":           u.RecordCalls,
 		"internal_calls_only":     u.InternalOnly,
+		"worth_checking":          differsFrom(map[string]bool{"PbxDeliversAudio": u.PbxAudio, "AllowLanOnly": u.LanOnly}),
 		"groups":                  groups,
 		"forwarding_profiles":     profiles,
 		"why_calls_may_not_land":  why,
@@ -810,4 +811,163 @@ func phoneAction(what string) func(context.Context, plugin.Request) (any, error)
 		}
 		return map[string]any{"mac": mac, "action": what, "sent": true}, nil
 	}
+}
+
+// --- conventions --------------------------------------------------------------
+
+/*
+The settings most deployments end up wanting, and what the other value means.
+
+These are conventions, not correctness. Every one of them has a site where the
+opposite is right, so nothing here changes anything on its own and nothing here
+says "wrong" — it says what this extension is set to, what most are set to, and
+what the difference does. A technician decides.
+
+Both of the current entries are about the same thing: whether somebody working
+away from the office can use their phone at all.
+*/
+type convention struct {
+	Property string
+	Want     bool
+	// Why the usual value is usual, in one sentence.
+	Because string
+	// What the other value actually does, so the choice can be made on
+	// consequences rather than on a checkbox's name.
+	Otherwise string
+}
+
+var conventions = []convention{
+	{
+		Property:  "PbxDeliversAudio",
+		Want:      true,
+		Because:   "the PBX relays the audio itself, which is what makes calls work through home routers and firewalls it does not control",
+		Otherwise: "endpoints are left to send audio directly to each other, and remote callers get one-way or silent calls when that path does not exist",
+	},
+	{
+		Property:  "AllowLanOnly",
+		Want:      false,
+		Because:   "an extension can register from outside the office, which is what anybody working from home needs",
+		Otherwise: "the extension only works on the office network, so a remote handset or app never registers and the person appears permanently offline",
+	},
+}
+
+// conventionFields is what a review has to read to judge them.
+var conventionFields = "Number,DisplayName,PbxDeliversAudio,AllowLanOnly"
+
+// differsFrom returns the conventions this extension does not follow.
+func differsFrom(set map[string]bool) []map[string]any {
+	var out []map[string]any
+	for _, c := range conventions {
+		got, known := set[c.Property]
+		if !known || got == c.Want {
+			continue
+		}
+		out = append(out, map[string]any{
+			"setting":   c.Property,
+			"currently": got,
+			"usually":   c.Want,
+			"because":   c.Because,
+			"as_it_is":  c.Otherwise,
+		})
+	}
+	return out
+}
+
+/*
+reviewExtensions checks every extension against the conventions above.
+
+The point is not the list of differences; it is that the answer can be acted on
+without transcribing anything. Each convention comes back with the extensions
+that differ from it, in the shape extensions.options takes, so noticing the
+problem and fixing it are the same two steps rather than a spreadsheet in
+between.
+*/
+func reviewExtensions(ctx context.Context, req plugin.Request) (any, error) {
+	conn, err := connect(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	type row struct {
+		Number   string `json:"Number"`
+		Name     string `json:"DisplayName"`
+		PbxAudio bool   `json:"PbxDeliversAudio"`
+		LanOnly  bool   `json:"AllowLanOnly"`
+	}
+
+	var all []row
+	for skip := 0; skip < maxExtensions; skip += pageSize {
+		q := url.Values{}
+		q.Set("$select", conventionFields)
+		q.Set("$top", fmt.Sprint(pageSize))
+		q.Set("$skip", fmt.Sprint(skip))
+		q.Set("$orderby", "Number")
+
+		var page struct {
+			Value []row `json:"value"`
+		}
+		if err := conn.get(ctx, "Users", q, &page); err != nil {
+			return nil, err
+		}
+		all = append(all, page.Value...)
+		if len(page.Value) < pageSize {
+			break
+		}
+	}
+
+	// Grouped by setting rather than by extension, because the fix is applied
+	// per setting: one call to extensions.options per group, with the list of
+	// numbers already assembled.
+	type group struct {
+		convention
+		numbers []string
+	}
+	groups := make([]*group, 0, len(conventions))
+	for _, c := range conventions {
+		groups = append(groups, &group{convention: c})
+	}
+
+	following := 0
+	for _, u := range all {
+		set := map[string]bool{"PbxDeliversAudio": u.PbxAudio, "AllowLanOnly": u.LanOnly}
+		clean := true
+		for _, g := range groups {
+			if set[g.Property] != g.Want {
+				g.numbers = append(g.numbers, u.Number)
+				clean = false
+			}
+		}
+		if clean {
+			following++
+		}
+	}
+
+	suggestions := make([]map[string]any, 0, len(groups))
+	for _, g := range groups {
+		if len(g.numbers) == 0 {
+			continue
+		}
+		suggestions = append(suggestions, map[string]any{
+			"setting":    g.Property,
+			"set_it_to":  g.Want,
+			"extensions": g.numbers,
+			"count":      len(g.numbers),
+			"because":    g.Because,
+			"as_it_is":   g.Otherwise,
+			// Ready to hand to extensions.options unchanged.
+			"fix_with": map[string]any{
+				"extensions": g.numbers,
+				"options":    map[string]any{g.Property: g.Want},
+			},
+		})
+	}
+
+	return map[string]any{
+		"extensions":       len(all),
+		"already_as_usual": following,
+		"suggestions":      suggestions,
+		// Said plainly. An empty list means everything matches, not that
+		// nothing was checked.
+		"nothing_to_suggest": len(suggestions) == 0,
+	}, nil
 }

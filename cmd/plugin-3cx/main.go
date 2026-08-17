@@ -305,6 +305,21 @@ func main() {
 				Handler: bulkUpdateExtensions,
 			},
 			{
+				Name: "extensions.review",
+				Description: "Checks every extension against the settings most deployments end up wanting, and " +
+					"reports which ones differ. Currently: whether the PBX delivers audio, and whether an " +
+					"extension is restricted to the office network — both of which decide whether somebody " +
+					"working from home can use their phone. Each suggestion comes back with the extension " +
+					"numbers and the exact arguments extensions.options takes, so finding it and fixing it are " +
+					"the same two steps. These are conventions, not rules: say what differs and let the " +
+					"technician decide.",
+				Summary:   "Checks extensions against the settings most deployments want.",
+				Provides:  []plugin.Capability{plugin.CapPhoneReview},
+				Freshness: &plugin.Freshness{Soft: 5 * time.Minute, Hard: time.Hour},
+				Schema:    json.RawMessage(`{"type": "object", "properties": {}}`),
+				Handler:   reviewExtensions,
+			},
+			{
 				Name: "extensions.options",
 				Description: "Applies the same extension options to many extensions at once — the settings on an " +
 					"extension's page, such as whether the PBX delivers audio, whether remote non-tunnel " +

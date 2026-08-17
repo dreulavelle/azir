@@ -77,6 +77,7 @@ const (
 	CapPhoneLogSearch        Capability = "phone_system.log_search"
 	CapPhoneExtensionOptions Capability = "phone_system.extension_options"
 	CapPhoneHandsetAction    Capability = "phone_system.handset_action"
+	CapPhoneReview           Capability = "phone_system.review"
 
 	// CapPhoneStatus is whether a customer's phone system is healthy: how many
 	// extensions and trunks are registered against how many exist, how many
@@ -141,6 +142,7 @@ var vocabulary = map[Capability]struct{}{
 	CapPhoneLogSearch:        {},
 	CapPhoneExtensionOptions: {},
 	CapPhoneHandsetAction:    {},
+	CapPhoneReview:           {},
 	CapCallsList:             {},
 	CapDocsSearch:            {},
 	CapInvoicesList:          {},
