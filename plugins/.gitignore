@@ -1,0 +1,4 @@
+# Dropped-in plugin binaries are per-deployment, not part of the repository.
+*
+!.gitignore
+!README.md

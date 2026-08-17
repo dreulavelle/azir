@@ -16,6 +16,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -56,32 +57,75 @@ func New(log *slog.Logger, children ...Child) *Supervisor {
 	}
 }
 
-// Discover finds bundled plugin binaries in dir. A binary named
-// "plugin-<name>" is treated as a plugin, which keeps adding one to the image
-// a matter of dropping in a file.
-func Discover(dir string) ([]Child, error) {
-	entries, err := os.ReadDir(dir)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
+/*
+Discover finds plugin binaries across one or more directories.
 
+An executable named "plugin-<name>" is a plugin. That is the whole contract:
+nothing has to be registered, imported or listed, so adding one to the image is
+a matter of dropping a file in — and so is adding one to a running deployment,
+which is why this takes a list. The bundled directory inside the image comes
+first, and a site can mount its own alongside it without rebuilding anything.
+
+Directories are searched in order and the first definition of a name wins, so a
+locally dropped plugin cannot quietly displace a bundled one of the same name.
+A directory that does not exist is not an error: the mounted one is usually
+absent, and a deployment with no local plugins is the normal case.
+
+Anything found here still has to introduce itself over NATS and still has to be
+approved by an administrator before a single tool it offers can be used. Being
+in the folder buys a process, not trust.
+*/
+func Discover(dirs ...string) ([]Child, error) {
 	var out []Child
-	for _, e := range entries {
-		name := e.Name()
-		if e.IsDir() || len(name) < 8 || name[:7] != "plugin-" {
+	seen := map[string]string{}
+
+	for _, dir := range dirs {
+		if strings.TrimSpace(dir) == "" {
 			continue
 		}
-		path := filepath.Join(dir, name)
-		info, err := e.Info()
-		if err != nil || info.Mode()&0o111 == 0 {
+		entries, err := os.ReadDir(dir)
+		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
-		out = append(out, Child{Name: name[7:], Path: path})
+		if err != nil {
+			return nil, err
+		}
+
+		for _, e := range entries {
+			name := e.Name()
+			if e.IsDir() || len(name) < 8 || !strings.HasPrefix(name, "plugin-") {
+				continue
+			}
+			info, err := e.Info()
+			if err != nil || info.Mode()&0o111 == 0 {
+				continue
+			}
+			short := name[7:]
+			if first, taken := seen[short]; taken {
+				// Named rather than silently skipped: two binaries claiming one
+				// name is a packaging mistake, and the quiet version of it is
+				// somebody editing a plugin that is not the one running.
+				return nil, fmt.Errorf(
+					"supervisor: two plugins are called %q (%s and %s); rename one",
+					short, first, filepath.Join(dir, name))
+			}
+			seen[short] = filepath.Join(dir, name)
+			out = append(out, Child{Name: short, Path: filepath.Join(dir, name)})
+		}
 	}
 	return out, nil
+}
+
+// SplitDirs reads a search path the way PATH is read, so one environment
+// variable can name several directories.
+func SplitDirs(value string) []string {
+	var out []string
+	for _, dir := range filepath.SplitList(value) {
+		if dir = strings.TrimSpace(dir); dir != "" {
+			out = append(out, dir)
+		}
+	}
+	return out
 }
 
 // Run supervises every child until ctx is cancelled, then waits for them to

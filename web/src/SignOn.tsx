@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, type AuthSettings, type Role } from "./api";
-import { Button, PanelHead, Problem, TextInput } from "./ui";
+import { Button, CopyButton, Label, PanelHead, Problem, TextInput } from "./ui";
 
 /**
  * Single sign-on settings.
@@ -10,6 +10,9 @@ import { Button, PanelHead, Problem, TextInput } from "./ui";
  * would have to go and look up. Another OpenID Connect provider is the same
  * form with the issuer filled in directly.
  */
+/** Where the provider sends the browser back to. Mirrors internal/api/oidc.go. */
+const CALLBACK_PATH = "/api/auth/oidc/callback";
+
 /** Splits the domains field into the list the server stores. */
 function domainList(text: string): string[] {
   return text
@@ -82,6 +85,13 @@ export function SignOn({ roles }: { roles: Role[] }) {
   const set = (patch: Partial<AuthSettings> & { client_secret?: string }) =>
     setDraft((d) => ({ ...d, ...patch }));
 
+  // What the provider will actually be sent: the pinned address if there is
+  // one, otherwise whatever this request looked like it came from.
+  const effectiveCallback = (draft.redirect_url ?? "").trim() || settings.callback_url;
+  const signOutUrl = effectiveCallback.replace(CALLBACK_PATH, "/");
+  const looksLocal =
+    /^http:\/\//.test(effectiveCallback) || /localhost|127\.0\.0\.1|\[::1\]/.test(effectiveCallback);
+
   return (
     <section className="rounded-lg border border-edge bg-panel shadow-e1">
       <PanelHead>
@@ -105,13 +115,65 @@ export function SignOn({ roles }: { roles: Role[] }) {
       </p>
 
       <div className="flex flex-col gap-2">
+        {/* What has to be registered with the provider, gathered in one place
+            and copyable. It used to be a lone read-only field with no way to
+            tell whether the value in it was the right one. */}
+        <div className="rounded-lg border border-edge bg-sunken/60 p-3.5">
+          <Label className="mb-2 block">Register these with your provider</Label>
+
+          <div className="flex flex-col gap-1">
+            <span className="text-xs text-ink-dim">
+              Redirect URI — Authentication → Add a platform → Web
+            </span>
+            <div className="flex items-center gap-2">
+              <code className="min-w-0 flex-1 truncate rounded-md border border-edge bg-panel px-2.5 py-1.5 font-mono text-xs">
+                {effectiveCallback}
+              </code>
+              <CopyButton text={effectiveCallback} />
+            </div>
+          </div>
+
+          <div className="mt-3 flex flex-col gap-1">
+            <span className="text-xs text-ink-dim">
+              Front-channel logout URL — optional, signs Azir out when the
+              provider does
+            </span>
+            <div className="flex items-center gap-2">
+              <code className="min-w-0 flex-1 truncate rounded-md border border-edge bg-panel px-2.5 py-1.5 font-mono text-xs">
+                {signOutUrl}
+              </code>
+              <CopyButton text={signOutUrl} />
+            </div>
+          </div>
+
+          {/* The address is worked out from whichever host this page was opened
+              on, so an administrator reaching the console a different way sees
+              a different answer — and the provider refuses anything that is not
+              a character-for-character match. Saying so is the difference
+              between a five minute setup and an afternoon. */}
+          {looksLocal && (
+            <p className="mt-3 rounded-md border border-attention/30 bg-attention/10 px-2.5 py-2 text-xs text-attention">
+              That address is where you opened this page, not necessarily where
+              your team reaches Azir. Register the public one, and set it below
+              so this stops depending on how the console was opened.
+            </p>
+          )}
+        </div>
+
         <div className="flex flex-col gap-1.5">
-          <label htmlFor="sso-callback">Redirect URI</label>
+          <label htmlFor="sso-redirect">Public address of this deployment</label>
           <p className="max-w-[70ch] text-xs text-ink-faint">
-            Register this exactly, in the app registration's Web platform. The
-            provider refuses anything that does not match character for character.
+            Optional. Leave it empty and the redirect URI is worked out from
+            each request, which is right until something sits in front of Azir
+            and it can no longer see its own address. Set it and that guessing
+            stops.
           </p>
-          <TextInput id="sso-callback" readOnly value={settings.callback_url} onFocus={(e) => e.target.select()} />
+          <TextInput
+            id="sso-redirect"
+            value={draft.redirect_url ?? ""}
+            placeholder={`https://helpdesk.example.com${CALLBACK_PATH}`}
+            onChange={(e) => set({ redirect_url: e.target.value })}
+          />
         </div>
 
         <div className="flex flex-col gap-1.5">

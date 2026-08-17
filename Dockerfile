@@ -57,7 +57,7 @@ WORKDIR /var/lib/azir
 EXPOSE 8080
 
 ENV AZIR_DATA_DIR=/var/lib/azir \
-    AZIR_PLUGIN_DIR=/usr/local/lib/azir/plugins \
+    AZIR_PLUGIN_DIR=/usr/local/lib/azir/plugins:/opt/azir/plugins \
     AZIR_HTTP_ADDR=:8080
 
 HEALTHCHECK --interval=15s --timeout=3s --start-period=20s --retries=3 \

@@ -155,7 +155,11 @@ func run(log *slog.Logger) error {
 	// Bundled plugins run as supervised children, sharing this process's
 	// lifecycle and its redacting logger. Third-party plugins still run
 	// wherever they like and connect to the same NATS.
-	children, err := supervisor.Discover(envOr("AZIR_PLUGIN_DIR", "/usr/local/lib/azir/plugins"))
+	// Bundled first, then anywhere else this deployment has been told to look.
+	// A site drops a binary into a mounted directory and restarts; nothing is
+	// rebuilt, and nothing about approval changes.
+	children, err := supervisor.Discover(supervisor.SplitDirs(
+		envOr("AZIR_PLUGIN_DIR", "/usr/local/lib/azir/plugins:/opt/azir/plugins"))...)
 	if err != nil {
 		log.Warn("could not scan plugin directory", "error", err)
 	}

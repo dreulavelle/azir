@@ -31,6 +31,12 @@ services:
     volumes:
       # JetStream's store. Postgres holds everything else.
       - azir-data:/var/lib/azir
+      # Plugins that did not come with the image. Any executable named
+      # plugin-<name> dropped in here is supervised alongside the bundled ones
+      # on the next start — nothing to register, nothing to rebuild. Read-only,
+      # because the container has no business writing to it, and it still has
+      # to be approved in Settings before it can do anything.
+      - ../plugins:/opt/azir/plugins:ro
     depends_on:
       postgres:
         condition: service_healthy
