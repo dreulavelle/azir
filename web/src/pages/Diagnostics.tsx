@@ -173,9 +173,10 @@ export function Diagnostics({
  * matches nothing is still read and can be attached afterwards. Making
  * somebody pick from a list first was a step that could only be got wrong.
  *
- * Pulling asks the phone system directly instead. There is no API that builds
- * a support bundle, so what comes back is the event log rather than the whole
- * thing; the report says so.
+ * Pulling asks the phone system to build one and reads it where it lands. It
+ * takes as long as 3CX takes to walk its own logs and zip them, which on a
+ * large site is minutes rather than seconds — so the button says so rather
+ * than leaving somebody watching a spinner wondering whether it has hung.
  */
 function Collect({ onDone }: { onDone: () => void }) {
   const [customers, setCustomers] = useState<Customer[] | null>(null);
@@ -230,7 +231,7 @@ function Collect({ onDone }: { onDone: () => void }) {
     try {
       const result = await snapshots.pull(customerId);
       if (result.empty || !result.report) {
-        toast("Nothing logged in that period", { tone: "good", detail: result.note });
+        toast("Nothing to report", { tone: "good", detail: result.note });
       } else {
         announce(result.report.findings, "Collected.");
       }
@@ -279,11 +280,12 @@ function Collect({ onDone }: { onDone: () => void }) {
         </Picker>
       </label>
       <Button disabled={busy !== null || !customerId} onClick={() => void pull()}>
-        {busy === "pull" ? "Collecting…" : "Collect from their PBX"}
+        {busy === "pull" ? "Collecting… this can take minutes" : "Collect from their PBX"}
       </Button>
 
       <span className="w-full text-xs text-ink-faint sm:w-auto">
-        The zip is read and discarded. Findings are kept for 14 days unless you keep one.
+        The bundle is read and discarded either way. Findings are kept for 14
+        days unless you keep one.
       </span>
     </Panel>
   );

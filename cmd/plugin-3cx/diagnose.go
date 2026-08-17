@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"regexp"
 	"sort"
@@ -11,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dreulavelle/azir/internal/supportinfo"
 	"github.com/dreulavelle/azir/pkg/plugin"
 )
 
@@ -974,19 +978,24 @@ func reviewExtensions(ctx context.Context, req plugin.Request) (any, error) {
 }
 
 /*
-capture pulls a diagnostic capture off a live phone system.
+capture collects a support bundle from a live phone system.
 
-3CX has no API for generating a support bundle — that is a button in its own
-console and the zip comes out on the machine. What it does have is the event
-log, which is the single most useful table in the bundle: the same rows, with
-the same event ids, including the per-call quality reports.
+3CX will build one on demand: /xapi/v1/SupportInfo answers with the same zip
+that the "collect support info" button in its own console produces. It is not
+in the published OData spec — everything else here is an entity and this is a
+file — which is why it takes a raw fetch rather than the JSON helper.
 
-So this is not a support bundle and does not pretend to be one. It is the part
-of it that can be had over the wire, which is enough to answer most of the
-questions somebody would collect a bundle for, and it takes seconds rather than
-the ten minutes of asking a customer to press the button and send the file.
+The bundle is read here rather than sent onward. It is tens of megabytes and
+the reply travels over NATS, so forwarding it would mean either raising the
+message limit to something absurd or inventing a side channel to move it; and
+the credentials that fetched it live in this process by design, so this is
+already the only place that can. What goes back is the report — a few hundred
+kilobytes of findings — which is exactly what an uploaded bundle turns into, by
+the same parser. A pulled capture and an uploaded one are the same thing.
 
-Paged rather than topped: the interesting event is rarely in the last twenty.
+Older systems that do not offer the endpoint fall back to their event log,
+which is the richest single table in a bundle and is available over the API on
+every version. That capture is thinner and says so.
 */
 func capture(ctx context.Context, req plugin.Request) (any, error) {
 	var args struct {
@@ -1006,9 +1015,56 @@ func capture(ctx context.Context, req plugin.Request) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	host := strings.TrimPrefix(conn.base, "https://")
 
-	since := time.Now().AddDate(0, 0, -args.Days).UTC()
-	events := make([]map[string]any, 0, captureEvents)
+	// Generous, because the phone system has to walk its own logs and zip them
+	// before a single byte comes back. On a large site that is minutes.
+	res, err := conn.fetch(ctx, "SupportInfo", nil, 10*time.Minute)
+	if err != nil {
+		// Only a system that does not offer it falls back. A refusal or a
+		// timeout is a real failure and quietly returning a thinner capture
+		// would hide it.
+		var refused *plugin.Error
+		if errors.As(err, &refused) && refused.Code == "404" {
+			return fromEventLog(ctx, conn, host, args.Days)
+		}
+		return nil, err
+	}
+	defer res.Body.Close() //nolint:errcheck // best effort
+
+	// Held in memory rather than spooled to disk: a zip needs random access to
+	// be read at all, and a temporary file of somebody's logs is a thing to
+	// clean up and eventually fail to.
+	raw, err := io.ReadAll(io.LimitReader(res.Body, maxBundle+1))
+	if err != nil {
+		return nil, plugin.Errorf("502", "the support bundle could not be read")
+	}
+	if len(raw) > maxBundle {
+		return nil, plugin.Errorf("507",
+			"that phone system produced a support bundle larger than %d MB", maxBundle>>20)
+	}
+
+	snapshot, err := supportinfo.Read(bytes.NewReader(raw), int64(len(raw)))
+	if err != nil {
+		return nil, plugin.Errorf("502", "that support bundle could not be read: %s", err)
+	}
+	raw = nil
+	if snapshot.System.FQDN == "" {
+		snapshot.System.FQDN = host
+	}
+
+	return map[string]any{"report": snapshot, "host": host, "source": "bundle"}, nil
+}
+
+/*
+fromEventLog is the thinner capture, for a system with no SupportInfo endpoint.
+
+Paged rather than topped: the event that explains the fault is rarely in the
+last twenty.
+*/
+func fromEventLog(ctx context.Context, conn pbx, host string, days int) (any, error) {
+	since := time.Now().AddDate(0, 0, -days).UTC()
+	events := make([]supportinfo.LiveEvent, 0, captureEvents)
 
 	for skip := 0; skip < captureEvents; skip += pageSize {
 		q := url.Values{}
@@ -1028,18 +1084,18 @@ func capture(ctx context.Context, req plugin.Request) (any, error) {
 			} `json:"value"`
 		}
 		if err := conn.get(ctx, "EventLogs", q, &page); err != nil {
-			// A page that fails after others succeeded is still a capture,
-			// just a shorter one. Losing the whole thing to one bad page
-			// would be a worse answer than a partial log.
+			// A page that fails after others succeeded is still a capture, just
+			// a shorter one. Losing the whole thing to one bad page would be a
+			// worse answer than a partial log.
 			if len(events) == 0 {
 				return nil, err
 			}
 			break
 		}
 		for _, e := range page.Value {
-			events = append(events, map[string]any{
-				"at": e.At, "id": fmt.Sprint(e.EventID),
-				"severity": e.Type, "source": e.Source, "message": e.Message,
+			events = append(events, supportinfo.LiveEvent{
+				At: e.At, ID: fmt.Sprint(e.EventID),
+				Severity: e.Type, Source: e.Source, Message: e.Message,
 			})
 		}
 		if len(page.Value) < pageSize {
@@ -1047,9 +1103,12 @@ func capture(ctx context.Context, req plugin.Request) (any, error) {
 		}
 	}
 
+	if len(events) == 0 {
+		return map[string]any{"report": nil, "host": host, "source": "events"}, nil
+	}
 	return map[string]any{
-		"events": events,
-		"days":   args.Days,
-		"host":   strings.TrimPrefix(conn.base, "https://"),
+		"report": supportinfo.FromEvents(host, events),
+		"host":   host,
+		"source": "events",
 	}, nil
 }

@@ -61,6 +61,18 @@ func Start(opts Options) (*Server, error) {
 		StoreDir:           opts.StoreDir,
 		NoSigs:             true,
 		NoLog:              true,
+		/*
+			Larger than the one-megabyte default, for one reply that needs it.
+
+			A pulled diagnostic capture is a support bundle read where the
+			credentials are, and what comes back is the report rather than the
+			forty megabytes it was read from — a few hundred kilobytes on the
+			systems seen so far, but bounded by how many distinct findings a
+			phone system has rather than by anything fixed. Eight megabytes is
+			room for a much worse one; every other reply here is a page of JSON
+			and nowhere near it.
+		*/
+		MaxPayload: 8 << 20,
 	}
 	if opts.MonitorPort > 0 {
 		cfg.HTTPHost = opts.Host

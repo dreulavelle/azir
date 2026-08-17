@@ -413,35 +413,48 @@ func (s *Server) pullSnapshot(w http.ResponseWriter, r *http.Request, actor iden
 	}
 
 	var collected struct {
-		Events []supportinfo.LiveEvent `json:"events"`
-		Host   string                  `json:"host"`
+		Report *supportinfo.Snapshot `json:"report"`
+		Host   string                `json:"host"`
+		Source string                `json:"source"`
 	}
 	if err := json.Unmarshal(raw, &collected); err != nil {
 		s.fail(w, err, "that capture could not be read")
 		return
 	}
-	if len(collected.Events) == 0 {
+	if collected.Report == nil {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"empty": true,
-			"note": "The phone system answered but had nothing logged in that period, which usually " +
-				"means it is quiet rather than that something went wrong.",
+			"note": "The phone system answered but had nothing to report, which usually means it is " +
+				"quiet rather than that something went wrong.",
 		})
 		return
 	}
 
-	snapshot := supportinfo.FromEvents(collected.Host, collected.Events)
+	snapshot := *collected.Report
 	report, err := json.Marshal(snapshot)
 	if err != nil {
 		s.fail(w, err, "that report could not be stored")
 		return
 	}
 
+	// A bundle pulled off the PBX is the same thing as one somebody uploaded,
+	// read by the same parser, so it is not marked as a lesser kind. Only the
+	// event-log fallback is, because that one genuinely has less in it.
+	kind := "3cx-support-info"
+	shape := "support bundle"
+	if collected.Source == "events" {
+		kind, shape = "3cx-live", "event log"
+	}
+
 	captured := snapshot.System.CapturedAt
+	if captured.IsZero() {
+		captured = time.Now().UTC()
+	}
 	saved, err := s.DB.AddSnapshot(r.Context(), store.Snapshot{
 		CustomerID: customerID,
 		FQDN:       snapshot.System.FQDN,
-		Kind:       "3cx-live",
-		Filename:   fmt.Sprintf("%s — last %d days", customer.DisplayName, days),
+		Kind:       kind,
+		Filename:   fmt.Sprintf("%s — collected %s", customer.DisplayName, shape),
 		CapturedAt: &captured,
 		Report:     report,
 		Findings:   len(snapshot.Findings),
@@ -456,7 +469,7 @@ func (s *Server) pullSnapshot(w http.ResponseWriter, r *http.Request, actor iden
 	s.Audit.Record(r.Context(), audit.Event{
 		ActorUserID: actor.Email, Action: "snapshot.pull",
 		CustomerID: &customerID, Outcome: audit.OutcomeOK,
-		Detail: fmt.Sprintf("%d events over %d days", len(collected.Events), days),
+		Detail: fmt.Sprintf("%s, %d findings", shape, len(snapshot.Findings)),
 	})
 	s.announce("snapshot")
 
@@ -506,9 +519,10 @@ func (s *Server) readForCustomer(
 		return nil, errors.New("that request could not be encoded")
 	}
 
-	// Longer than an ordinary read: this pages a whole event log rather than
-	// fetching one screen of it.
-	callCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	// Far longer than an ordinary read. A phone system asked for a support
+	// bundle has to walk its own logs and zip them before a byte comes back,
+	// and on a large site that is minutes rather than seconds.
+	callCtx, cancel := context.WithTimeout(ctx, 12*time.Minute)
 	defer cancel()
 
 	msg, err := s.NC.RequestWithContext(callCtx, tool.Subject, payload)

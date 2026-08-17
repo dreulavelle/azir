@@ -154,20 +154,24 @@ func main() {
 
 			{
 				Name: "diagnostics.capture",
-				Description: "Pulls the phone system's event log for the last few days and analyses it the same " +
-					"way an uploaded support bundle is analysed. Use it when somebody reports a phone problem " +
-					"and there is no support zip to hand — it finds trunks flapping, calls being refused, " +
-					"unidentified inbound calls and poor call quality.",
-				Summary:  "Collects a diagnostic capture from a customer's phone system.",
+				Description: "Asks the phone system to build a support bundle and reads it — the same zip the " +
+					"'collect support info' button produces, without anybody pressing it. Use it when somebody " +
+					"reports a phone problem and there is no bundle to hand: it finds trunks flapping, calls " +
+					"being refused, dead audio, poor call quality and what was changed recently. Takes as long " +
+					"as the phone system needs to walk its logs, which on a large site is minutes.",
+				Summary:  "Collects a support bundle from a customer's phone system.",
 				Provides: []plugin.Capability{plugin.CapPhoneCapture},
+				// Barely cached. This is a deliberate act somebody takes when
+				// something is wrong, and handing back the bundle from before
+				// they changed anything would be worse than making them wait.
 				Freshness: &plugin.Freshness{
-					Soft: 10 * time.Minute,
-					Hard: time.Hour,
+					Soft: time.Minute,
+					Hard: 5 * time.Minute,
 				},
 				Schema: json.RawMessage(`{
 					"type": "object",
 					"properties": {
-						"days": {"type": "integer", "minimum": 1, "maximum": 30, "description": "How far back to collect. Defaults to 7."}
+						"days": {"type": "integer", "minimum": 1, "maximum": 30, "description": "Only used on older systems with no support-bundle endpoint, where the event log is read instead. Defaults to 7."}
 					}
 				}`),
 				Handler: capture,
@@ -526,6 +530,10 @@ const (
 	// fortnight and a request that finishes; the whole log on a large site is
 	// hundreds of thousands and belongs in an uploaded bundle, not a page.
 	captureEvents = 2000
+	// maxBundle is the largest support bundle we will pull. The real ones run
+	// thirteen to forty megabytes; a hundred leaves room for a bigger site
+	// without letting one phone system spend all the memory this process has.
+	maxBundle     = 100 << 20
 	maxExtensions = 2000
 )
 
@@ -1361,4 +1369,47 @@ func recentEvents(ctx context.Context, req plugin.Request) (any, error) {
 		})
 	}
 	return map[string]any{"events": events, "returned": len(events)}, nil
+}
+
+/*
+fetch retrieves something that is not JSON.
+
+Everything else here is an OData entity and comes back as JSON, which `get`
+decodes. A support bundle is a zip: potentially forty megabytes, produced by a
+phone system that has to build it first, and never held in memory. This hands
+back the live response so the caller can stream it, which means the caller owns
+closing it.
+*/
+func (c pbx) fetch(ctx context.Context, path string, query url.Values, timeout time.Duration) (*http.Response, error) {
+	ask := c.base + "/xapi/v1/" + path
+	if len(query) > 0 {
+		ask += "?" + query.Encode()
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ask, nil)
+	if err != nil {
+		return nil, plugin.Errorf("500", "the request could not be prepared")
+	}
+	req.Header.Set("authorization", "Bearer "+c.token)
+
+	res, err := (&http.Client{Timeout: timeout}).Do(req)
+	if err != nil {
+		return nil, plugin.Errorf("502", "the phone system could not be reached")
+	}
+
+	switch {
+	case res.StatusCode == http.StatusUnauthorized:
+		_ = res.Body.Close()
+		return nil, plugin.Errorf("401", "the phone system rejected our sign-in")
+	case res.StatusCode == http.StatusForbidden:
+		_ = res.Body.Close()
+		return nil, plugin.Errorf("403", "that extension does not have the system owner role")
+	case res.StatusCode == http.StatusNotFound:
+		_ = res.Body.Close()
+		return nil, plugin.Errorf("404", "this phone system does not offer that")
+	case res.StatusCode != http.StatusOK:
+		_ = res.Body.Close()
+		return nil, plugin.Errorf("502", "the phone system answered %d", res.StatusCode)
+	}
+	return res, nil
 }
