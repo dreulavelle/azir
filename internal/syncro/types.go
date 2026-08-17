@@ -1,4 +1,5 @@
-// Package syncro is a read-only client for the Syncro MSP API.
+// Package syncro is a client for the Syncro MSP API: reading freely, and
+// writing only through the two allowlisted paths in write.go.
 //
 // Everything it returns is trimmed rather than passed through. Vendor JSON is
 // verbose and much of it is irrelevant to a technician's question, and every

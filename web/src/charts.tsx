@@ -144,10 +144,18 @@ export function Trend({
           vectorEffect="non-scaling-stroke"
         />
 
-        {/* Today, marked. In a fortnight of readings it is the only one anybody
-            is deciding anything about. */}
+        {/* Today, marked — in a fortnight of readings it is the only one anybody
+            is deciding anything about. Clamped off the edges, because a final
+            reading of zero puts the marker exactly on the axis, where half is
+            cut away and the rest reads as a smudge. */}
         {!active && last && (
-          <circle cx={last.x} cy={last.y} r="2.6" fill="var(--ink)" vectorEffect="non-scaling-stroke" />
+          <circle
+            cx={Math.min(Math.max(last.x, 1), 99)}
+            cy={Math.min(Math.max(last.y, 3), 97)}
+            r="2.6"
+            fill="var(--ink)"
+            vectorEffect="non-scaling-stroke"
+          />
         )}
 
         {active && (
@@ -161,7 +169,13 @@ export function Trend({
               strokeWidth="1"
               vectorEffect="non-scaling-stroke"
             />
-            <circle cx={active.x} cy={active.y} r="2.6" fill="var(--ink)" vectorEffect="non-scaling-stroke" />
+            <circle
+              cx={active.x}
+              cy={Math.min(Math.max(active.y, 3), 97)}
+              r="2.6"
+              fill="var(--ink)"
+              vectorEffect="non-scaling-stroke"
+            />
             {activeAgainst && (
               <circle
                 cx={activeAgainst.x}

@@ -22,11 +22,12 @@ const RateLimit = 180
 // larger page mostly buys a bigger blob of model context for the same answer.
 const maxPerPage = 100
 
-// Client is a read-only Syncro API client.
+// Client is a Syncro API client that reads by default and writes by exception.
 //
-// Every method is a GET. There are no allowlisted write-shaped reads, so the
-// read-only invariant holds absolutely for this plugin: the transport refuses
-// anything but GET, HEAD and OPTIONS.
+// Every method here is a GET except the two in write.go. The transport enforces
+// that rather than trusting it: anything outside GET, HEAD, OPTIONS and the
+// short allowlist below is refused before it leaves the process, so a handler
+// that tried to make an undesigned write could not.
 type Client struct {
 	http *plugin.HTTPClient
 

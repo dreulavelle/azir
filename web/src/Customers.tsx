@@ -57,7 +57,7 @@ export function Customers({ actor }: { actor: Actor }) {
         {mayManage && (
           <form className="mb-3.5 flex items-center gap-2" onSubmit={(e) => void create(e)}>
             <TextInput
-              className="max-w-[280px]"
+              className="max-w-[340px]"
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="Customer name"

@@ -1,8 +1,10 @@
-// Command plugin-syncro exposes Syncro MSP as read-only Azir tools.
+// Command plugin-syncro exposes Syncro MSP as Azir tools.
 //
-// Every tool is a GET. There are no allowlisted write-shaped reads, so the
-// read-only invariant holds absolutely here: the transport refuses anything
-// but a safe method, below any mistake this file could make.
+// Reading is the default and most of the surface. The two tools that change
+// something — posting a comment and updating a ticket — are the only ones, and
+// the transport refuses every method and path outside a short allowlist, below
+// any mistake this file could make. A model never reaches them: mutating tools
+// are kept out of the capability index and can only be proposed for a person.
 //
 // Settings and credentials come from core at request time, so an administrator
 // changes the subdomain or rotates the API key in the console and nothing
@@ -49,7 +51,7 @@ func definition() plugin.Plugin {
 	return plugin.Plugin{
 		Name:        "syncro",
 		Version:     "0.1.0",
-		Description: "Read-only access to Syncro MSP tickets, customers and assets",
+		Description: "Syncro MSP tickets, customers and assets. Reads freely; replies and ticket changes need your permission.",
 		Category:    plugin.CategoryPSA,
 		ConfigSchema: json.RawMessage(`{
 			"type": "object",
@@ -63,7 +65,7 @@ func definition() plugin.Plugin {
 				"api_key": {
 					"type": "string",
 					"title": "API token",
-					"description": "Admin > API > API Tokens. Grant read permissions only — Azir never writes to Syncro, so a write-capable token adds risk without adding capability.",
+					"description": "Admin > API > API Tokens. Reading needs Tickets, Customers, Assets and Users. Replying to a ticket or changing its status also needs the matching write permissions — without them Azir still reads everything, and those two actions report that the token cannot do it.",
 					"x-azir-secret": true
 				}
 			}

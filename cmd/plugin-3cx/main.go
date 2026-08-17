@@ -64,7 +64,7 @@ func main() {
 	p := plugin.Plugin{
 		Name:        "3cx",
 		Version:     "0.1.0",
-		Description: "Read-only access to a customer's 3CX phone system",
+		Description: "A customer's 3CX phone system. Reads freely; creating, changing and removing extensions or ring groups needs your permission.",
 		Category:    plugin.CategoryTelephony,
 		// Every customer has their own PBX. One global setting could only ever
 		// reach one of them.
