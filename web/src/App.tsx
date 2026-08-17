@@ -305,7 +305,15 @@ function Console() {
           <div className="min-w-0 flex-1">
         {route.name === "triage" && <Triage actor={actor} go={go} />}
         {route.name === "tickets" && (
-          <Tickets query={route.query} status={route.status} go={go} />
+          <Tickets
+            actor={actor}
+            query={route.query}
+            status={route.status}
+            includeDone={route.includeDone}
+            owner={route.owner}
+            sort={route.sort}
+            go={go}
+          />
         )}
         {route.name === "ticket" && (
           <TicketDetail

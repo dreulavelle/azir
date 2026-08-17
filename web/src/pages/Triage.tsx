@@ -6,20 +6,7 @@ import type { Route } from "../router";
 import { useFallbackPoll, useLiveChanges } from "../live";
 import { hasChanged, seenChange, useChangedTickets } from "../watch";
 import { cn } from "@/lib/cn";
-import {
-  Chip,
-  Empty,
-  Icon,
-  Label,
-  Loading,
-  Panel,
-  Problem,
-  Stat,
-  prioritySignal,
-  priorityRank,
-  since,
-  statusTone,
-} from "../ui";
+import { Chip, Empty, Icon, Label, Loading, Panel, Problem, Stat, daysSince, isDone, priorityRank, prioritySignal, since, statusTone } from "../ui";
 
 /**
  * The queue, ordered by what needs attention rather than by when it arrived.
@@ -58,11 +45,6 @@ const QUIET_DAYS = 5;
 /** How long a new ticket may sit untouched before that is itself the problem. */
 const UNANSWERED_HOURS = 8;
 
-function daysSince(iso?: string): number {
-  if (!iso) return 0;
-  const ms = Date.now() - new Date(iso).getTime();
-  return Number.isNaN(ms) ? 0 : ms / 86_400_000;
-}
 
 /**
  * Sorts tickets into lanes.
@@ -80,7 +62,7 @@ export function lanesFor(tickets: Ticket[]): Lane[] {
     return out;
   };
 
-  const open = (t: Ticket) => statusTone(t.status) !== "good";
+  const open = (t: Ticket) => !isDone(t.status);
 
   // Longest untouched first, within every lane. Whatever order the connected
   // system returned is not an order of need, and when only the first few are
@@ -145,12 +127,13 @@ export function lanesFor(tickets: Ticket[]): Lane[] {
  * The counts alone say what is true now; the shape says whether now is unusual,
  * which is the thing a lead actually wants to know before they read anything.
  */
-function useInsights(tickets: Ticket[] | null) {
+function useInsights(tickets: Ticket[] | null, openWork: Ticket[] | null) {
   return useMemo(() => {
     if (!tickets || tickets.length === 0) return null;
 
     const DAYS = 14;
     const opened: Point[] = [];
+    const closed: Point[] = [];
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
@@ -159,19 +142,28 @@ function useInsights(tickets: Ticket[] | null) {
       day.setDate(day.getDate() - back);
       const next = new Date(day);
       next.setDate(next.getDate() + 1);
-
-      const count = tickets.filter((t) => {
-        const at = new Date(t.created_at ?? "").getTime();
+      const within = (iso?: string) => {
+        const at = new Date(iso ?? "").getTime();
         return at >= day.getTime() && at < next.getTime();
-      }).length;
+      };
 
-      opened.push({
-        label: day.toLocaleDateString(undefined, { weekday: "short", day: "numeric" }),
-        value: count,
+      const label = day.toLocaleDateString(undefined, { weekday: "short", day: "numeric" });
+      opened.push({ label, value: tickets.filter((t) => within(t.created_at)).length });
+      // When a ticket was finished is approximated by when it was last touched,
+      // because Syncro records no resolution time we can read. It is right for
+      // almost every ticket — closing one is usually the last thing done to it —
+      // and wrong for any that was edited afterwards. Said out loud beside the
+      // chart rather than left for somebody to discover.
+      closed.push({
+        label,
+        value: tickets.filter((t) => isDone(t.status) && within(t.updated_at)).length,
       });
     }
 
-    const open = tickets.filter((t) => statusTone(t.status) !== "good");
+    // The open-work figures come from the open-work request, which has read far
+    // enough back to include the old neglected tickets. Deriving them from the
+    // recent slice instead would quietly under-report every one of them.
+    const open = openWork ?? tickets.filter((t) => !isDone(t.status));
     const byAge = { fresh: 0, week: 0, older: 0 };
     for (const t of open) {
       const age = daysSince(t.created_at);
@@ -191,7 +183,7 @@ function useInsights(tickets: Ticket[] | null) {
     // Closed in the last seven days, as a counterweight: a queue of forty is a
     // different situation depending on whether thirty went out this week.
     const closedThisWeek = tickets.filter(
-      (t) => statusTone(t.status) === "good" && daysSince(t.updated_at) <= 7,
+      (t) => isDone(t.status) && daysSince(t.updated_at) <= 7,
     ).length;
     const openedThisWeek = tickets.filter((t) => daysSince(t.created_at) <= 7).length;
 
@@ -204,8 +196,16 @@ function useInsights(tickets: Ticket[] | null) {
     }
     const busiest = [...perCustomer.entries()].sort((a, b) => b[1] - a[1])[0];
 
+    // Whether the queue is keeping up over the whole window, which a single
+    // week's pair of numbers cannot say.
+    const arrived = opened.reduce((n, p) => n + p.value, 0);
+    const finished = closed.reduce((n, p) => n + p.value, 0);
+
     return {
       opened,
+      closed,
+      arrived,
+      finished,
       byAge,
       openCount: open.length,
       unassigned,
@@ -218,21 +218,41 @@ function useInsights(tickets: Ticket[] | null) {
 }
 
 export function Triage({ actor, go }: { actor: Actor; go: (to: Route) => void }) {
+  // Open work, for the lanes; and the recent slice including finished tickets,
+  // for the chart. Kept apart because they answer different questions.
   const [tickets, setTickets] = useState<Ticket[] | null>(null);
+  const [recent, setRecent] = useState<Ticket[] | null>(null);
   const [provenance, setProvenance] = useState<Provenance | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [missing, setMissing] = useState(false);
   const [busy, setBusy] = useState(false);
-  const insights = useInsights(tickets);
+  const insights = useInsights(recent, tickets);
   // Subscribing is what makes a row redraw when it is marked as changed.
   useChangedTickets();
 
+  /**
+   * Two questions, so two requests.
+   *
+   * The lanes are about open work, including the ticket from three months ago
+   * that everybody has forgotten — and that one is only reachable by asking the
+   * helpdesk to skip past the finished tickets, because otherwise a page of the
+   * hundred most recent never reaches it. The chart is the opposite: it needs
+   * finished tickets, because "are we keeping up" is a question about both
+   * sides. One request cannot answer both without lying to one of them.
+   *
+   * Both are cached by the same freshness rules as everything else, so the
+   * second one is nearly free.
+   */
   async function load(refresh = false) {
     setBusy(true);
     try {
-      const answer = await work.searchTickets({ per_page: 100 }, refresh);
-      setTickets(answer.data.items ?? []);
-      setProvenance(answer.provenance);
+      const [open, recent] = await Promise.all([
+        work.searchTickets({ open_only: true, per_page: 100 }, refresh),
+        work.searchTickets({ per_page: 100 }, refresh),
+      ]);
+      setTickets(open.data.items ?? []);
+      setRecent(recent.data.items ?? []);
+      setProvenance(open.provenance);
       setError(null);
       setMissing(false);
     } catch (e) {
@@ -283,7 +303,9 @@ export function Triage({ actor, go }: { actor: Actor; go: (to: Route) => void })
   }
 
   const lanes = lanesFor(tickets);
-  const openCount = tickets.filter((t) => statusTone(t.status) !== "good").length;
+  // `tickets` is already the open-work request, so this is a belt-and-braces
+  // count rather than a filter doing real work.
+  const openCount = tickets.filter((t) => !isDone(t.status)).length;
   const needsAttention = lanes
     .filter((l) => l.tone === "urgent" || l.tone === "warn")
     .reduce((n, l) => n + l.tickets.length, 0);
@@ -356,12 +378,30 @@ export function Triage({ actor, go }: { actor: Actor; go: (to: Route) => void })
           </div>
 
         <div className="mb-7 grid items-start gap-3 md:grid-cols-2">
+          {/* Is the queue keeping up. The one question this screen exists to
+              answer before anybody reads a single ticket. */}
           <Panel className="p-4">
-            <div className="mb-3 flex items-baseline justify-between">
-              <h2 className="text-sm font-medium">Tickets opened</h2>
-              <Label>last 14 days</Label>
+            <div className="mb-3 flex items-baseline justify-between gap-3">
+              <h2 className="text-sm font-medium">Arriving and finishing</h2>
+              <Label
+                className={
+                  insights.finished >= insights.arrived ? "text-steady" : "text-attention"
+                }
+              >
+                {insights.finished >= insights.arrived
+                  ? `keeping up · ${insights.finished - insights.arrived} ahead`
+                  : `${insights.arrived - insights.finished} behind over 14 days`}
+              </Label>
             </div>
-            <Trend points={insights.opened} />
+            <Trend
+              points={insights.opened}
+              against={insights.closed}
+              legend={{ points: "arrived", against: "finished" }}
+            />
+            <p className="mt-2 text-2xs text-ink-faint">
+              Finished is counted from when a ticket was last touched — the helpdesk keeps no
+              record of when one was resolved.
+            </p>
           </Panel>
 
           <Panel className="p-4">
@@ -454,7 +494,10 @@ export function TicketRow({ ticket, onOpen }: { ticket: Ticket; onOpen: () => vo
     <button
       className={cn(
         "group relative flex w-full items-center gap-4 border-b border-edge/60 py-2.5 pl-4 pr-2 text-left transition-colors last:border-b-0 hover:bg-sunken/70",
-        moved && "bg-azir/[0.05]",
+        // The tint says "this moved" for as long as it is unread; the warm-and-
+        // settle says "it moved just now". Both, because a technician who was
+        // away needs the first and one who is watching needs the second.
+        moved && "bg-azir/[0.05] just-changed",
       )}
       onClick={() => {
         seenChange(ticket.id);

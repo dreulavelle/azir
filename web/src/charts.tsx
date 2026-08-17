@@ -26,46 +26,73 @@ const STROKE: Record<Signal, string> = {
 };
 
 /**
- * Volume over time.
+ * Volume over time, and optionally what it is being outrun by.
  *
  * An area rather than bars because the question is "is this getting worse",
  * which is a shape, not a set of individual readings.
+ *
+ * `against` draws a second series as a filled region underneath the line. For a
+ * queue that is the whole story in one picture: work arriving as the line, work
+ * finishing as the fill, and every day the line rides above the fill is a day
+ * the backlog grew. Two numbers in a stat box cannot say that — they can say
+ * this week was bad, but not that it has been bad for nine days running.
  */
 export function Trend({
   points,
+  against,
   height = 84,
   unit = "",
   tone = "idle",
+  againstTone = "steady",
+  legend,
 }: {
   points: Point[];
+  against?: Point[];
   height?: number;
   unit?: string;
   tone?: Signal;
+  againstTone?: Signal;
+  /** What the two series are called, when there are two. */
+  legend?: { points: string; against: string };
 }) {
   const gradientId = useId();
   const [hover, setHover] = useState<number | null>(null);
 
-  const { path, area, coords, peak } = useMemo(() => {
-    if (points.length === 0) return { path: "", area: "", coords: [], peak: 0 };
+  const { path, area, coords, againstArea, againstCoords, peak } = useMemo(() => {
+    if (points.length === 0) {
+      return { path: "", area: "", coords: [], againstArea: "", againstCoords: [], peak: 0 };
+    }
 
-    const peak = Math.max(...points.map((p) => p.value), 1);
+    // Both series share one scale, or the comparison would be a lie: a fill
+    // drawn against its own maximum can sit above a line that is twice its size.
+    const peak = Math.max(...points.map((p) => p.value), ...(against ?? []).map((p) => p.value), 1);
     const stepX = 100 / Math.max(points.length - 1, 1);
+    // 8% of headroom so a peak is not glued to the top edge.
+    const plot = (series: Point[]) =>
+      series.map((p, i) => ({ x: i * stepX, y: 100 - (p.value / peak) * 92, point: p }));
 
-    const coords = points.map((p, i) => ({
-      x: i * stepX,
-      // 8% of headroom so a peak is not glued to the top edge.
-      y: 100 - (p.value / peak) * 92,
-      point: p,
-    }));
-
+    const coords = plot(points);
     const line = coords.map((c, i) => `${i === 0 ? "M" : "L"}${c.x},${c.y}`).join(" ");
-    return { path: line, area: `${line} L100,100 L0,100 Z`, coords, peak };
-  }, [points]);
+
+    const againstCoords = against ? plot(against) : [];
+    const againstLine = againstCoords.map((c, i) => `${i === 0 ? "M" : "L"}${c.x},${c.y}`).join(" ");
+
+    return {
+      path: line,
+      area: `${line} L100,100 L0,100 Z`,
+      coords,
+      againstCoords,
+      againstArea: againstLine ? `${againstLine} L100,100 L0,100 Z` : "",
+      peak,
+    };
+  }, [points, against]);
 
   if (points.length === 0) return null;
 
   const colour = STROKE[tone];
+  const againstColour = STROKE[againstTone];
   const active = hover !== null ? coords[hover] : null;
+  const activeAgainst = hover !== null ? againstCoords[hover] : null;
   const last = coords[coords.length - 1];
 
   return (
@@ -90,7 +117,23 @@ export function Trend({
           </linearGradient>
         </defs>
 
-        <path d={area} fill={`url(#${gradientId})`} />
+        {/* The comparison sits underneath as solid ground, so the line above it
+            reads as "more than this" without needing a legend to work it out. */}
+        {againstArea && (
+          <>
+            <path d={againstArea} fill={againstColour} fillOpacity="0.16" />
+            <path
+              d={againstArea}
+              fill="none"
+              stroke={againstColour}
+              strokeWidth="1"
+              strokeOpacity="0.55"
+              vectorEffect="non-scaling-stroke"
+            />
+          </>
+        )}
+
+        {!againstArea && <path d={area} fill={`url(#${gradientId})`} />}
         <path
           d={path}
           fill="none"
@@ -119,18 +162,33 @@ export function Trend({
               vectorEffect="non-scaling-stroke"
             />
             <circle cx={active.x} cy={active.y} r="2.6" fill="var(--ink)" vectorEffect="non-scaling-stroke" />
+            {activeAgainst && (
+              <circle
+                cx={activeAgainst.x}
+                cy={activeAgainst.y}
+                r="2.2"
+                fill={againstColour}
+                vectorEffect="non-scaling-stroke"
+              />
+            )}
           </>
         )}
       </svg>
 
       {/* Read out in words rather than as a floating box, so it never covers
           the shape it is describing. */}
-      <div className="mt-2 h-4">
+      <div className="mt-2 flex h-4 items-center gap-3">
         {active ? (
           <Label className="text-ink">
-            {active.point.value}
-            {unit} · {active.point.label}
+            {legend ? `${legend.points} ${active.point.value}` : `${active.point.value}${unit}`}
+            {activeAgainst && legend ? ` · ${legend.against} ${activeAgainst.point.value}` : ""} ·{" "}
+            {active.point.label}
           </Label>
+        ) : legend ? (
+          <>
+            <Key colour={colour} label={legend.points} />
+            <Key colour={againstColour} label={legend.against} filled />
+          </>
         ) : (
           <Label>
             peak {peak}
@@ -139,6 +197,59 @@ export function Trend({
         )}
       </div>
     </div>
+  );
+}
+
+/** One entry in a two-series legend. */
+function Key({ colour, label, filled }: { colour: string; label: string; filled?: boolean }) {
+  return (
+    <span className="flex items-center gap-1.5">
+      <span
+        className="h-[3px] w-3 rounded-full"
+        style={{ background: colour, opacity: filled ? 0.45 : 1 }}
+      />
+      <Label>{label}</Label>
+    </span>
+  );
+}
+
+/**
+ * How long a ticket has been alive, and how much of that was silence.
+ *
+ * Sized against the oldest ticket on screen so the bars are comparable to each
+ * other, with the quiet tail drawn in the colour of how quiet it has got. A
+ * ticket open three days and answered yesterday and a ticket open three days
+ * and never touched produce the same "3d" in a column of numbers; they do not
+ * produce the same bar, and the difference is the entire point of the screen.
+ */
+export function Life({
+  ageDays,
+  silentDays,
+  longest,
+  width = 56,
+}: {
+  ageDays: number;
+  silentDays: number;
+  /** The oldest ticket in view, so every bar shares one scale. */
+  longest: number;
+  width?: number;
+}) {
+  if (ageDays <= 0) return <span className="inline-block" style={{ width }} aria-hidden="true" />;
+
+  const span = Math.max((ageDays / Math.max(longest, 1)) * width, 3);
+  const silent = Math.min(silentDays / ageDays, 1) * span;
+  const tone = silentDays >= 14 ? "bg-critical" : silentDays >= 5 ? "bg-attention" : "bg-edge-strong";
+
+  return (
+    <span
+      className="inline-flex h-[3px] overflow-hidden rounded-full bg-edge align-middle"
+      style={{ width: span }}
+      aria-hidden="true"
+      title={`open ${Math.round(ageDays)}d, quiet for ${Math.round(silentDays)}d`}
+    >
+      <span className="h-full bg-edge-strong/60" style={{ width: span - silent }} />
+      <span className={cn("h-full", tone)} style={{ width: silent }} />
+    </span>
   );
 }
 

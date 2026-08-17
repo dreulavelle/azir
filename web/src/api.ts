@@ -265,6 +265,8 @@ export type Ticket = {
   assigned_to?: string;
   created_at?: string;
   updated_at?: string;
+  /** Where to open this ticket in the system it came from, when it says. */
+  url?: string;
   comments?: Comment[];
 };
 
@@ -275,6 +277,13 @@ export type Comment = {
   hidden: boolean;
   tech?: string;
   created_at?: string;
+};
+
+/** Someone a work item can be assigned to, as the connected system knows them. */
+export type Technician = {
+  id: number;
+  name: string;
+  email?: string;
 };
 
 export type TimelineEntry = {
@@ -426,8 +435,22 @@ async function perform<T>(
 }
 
 export const work = {
+  /**
+   * Finds tickets.
+   *
+   * `open_only` is answered by the connected system rather than by filtering
+   * what comes back: a page spent on finished work is a page in which the old
+   * open ticket — the one actually worth finding — never arrives.
+   */
   searchTickets: (
-    args: { query?: string; status?: string; customer_id?: number; page?: number; per_page?: number },
+    args: {
+      query?: string;
+      status?: string;
+      open_only?: boolean;
+      customer_id?: number;
+      page?: number;
+      per_page?: number;
+    },
     refresh?: boolean,
   ) => perform<Paged<Ticket>>(Cap.ticketSearch, args, { refresh }),
 
@@ -443,7 +466,19 @@ export const work = {
       { customer_id },
     ),
 
-  schema: () => perform<{ statuses?: string[]; technicians?: string[] }>(Cap.ticketSchema, {}),
+  /**
+   * What the connected system will accept on a work item.
+   *
+   * Technicians are records rather than names: matching a signed-in person to
+   * the technician a ticket is assigned to needs an address to match on, and a
+   * display name alone is not one. This was typed as a list of strings, which
+   * was simply wrong about what the capability returns.
+   */
+  schema: () =>
+    perform<{ statuses?: string[]; technicians?: Technician[]; note?: string }>(
+      Cap.ticketSchema,
+      {},
+    ),
 
   searchCustomers: (args: { query?: string; page?: number; per_page?: number }, refresh?: boolean) =>
     perform<Paged<CustomerRecord>>(Cap.customerList, args, { refresh }),

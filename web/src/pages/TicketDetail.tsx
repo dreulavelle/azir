@@ -1,24 +1,17 @@
 import { useCallback, useEffect, useState } from "react";
-import { chat, NotProvided, work, type Ticket, type Timeline, type TimelineEntry } from "../api";
-import type { Route } from "../router";
+import {
+  chat,
+  NotProvided,
+  work,
+  type CustomerRecord,
+  type Ticket,
+  type Timeline,
+  type TimelineEntry,
+} from "../api";
+import { canGoBack, type Route } from "../router";
 import { useLiveChanges } from "../live";
 import { cn } from "@/lib/cn";
-import {
-  Chip,
-  Empty,
-  Icon,
-  Label,
-  Loading,
-  Panel,
-  Problem,
-  Stat,
-  absolute,
-  duration,
-  prioritySignal,
-  ago,
-  since,
-  statusTone,
-} from "../ui";
+import { Chip, Empty, Icon, Label, Loading, Panel, PanelHead, Problem, absolute, ago, duration, isDone, prioritySignal, since, statusTone } from "../ui";
 
 /**
  * One ticket, as a history rather than as a form.
@@ -27,10 +20,20 @@ import {
  * else's ticket actually needs is the shape of what happened: how long the
  * customer waited, where it stalled, how many times it went back and forth.
  * Azir computes those, so they lead rather than being left as an exercise.
+ *
+ * The page is ordered by the questions asked in the order they get asked. What
+ * is this and who is it for, at the top. How is it doing, in the strip beneath.
+ * What did they actually ask for, pinned so a long thread can never fold it
+ * away. Then the conversation, and only then the reference material.
  */
 
 /** A silence worth drawing rather than leaving the reader to subtract dates. */
 const GAP_HOURS = 24;
+
+/** Whether an entry came from the customer's side of the conversation. */
+function fromCustomer(entry: TimelineEntry): boolean {
+  return /customer|client|inbound/.test(entry.kind.toLowerCase());
+}
 
 export function TicketDetail({
   id,
@@ -106,106 +109,33 @@ export function TicketDetail({
 
   const { ticket, entries } = timeline;
 
+  // The opening request, lifted out of the thread. On a long ticket the thread
+  // folds to the recent end, which used to hide the one message the whole
+  // ticket is about behind a "show earlier" button.
+  const opening =
+    entries.find((e) => fromCustomer(e) && e.body?.trim()) ??
+    entries.find((e) => e.kind !== "created" && !/time|logged/.test(e.kind) && e.body?.trim());
+  const thread = entries.filter((e) => e !== opening);
+
   return (
     <div className="mx-auto max-w-[1180px] px-6 py-6">
-      <div className="mb-4 flex items-center gap-2">
-        <button
-          className="flex items-center gap-1 rounded-md px-1.5 py-1 text-xs text-ink-dim transition-colors hover:bg-sunken hover:text-ink"
-          onClick={() => go({ name: "triage" })}
-        >
-          <Icon.back /> Queue
-        </button>
-        <Label>#{ticket.number || ticket.id}</Label>
-      </div>
+      <Header ticket={ticket} busy={busy} onRefresh={() => void load(true)} go={go} />
 
-      <div className="mb-3 flex items-start justify-between gap-6">
-        <h1 className="max-w-[34ch] text-2xl font-semibold tracking-tight text-balance">
-          {ticket.subject}
-        </h1>
-        <button
-          className="flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-edge bg-panel px-3 text-sm font-medium transition-colors hover:bg-sunken disabled:opacity-50"
-          onClick={() => void load(true)}
-          disabled={busy}
-        >
-          <span className={busy ? "animate-spin" : ""}>
-            <Icon.refresh />
-          </span>
-          Refresh
-        </button>
-      </div>
+      <Vitals timeline={timeline} />
 
-      <div className="mb-7 flex flex-wrap items-center gap-2">
-        {ticket.status && <Chip tone={statusTone(ticket.status)}>{ticket.status}</Chip>}
-        {ticket.priority && (
-          <span
-            className={cn(
-              "inline-flex items-center gap-1.5 font-mono text-2xs uppercase tracking-[0.09em]",
-              prioritySignal(ticket.priority) === "critical"
-                ? "text-critical"
-                : prioritySignal(ticket.priority) === "attention"
-                  ? "text-attention"
-                  : "text-ink-faint",
-            )}
-          >
-            <span
-              className={cn(
-                "size-1.5 rounded-full",
-                prioritySignal(ticket.priority) === "critical"
-                  ? "bg-critical"
-                  : prioritySignal(ticket.priority) === "attention"
-                    ? "bg-attention"
-                    : "bg-edge-strong",
-              )}
-            />
-            {ticket.priority}
-          </span>
-        )}
-        {ticket.customer && (
-          <button
-            className="rounded-md px-1.5 py-0.5 text-xs text-ink-dim underline-offset-4 transition-colors hover:bg-sunken hover:text-ink hover:underline"
-            onClick={() =>
-              ticket.customer_id && go({ name: "customer", id: String(ticket.customer_id) })
-            }
-          >
-            {ticket.customer}
-          </button>
-        )}
-      </div>
-
-      <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_320px]">
+      <div className="mt-8 grid gap-8 lg:grid-cols-[minmax(0,1fr)_300px]">
         <div className="min-w-0">
-          <Thread entries={entries} />
+          {opening && <Opening entry={opening} subject={ticket.subject} />}
+          <Thread entries={thread} />
           <AskAzir timeline={timeline} ask={ask} />
         </div>
 
         <aside className="flex flex-col gap-3">
-          <Signals timeline={timeline} />
+          <Facts ticket={ticket} />
 
-          <Panel className="p-4">
-            <Label className="mb-3 block">Details</Label>
-            <dl className="grid grid-cols-[auto_minmax(0,1fr)] items-baseline gap-x-4 gap-y-2 text-xs">
-              <dt className="text-ink-faint">Opened</dt>
-              <dd className="text-right font-mono tabular-nums" title={absolute(ticket.created_at)}>
-                {ago(ticket.created_at)}
-              </dd>
-              <dt className="text-ink-faint">Last activity</dt>
-              <dd className="text-right font-mono tabular-nums" title={absolute(ticket.updated_at)}>
-                {ago(ticket.updated_at)}
-              </dd>
-              {ticket.assigned_to && (
-                <>
-                  <dt className="text-ink-faint">Assigned</dt>
-                  <dd className="truncate text-right">{ticket.assigned_to}</dd>
-                </>
-              )}
-              {ticket.problem_type && (
-                <>
-                  <dt className="text-ink-faint">Type</dt>
-                  <dd className="truncate text-right">{ticket.problem_type}</dd>
-                </>
-              )}
-            </dl>
-          </Panel>
+          {ticket.customer_id && (
+            <CustomerCard id={ticket.customer_id} fallback={ticket.customer} go={go} />
+          )}
 
           {ticket.customer_id && (
             <SameCustomer
@@ -223,11 +153,13 @@ export function TicketDetail({
           {timeline.notes && timeline.notes.length > 0 && (
             <div className="rounded-lg border border-dashed border-edge px-4 py-3">
               <Label className="mb-2 block">Worth knowing</Label>
-              {timeline.notes.map((note) => (
-                <p key={note} className="text-xs text-ink-faint">
-                  {note}
-                </p>
-              ))}
+              <div className="flex flex-col gap-1.5">
+                {timeline.notes.map((note) => (
+                  <p key={note} className="text-xs leading-relaxed text-ink-faint">
+                    {note}
+                  </p>
+                ))}
+              </div>
             </div>
           )}
         </aside>
@@ -237,20 +169,158 @@ export function TicketDetail({
 }
 
 /**
- * The computed signals.
+ * Who this ticket is, and the three things you can do to it from here.
  *
- * Each is coloured by whether it is a problem, because a number a reader has to
- * evaluate for themselves is a number they will skip. Thresholds are stated in
- * one place so they can be argued with.
+ * Everything identifying sits on one line under the subject rather than as a
+ * row of chips: status, priority, customer and owner are read together — "an
+ * urgent Acme ticket nobody owns" is one thought, not four.
  */
-function Signals({ timeline }: { timeline: Timeline }) {
+function Header({
+  ticket,
+  busy,
+  onRefresh,
+  go,
+}: {
+  ticket: Ticket;
+  busy: boolean;
+  onRefresh: () => void;
+  go: (to: Route) => void;
+}) {
+  const priority = prioritySignal(ticket.priority);
+  const finished = isDone(ticket.status);
+
+  return (
+    <header className="border-b border-edge pb-5">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          {/* Back rather than a link to the list, so the filters and the scroll
+              position somebody spent effort on survive opening one ticket. It
+              falls back to the list when this page was opened directly, which
+              is when there is nothing behind it to return to. */}
+          <button
+            className="flex items-center gap-1 rounded-md px-1.5 py-1 text-xs text-ink-dim transition-colors hover:bg-sunken hover:text-ink"
+            onClick={() => (canGoBack() ? window.history.back() : go({ name: "tickets" }))}
+          >
+            <Icon.back /> Back
+          </button>
+          <Label>#{ticket.number || ticket.id}</Label>
+        </div>
+
+        <div className="flex shrink-0 items-center gap-2">
+          {/* Azir deliberately cannot do everything to a ticket that Syncro
+              can. The alternative to this link is retyping a number into
+              another tab, which is the trip this product exists to remove. */}
+          {ticket.url && (
+            <a
+              className="flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs text-ink-dim transition-colors hover:bg-sunken hover:text-ink"
+              href={ticket.url}
+              target="_blank"
+              rel="noreferrer"
+            >
+              <Icon.external /> Open in Syncro
+            </a>
+          )}
+          <button
+            className="flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-edge bg-panel px-3 text-sm font-medium transition-colors hover:bg-sunken disabled:opacity-50"
+            onClick={onRefresh}
+            disabled={busy}
+            title="Read this ticket again from the helpdesk"
+          >
+            <span className={busy ? "animate-spin" : ""}>
+              <Icon.refresh />
+            </span>
+            Refresh
+          </button>
+        </div>
+      </div>
+
+      <h1
+        className={cn(
+          "max-w-[48ch] text-2xl font-semibold tracking-tight text-balance",
+          finished && "text-ink-dim",
+        )}
+      >
+        {ticket.subject}
+      </h1>
+
+      <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs">
+        {ticket.status && <Chip tone={statusTone(ticket.status)}>{ticket.status}</Chip>}
+
+        {ticket.priority && (
+          <span
+            className={cn(
+              "inline-flex items-center gap-1.5 font-mono text-2xs uppercase tracking-[0.09em]",
+              priority === "critical"
+                ? "text-critical"
+                : priority === "attention"
+                  ? "text-attention"
+                  : "text-ink-faint",
+            )}
+          >
+            <span
+              className={cn(
+                "size-1.5 rounded-full",
+                priority === "critical"
+                  ? "bg-critical"
+                  : priority === "attention"
+                    ? "bg-attention"
+                    : "bg-edge-strong",
+              )}
+            />
+            {ticket.priority}
+          </span>
+        )}
+
+        <span className="text-edge-strong" aria-hidden="true">
+          |
+        </span>
+
+        {ticket.customer && (
+          <button
+            className="inline-flex items-center gap-1.5 rounded-md px-1 py-0.5 text-ink-dim underline-offset-4 transition-colors hover:bg-sunken hover:text-ink hover:underline"
+            onClick={() =>
+              ticket.customer_id && go({ name: "customer", id: String(ticket.customer_id) })
+            }
+          >
+            <Icon.business />
+            {ticket.customer}
+          </button>
+        )}
+
+        {/* An unowned ticket is the most common reason one goes stale, so it
+            says so rather than leaving a blank where a name would be. */}
+        <span
+          className={cn(
+            "inline-flex items-center gap-1.5",
+            ticket.assigned_to?.trim() ? "text-ink-dim" : "text-attention",
+          )}
+        >
+          <Icon.person />
+          {ticket.assigned_to?.trim() || "Unassigned"}
+        </span>
+      </div>
+    </header>
+  );
+}
+
+/**
+ * The ticket's condition, in four numbers.
+ *
+ * Full width and directly under the header, because these describe the ticket
+ * as a whole and were previously squeezed into a sidebar two at a time. Each is
+ * coloured by whether it is a problem, since a number a reader has to evaluate
+ * for themselves is a number they will skip. Thresholds are stated in one place
+ * so they can be argued with.
+ */
+function Vitals({ timeline }: { timeline: Timeline }) {
   const first = timeline.first_response_minutes ?? 0;
   const gap = timeline.longest_gap_hours ?? 0;
 
-  const cells = [
+  const cells: { label: string; value: string; note?: string; tone: string }[] = [
     {
       label: "to first reply",
-      value: first ? duration(first) : "no reply yet",
+      value: first ? duration(first) : "none yet",
+      note: first ? undefined : "nobody has answered",
       tone: !first ? "bad" : first > 240 ? "warn" : "good",
     },
     {
@@ -263,6 +333,7 @@ function Signals({ timeline }: { timeline: Timeline }) {
       // Zero because nobody replied and zero because we cannot tell who did
       // are different facts, and only one of them is about the ticket.
       value: timeline.round_trips_unknown ? "unclear" : String(timeline.round_trips),
+      note: timeline.round_trips_unknown ? "sides cannot be told apart" : undefined,
       // Many round trips is not failure, but it is a signal that the thread is
       // not converging and might be worth a call instead.
       tone: timeline.round_trips_unknown ? "" : timeline.round_trips >= 6 ? "warn" : "",
@@ -274,24 +345,83 @@ function Signals({ timeline }: { timeline: Timeline }) {
     },
   ];
 
-  const signalOf = (tone: string) =>
-    tone === "bad" ? "critical" : tone === "warn" ? "attention" : tone === "good" ? "steady" : undefined;
+  const colour = (tone: string) =>
+    tone === "bad"
+      ? "text-critical"
+      : tone === "warn"
+        ? "text-attention"
+        : tone === "good"
+          ? "text-steady"
+          : "text-ink";
 
   return (
     <>
       {timeline.stale && (
-        <p className="rounded-lg border border-attention/30 bg-attention/10 px-3.5 py-2.5 text-sm text-attention">
+        <p className="mt-5 rounded-lg border border-attention/30 bg-attention/10 px-3.5 py-2.5 text-sm text-attention">
           This ticket has gone quiet.
         </p>
       )}
-      <Panel className="grid grid-cols-2 divide-x divide-y divide-edge">
+      <dl className="mt-5 grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-edge bg-edge sm:grid-cols-4">
         {cells.map((c) => (
-          <div key={c.label} className="p-3.5">
-            <Stat value={c.value} label={c.label} tone={signalOf(c.tone)} />
+          <div key={c.label} className="bg-panel px-4 py-3">
+            <dd
+              className={cn(
+                "font-mono text-xl font-medium tabular-nums tracking-tight",
+                colour(c.tone),
+              )}
+            >
+              {c.value}
+            </dd>
+            <dt className="mt-0.5 font-mono text-2xs uppercase tracking-[0.09em] text-ink-faint">
+              {c.label}
+            </dt>
+            {c.note && <p className="mt-1 text-2xs text-ink-faint">{c.note}</p>}
           </div>
         ))}
-      </Panel>
+      </dl>
     </>
+  );
+}
+
+/**
+ * The message the ticket is actually about.
+ *
+ * Pinned above the thread rather than left in it. A long ticket opens at the
+ * recent end with the older part folded, which was hiding the original request
+ * behind a button — and the original request is the one thing on the page that
+ * nobody reading this ticket can do without.
+ */
+function Opening({ entry, subject }: { entry: TimelineEntry; subject: string }) {
+  const [full, setFull] = useState(false);
+  const body = entry.body ?? "";
+  // Long enough that it stops being a summary and starts being the thread.
+  const long = body.length > 900;
+
+  return (
+    <section className="mb-8">
+      <div className="mb-2 flex items-baseline justify-between gap-3">
+        <Label>What they reported</Label>
+        <Label title={absolute(entry.at)}>{ago(entry.at)}</Label>
+      </div>
+      <blockquote className="rounded-lg border border-edge bg-sunken/60 p-4">
+        <p
+          className={cn(
+            "whitespace-pre-wrap break-words text-sm leading-relaxed",
+            long && !full && "line-clamp-[12]",
+          )}
+        >
+          {body || subject}
+        </p>
+        {long && (
+          <button
+            className="mt-2 text-xs text-ink-dim underline-offset-4 transition-colors hover:text-ink hover:underline"
+            onClick={() => setFull((v) => !v)}
+          >
+            {full ? "Show less" : "Read the whole thing"}
+          </button>
+        )}
+      </blockquote>
+    </section>
   );
 }
 
@@ -305,7 +435,11 @@ function Thread({ entries }: { entries: TimelineEntry[] }) {
   const [expanded, setExpanded] = useState(entries.length <= LONG_THREAD);
 
   if (entries.length === 0) {
-    return <Empty headline="Nothing has happened on this ticket yet" />;
+    return (
+      <Empty headline="Nothing else has happened yet">
+        Nobody has replied, and no time has been logged against it.
+      </Empty>
+    );
   }
 
   const hidden = expanded ? 0 : entries.length - LONG_THREAD;
@@ -313,6 +447,7 @@ function Thread({ entries }: { entries: TimelineEntry[] }) {
 
   return (
     <div className="flex flex-col">
+      <Label className="mb-3 block">Since then</Label>
       {hidden > 0 && (
         <button
           className="mb-4 self-start rounded-md border border-edge px-2.5 py-1 text-xs text-ink-dim transition-colors hover:bg-sunken hover:text-ink"
@@ -358,11 +493,17 @@ function Thread({ entries }: { entries: TimelineEntry[] }) {
  * from the customer or from us. So an unusable name falls back to the side it
  * came from, which the timeline does know.
  */
-function whoSaidIt(entry: TimelineEntry, fromCustomer: boolean, isTime: boolean): string {
+function whoSaidIt(entry: TimelineEntry, customer: boolean, isTime: boolean): string {
   const actor = (entry.actor ?? "").trim();
   if (actor.length > 1) return actor;
-  if (fromCustomer) return "The customer";
+  if (customer) return "The customer";
   return isTime ? "Time logged" : "Your team";
+}
+
+/** The creation event, which is an event about the ticket rather than a message. */
+function openedBy(entry: TimelineEntry): string {
+  const actor = (entry.actor ?? "").trim();
+  return actor.length > 1 ? `Opened by ${actor}` : "Opened";
 }
 
 function Event({ entry }: { entry: TimelineEntry }) {
@@ -372,9 +513,17 @@ function Event({ entry }: { entry: TimelineEntry }) {
   const isTime = /time|logged/.test(kind);
   const isCreation = /creat|open/.test(kind);
   const isNote = entry.hidden === true;
-  const fromCustomer = /customer|client|inbound/.test(kind);
+  const customer = fromCustomer(entry);
 
-  const glyph = isTime ? <Icon.clock /> : isNote ? <Icon.note /> : isCreation ? <Icon.spark /> : <Icon.reply />;
+  const glyph = isTime ? (
+    <Icon.clock />
+  ) : isNote ? (
+    <Icon.note />
+  ) : isCreation ? (
+    <Icon.spark />
+  ) : (
+    <Icon.reply />
+  );
 
   return (
     <div className="relative flex gap-3 pb-6 last:pb-0">
@@ -385,7 +534,7 @@ function Event({ entry }: { entry: TimelineEntry }) {
       <div
         className={cn(
           "relative z-10 grid size-[27px] shrink-0 place-items-center rounded-full border",
-          fromCustomer
+          customer
             ? "border-edge-strong bg-panel text-ink"
             : "border-edge bg-sunken text-ink-faint",
           isNote && "border-attention/40 bg-attention/10 text-attention",
@@ -396,16 +545,29 @@ function Event({ entry }: { entry: TimelineEntry }) {
 
       <div className="min-w-0 flex-1 pt-0.5">
         <div className="flex flex-wrap items-center gap-2">
-          <span className="text-sm font-medium">{whoSaidIt(entry, fromCustomer, isTime)}</span>
+          <span className={cn("text-sm", isCreation ? "text-ink-dim" : "font-medium")}>
+            {isCreation ? openedBy(entry) : whoSaidIt(entry, customer, isTime)}
+          </span>
+          {/* Which side spoke, said outright. It is the fact the whole thread
+              hangs on, and a subtly different border was not carrying it. */}
+          {!isTime && !isCreation && (
+            <Label className={customer ? "text-ink-dim" : "text-ink-faint"}>
+              {customer ? "customer" : "us"}
+            </Label>
+          )}
           {isNote && <Chip tone="warn">internal</Chip>}
           {isTime && entry.minutes ? <Chip>{duration(entry.minutes)}</Chip> : null}
           <Label title={absolute(entry.at)}>{ago(entry.at)}</Label>
         </div>
-        {entry.body && (
+        {entry.body && !isCreation && (
           <div
             className={cn(
-              "mt-1 whitespace-pre-wrap text-sm break-words",
-              isTime || isCreation ? "text-ink-dim" : "text-ink",
+              "mt-1.5 whitespace-pre-wrap break-words text-sm leading-relaxed",
+              // A customer's words sit on their own ground, so scanning the
+              // thread tells you who was speaking without reading a word of it.
+              customer && "rounded-lg border border-edge bg-sunken/60 px-3.5 py-2.5",
+              isNote && "rounded-lg border border-dashed border-attention/30 bg-attention/[0.04] px-3.5 py-2.5",
+              isTime ? "text-ink-dim" : "text-ink",
             )}
           >
             {entry.body}
@@ -416,6 +578,96 @@ function Event({ entry }: { entry: TimelineEntry }) {
   );
 }
 
+/** The reference facts, kept out of the way of the conversation. */
+function Facts({ ticket }: { ticket: Ticket }) {
+  return (
+    <Panel className="p-4">
+      <Label className="mb-3 block">Details</Label>
+      <dl className="grid grid-cols-[auto_minmax(0,1fr)] items-baseline gap-x-4 gap-y-2 text-xs">
+        <dt className="text-ink-faint">Opened</dt>
+        <dd className="text-right font-mono tabular-nums" title={absolute(ticket.created_at)}>
+          {ago(ticket.created_at)}
+        </dd>
+        <dt className="text-ink-faint">Last activity</dt>
+        <dd className="text-right font-mono tabular-nums" title={absolute(ticket.updated_at)}>
+          {ago(ticket.updated_at)}
+        </dd>
+        {ticket.problem_type && (
+          <>
+            <dt className="text-ink-faint">Type</dt>
+            <dd className="truncate text-right">{ticket.problem_type}</dd>
+          </>
+        )}
+      </dl>
+    </Panel>
+  );
+}
+
+/**
+ * Who to call.
+ *
+ * The next move on a stalled ticket is often a phone call, and the number for
+ * it was two pages away. One request buys it, and the panel simply does not
+ * appear if the contact details are not readable.
+ */
+function CustomerCard({
+  id,
+  fallback,
+  go,
+}: {
+  id: number;
+  fallback?: string;
+  go: (to: Route) => void;
+}) {
+  const [customer, setCustomer] = useState<CustomerRecord | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setCustomer(null);
+    work
+      .getCustomer(id)
+      .then((answer) => !cancelled && setCustomer(answer.data))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
+
+  const name = customer?.business_name || customer?.name || fallback;
+  if (!customer || (!customer.email && !customer.phone)) return null;
+
+  return (
+    <Panel className="p-4">
+      <Label className="mb-2 block">Contact</Label>
+      <button
+        className="block max-w-full truncate text-left text-sm font-medium underline-offset-4 transition-colors hover:text-azir hover:underline"
+        onClick={() => go({ name: "customer", id: String(id) })}
+      >
+        {name}
+      </button>
+      <div className="mt-2.5 flex flex-col gap-1.5 text-xs">
+        {customer.phone && (
+          <a
+            className="flex items-center gap-2 text-ink-dim transition-colors hover:text-ink"
+            href={`tel:${customer.phone.replace(/[^\d+]/g, "")}`}
+          >
+            <Icon.phone />
+            <span className="truncate font-mono tabular-nums">{customer.phone}</span>
+          </a>
+        )}
+        {customer.email && (
+          <a
+            className="flex items-center gap-2 text-ink-dim transition-colors hover:text-ink"
+            href={`mailto:${customer.email}`}
+          >
+            <Icon.mail />
+            <span className="truncate">{customer.email}</span>
+          </a>
+        )}
+      </div>
+    </Panel>
+  );
+}
 
 /**
  * The end of the thread, and the thing you would otherwise open Syncro to do.
@@ -448,7 +700,9 @@ function AskAzir({ timeline, ask }: { timeline: Timeline; ask: (question: string
   // explains it cannot work is worse than no button.
   if (!ready) return null;
 
+  const finished = isDone(timeline.ticket.status);
   const unanswered = !timeline.first_response_minutes;
+
   const draft = unanswered
     ? {
         label: "Draft the first reply",
@@ -467,24 +721,39 @@ function AskAzir({ timeline, ask }: { timeline: Timeline; ask: (question: string
             "Draft the next reply to the customer on this ticket, in the same tone as the messages already in the thread.",
         };
 
-  const asks = [
-    {
-      label: "Catch me up",
-      question:
-        "Catch me up on this ticket in a few sentences: what the customer reported, what has been done, and what it is waiting on right now.",
-    },
-    draft,
-    {
-      label: "What should I check next?",
-      question:
-        "Based on this ticket and anything similar you can find, what should I check next? List the specific steps in the order you would try them.",
-    },
-  ];
+  // A finished ticket is read to learn from, not to answer. Offering to draft
+  // a reply to it invites sending one to somebody whose problem is solved.
+  const asks = finished
+    ? [
+        {
+          label: "What was this?",
+          question:
+            "Summarise this closed ticket: what the customer reported, what fixed it, and how long it took.",
+        },
+        {
+          label: "Would this recur?",
+          question:
+            "Look at how this ticket was resolved and tell me whether the underlying cause was actually fixed or worked around, and what would stop it happening again.",
+        },
+      ]
+    : [
+        {
+          label: "Catch me up",
+          question:
+            "Catch me up on this ticket in a few sentences: what the customer reported, what has been done, and what it is waiting on right now.",
+        },
+        draft,
+        {
+          label: "What should I check next?",
+          question:
+            "Based on this ticket and anything similar you can find, what should I check next? List the specific steps in the order you would try them.",
+        },
+      ];
 
   return (
     // The one panel on the page that acts rather than reports, and the only one
     // wearing the brand — because this is where the assistant takes over.
-    <div className="mt-7 rounded-lg border border-azir/25 bg-azir/[0.04] p-4">
+    <div className="mt-8 rounded-lg border border-azir/25 bg-azir/[0.04] p-4">
       <div className="flex items-start gap-3">
         <span
           className="grid size-7 shrink-0 place-items-center rounded-md bg-azir/15 text-azir"
@@ -495,8 +764,7 @@ function AskAzir({ timeline, ask }: { timeline: Timeline; ask: (question: string
         <div>
           <strong className="text-sm font-semibold">Ask Azir about this ticket</strong>
           <p className="mt-0.5 text-xs text-ink-dim">
-            It has read the history above, this customer's other tickets, and
-            your documentation.
+            It has read the history above, this customer's other tickets, and your documentation.
           </p>
         </div>
       </div>
@@ -514,8 +782,8 @@ function AskAzir({ timeline, ask }: { timeline: Timeline; ask: (question: string
       </div>
 
       <p className="mt-3 pl-10 text-2xs text-ink-faint">
-        Answers are drafts for you to check. Nothing is sent to the customer and
-        nothing on the ticket changes.
+        Answers are drafts for you to check. Nothing is sent to the customer, and any change to the
+        ticket waits for you to approve it.
       </p>
     </div>
   );
@@ -547,14 +815,21 @@ function SameCustomer({
     setOthers(null);
     (async () => {
       try {
-        const answer = await work.searchTickets({ customer_id: customerId, per_page: 50 });
+        const answer = await work.searchTickets({
+          customer_id: customerId,
+          open_only: true,
+          per_page: 50,
+        });
         if (cancelled) return;
         setOthers(
           (answer.data.items ?? [])
-            .filter((t) => t.id !== exceptId && statusTone(t.status) !== "good")
+            .filter((t) => t.id !== exceptId)
             // Longest untouched first: the one at risk of being forgotten is
             // the one worth surfacing beside whatever is being read.
-            .sort((a, b) => new Date(a.updated_at ?? 0).getTime() - new Date(b.updated_at ?? 0).getTime()),
+            .sort(
+              (a, b) =>
+                new Date(a.updated_at ?? 0).getTime() - new Date(b.updated_at ?? 0).getTime(),
+            ),
         );
       } catch {
         if (!cancelled) setOthers([]);
@@ -570,10 +845,10 @@ function SameCustomer({
 
   return (
     <Panel>
-      <div className="flex items-baseline justify-between gap-3 border-b border-edge px-4 py-3">
+      <PanelHead>
         <h3 className="text-sm font-medium">Also open for {customer || "this customer"}</h3>
         {others && <Label>{others.length}</Label>}
-      </div>
+      </PanelHead>
       <div className="p-2">
         {!others && <div className="h-12 animate-pulse rounded bg-sunken" />}
         {others && (
