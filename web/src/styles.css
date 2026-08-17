@@ -1,0 +1,523 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@import "@fontsource-variable/inter";
+@import "@fontsource/ibm-plex-mono/400.css";
+@import "@fontsource/ibm-plex-mono/500.css";
+@import "@fontsource/ibm-plex-mono/600.css";
+
+/* ---------------------------------------------------------------------------
+   Azir's design language.
+
+   The product tells a technician which of forty tickets is going wrong, and
+   they read it for eight hours at a stretch. So the interface is built to be
+   *scanned* rather than read, and three rules carry that:
+
+   1. Signal colour is the primary language. Red, amber and green come from
+      equipment status lights, not from a web palette, and they appear on a
+      consistent left edge through every row, lane and panel. State reads
+      peripherally, before any word does.
+
+   2. The brand violet appears only where Azir itself is speaking — the
+      assistant, the mark, focus rings. Never as decoration. Violet therefore
+      *means* "this is the assistant", which is a fact worth encoding given the
+      assistant is the one thing here that can be wrong.
+
+   3. Monospace is the voice of structure. Lane headers, labels, ticket
+      numbers, durations and counts are all data a technician reads in columns,
+      so they are set in a mono face with tabular figures. Inter carries prose
+      and nothing else.
+
+   Colour is defined once, as tokens, for three states: the bare :root is the
+   light palette, the media query covers viewers on system default, and the
+   [data-theme] blocks let an explicit choice win either way. Nothing below
+   states a colour outside these blocks.
+--------------------------------------------------------------------------- */
+
+:root {
+  /* Grounds, lightest to deepest. Three of them, so raised things can sit
+     above the page and floating things above those. */
+  --ground: #fafbfc;
+  --panel: #ffffff;
+  --raised: #ffffff;
+  --sunken: #f1f3f6;
+
+  --edge: #e1e6ec;
+  --edge-strong: #cbd3dd;
+
+  --ink: #0c1017;
+  --ink-dim: #5a6472;
+  --ink-faint: #666f7d;
+
+  /* Status lights. Same hue in both themes, tuned so each clears 4.5:1 on the
+     ground it sits on. */
+  --critical: #c4291a;
+  --attention: #9a5b00;
+  --steady: #0f7a45;
+  --idle: #7a8697;
+
+  /* Azir's own voice. */
+  --azir: #5b46e5;
+  --azir-ink: #ffffff;
+
+  --elev-1: 0 1px 2px rgb(12 16 23 / 0.06);
+  --elev-2: 0 2px 4px rgb(12 16 23 / 0.05), 0 6px 16px -6px rgb(12 16 23 / 0.1);
+  --elev-3: 0 8px 32px -8px rgb(12 16 23 / 0.18);
+
+  --radius: 8px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground: #0a0d12;
+    --panel: #11151c;
+    --raised: #161b24;
+    --sunken: #0d1117;
+
+    --edge: #1f2632;
+    --edge-strong: #2a3342;
+
+    --ink: #e7ebf2;
+    --ink-dim: #98a2b3;
+    --ink-faint: #757f8f;
+
+    --critical: #ff5245;
+    --attention: #ffa724;
+    --steady: #31d583;
+    --idle: #6b7686;
+
+    --azir: #7c6bff;
+    --azir-ink: #0a0d12;
+
+    --elev-1: 0 1px 2px rgb(0 0 0 / 0.4);
+    --elev-2: 0 2px 4px rgb(0 0 0 / 0.3), 0 6px 16px -6px rgb(0 0 0 / 0.5);
+    --elev-3: 0 8px 32px -8px rgb(0 0 0 / 0.65);
+  }
+}
+
+:root[data-theme="dark"] {
+  --ground: #0a0d12;
+  --panel: #11151c;
+  --raised: #161b24;
+  --sunken: #0d1117;
+
+  --edge: #1f2632;
+  --edge-strong: #2a3342;
+
+  --ink: #e7ebf2;
+  --ink-dim: #98a2b3;
+  --ink-faint: #757f8f;
+
+  --critical: #ff5245;
+  --attention: #ffa724;
+  --steady: #31d583;
+  --idle: #6b7686;
+
+  --azir: #7c6bff;
+  --azir-ink: #0a0d12;
+
+  --elev-1: 0 1px 2px rgb(0 0 0 / 0.4);
+  --elev-2: 0 2px 4px rgb(0 0 0 / 0.3), 0 6px 16px -6px rgb(0 0 0 / 0.5);
+  --elev-3: 0 8px 32px -8px rgb(0 0 0 / 0.65);
+}
+
+/* `dark:` for the three states this app actually has: an explicit choice on
+   either side, and the unstamped default where only the media query speaks.
+   shadcn's components lean on this variant, so it has to mean the same thing
+   here as it does in their code. */
+@custom-variant dark {
+  @media (prefers-color-scheme: dark) {
+    &:where(:root:not([data-theme="light"]), :root:not([data-theme="light"]) *) {
+      @slot;
+    }
+  }
+  &:where(:root[data-theme="dark"], :root[data-theme="dark"] *) {
+    @slot;
+  }
+}
+
+/* The tokens above, exposed as Tailwind utilities. `inline` keeps them as
+   var() references so a theme swap is a variable change, not a rebuild. */
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  /* shadcn's vocabulary, pointed at Azir's palette. Its components then drop
+     in unmodified and arrive already wearing our colours — we get their work
+     on states, sizing and focus without inheriting their look. */
+  --color-background: var(--ground);
+  --color-foreground: var(--ink);
+  --color-card: var(--panel);
+  --color-card-foreground: var(--ink);
+  --color-popover: var(--raised);
+  --color-popover-foreground: var(--ink);
+  --color-primary: var(--azir);
+  --color-primary-foreground: var(--azir-ink);
+  --color-secondary: var(--sunken);
+  --color-secondary-foreground: var(--ink);
+  --color-muted: var(--sunken);
+  --color-muted-foreground: var(--ink-dim);
+  --color-accent: var(--sunken);
+  --color-accent-foreground: var(--ink);
+  --color-destructive: var(--critical);
+  --color-destructive-foreground: var(--azir-ink);
+  --color-border: var(--edge);
+  --color-input: var(--edge-strong);
+  --color-ring: var(--azir);
+
+  --color-ground: var(--ground);
+  --color-panel: var(--panel);
+  --color-raised: var(--raised);
+  --color-sunken: var(--sunken);
+
+  --color-edge: var(--edge);
+  --color-edge-strong: var(--edge-strong);
+
+  --color-ink: var(--ink);
+  --color-ink-dim: var(--ink-dim);
+  --color-ink-faint: var(--ink-faint);
+
+  --color-critical: var(--critical);
+  --color-attention: var(--attention);
+  --color-steady: var(--steady);
+  --color-idle: var(--idle);
+
+  --color-azir: var(--azir);
+  --color-azir-ink: var(--azir-ink);
+
+  /* Eight steps with real distance between them, replacing the thirteen sizes
+     that previously sat inside a four-pixel band. */
+  --text-2xs: 11px;
+  --text-2xs--line-height: 1.45;
+  --text-xs: 12px;
+  --text-xs--line-height: 1.5;
+  --text-sm: 13px;
+  --text-sm--line-height: 1.55;
+  --text-base: 14px;
+  --text-base--line-height: 1.6;
+  --text-lg: 16px;
+  --text-lg--line-height: 1.5;
+  --text-xl: 20px;
+  --text-xl--line-height: 1.35;
+  --text-2xl: 26px;
+  --text-2xl--line-height: 1.25;
+  --text-3xl: 34px;
+  --text-3xl--line-height: 1.1;
+
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", monospace;
+
+  --radius-DEFAULT: 8px;
+
+  --shadow-e1: var(--elev-1);
+  --shadow-e2: var(--elev-2);
+  --shadow-e3: var(--elev-3);
+}
+
+@layer base {
+  * {
+    border-color: var(--edge);
+  }
+
+  html {
+    /* Kept a touch under 16 because this is a dense tool, but the scale above
+       does the hierarchy now rather than a stack of near-identical sizes. */
+    font-size: 100%;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
+    line-height: 1.6;
+    font-feature-settings: "cv05" 1, "ss01" 1;
+  }
+
+  /* Every number a technician compares against another number lines up. */
+  .tabular,
+  .font-mono {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Bare form elements.
+     The stylesheet this replaced styled these by element, and several screens
+     — sign-in among them — rely on that rather than carrying classes. Dropping
+     it left the sign-in inputs invisible: no border, no background, a label
+     floating above nothing. Caught only because a branding screenshot finally
+     showed a signed-out page. */
+  input:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not([type="file"]),
+  select,
+  textarea {
+    width: 100%;
+    border: 1px solid var(--edge);
+    background: var(--sunken);
+    color: var(--ink);
+    border-radius: calc(var(--radius) - 2px);
+    padding: 0 10px;
+    height: 32px;
+    font: inherit;
+    font-size: var(--text-sm);
+  }
+
+  textarea {
+    height: auto;
+    padding: 8px 10px;
+    resize: vertical;
+  }
+
+  input::placeholder,
+  textarea::placeholder {
+    color: var(--ink-faint);
+  }
+
+  input:focus-visible:not([type="checkbox"]):not([type="radio"]),
+  select:focus-visible,
+  textarea:focus-visible {
+    border-color: var(--azir);
+    outline: none;
+  }
+
+  input:disabled,
+  select:disabled,
+  textarea:disabled {
+    opacity: 0.5;
+  }
+
+  /* A form's own submit button. Anything with its own classes overrides this,
+     because a utility class is a later rule than a base one. */
+  form button[type="submit"] {
+    height: 34px;
+    border-radius: calc(var(--radius) - 2px);
+    background: var(--azir);
+    color: var(--azir-ink);
+    font-weight: 500;
+    font-size: var(--text-sm);
+    transition: opacity 0.12s;
+  }
+
+  form button[type="submit"]:hover:not(:disabled) {
+    opacity: 0.9;
+  }
+
+  form button[type="submit"]:disabled {
+    opacity: 0.5;
+  }
+
+  form label {
+    font-size: var(--text-sm);
+    font-weight: 500;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--azir);
+    outline-offset: 2px;
+    border-radius: 3px;
+  }
+
+  ::selection {
+    background: color-mix(in srgb, var(--azir) 28%, transparent);
+  }
+
+  /* Eight hours in front of this. Motion is interaction feedback only, and
+     even that goes away for anyone who has asked for it to. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Markdown, as the assistant writes it.
+
+   The model answers in markdown, so the panel renders markdown — but at the
+   size and rhythm of the rest of the interface rather than at document
+   proportions. Written here rather than as utilities because the elements
+   arrive from react-markdown and carry no classes of their own.
+--------------------------------------------------------------------------- */
+.prose-azir {
+  overflow-wrap: break-word;
+}
+
+.prose-azir > * + * {
+  margin-top: 0.6em;
+}
+
+.prose-azir h1,
+.prose-azir h2,
+.prose-azir h3 {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  margin-top: 1em;
+}
+
+.prose-azir ul,
+.prose-azir ol {
+  padding-left: 1.15em;
+}
+
+.prose-azir ul {
+  list-style: disc;
+}
+.prose-azir ol {
+  list-style: decimal;
+}
+
+.prose-azir li + li {
+  margin-top: 0.25em;
+}
+
+.prose-azir code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  background: color-mix(in srgb, currentColor 10%, transparent);
+  border-radius: 3px;
+  padding: 0.1em 0.3em;
+}
+
+/* A fenced block in an answer is nearly always a drafted reply, which is prose
+   and wraps. The default `white-space: pre` gave every one of them a horizontal
+   scrollbar and made a two-line email unreadable. Long unbroken tokens — a URL,
+   a serial — still get to scroll rather than force the card wider. */
+.prose-azir pre {
+  padding: 12px;
+  margin: 0;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 2;
+}
+
+.prose-azir pre code {
+  background: none;
+  padding: 0;
+  font-size: var(--text-xs);
+  line-height: 1.65;
+}
+
+/* The first and last line of a block should not sit against its own border. */
+.prose-azir pre::before,
+.prose-azir pre::after {
+  content: none;
+}
+
+.prose-azir a {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.prose-azir blockquote {
+  border-left: 2px solid var(--edge-strong);
+  padding-left: 0.8em;
+  color: var(--ink-dim);
+}
+
+.prose-azir table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-xs);
+  display: block;
+  overflow-x: auto;
+}
+
+.prose-azir th,
+.prose-azir td {
+  border: 1px solid var(--edge);
+  padding: 0.35em 0.6em;
+  text-align: left;
+}
+
+.prose-azir th {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-faint);
+}
+
+.prose-azir hr {
+  border: 0;
+  border-top: 1px solid var(--edge);
+}
+
+/* The accordion's open and close, driven by the height Radix measures for us. */
+@keyframes accordion-down {
+  from {
+    height: 0;
+    opacity: 0;
+  }
+  to {
+    height: var(--radix-collapsible-content-height);
+    opacity: 1;
+  }
+}
+
+@keyframes accordion-up {
+  from {
+    height: var(--radix-collapsible-content-height);
+    opacity: 1;
+  }
+  to {
+    height: 0;
+    opacity: 0;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Tables.
+
+   Written once here rather than as utilities on every cell: a table's rhythm is
+   a property of the table, and repeating eight classes per <td> across four
+   screens is how they drift apart. Column headers take the structural mono
+   voice; figures line up because every table in this product is read by
+   comparing one row against another.
+--------------------------------------------------------------------------- */
+table th {
+  padding: 0 8px 8px;
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--ink-faint);
+  border-bottom: 1px solid var(--edge);
+  white-space: nowrap;
+}
+
+table td {
+  padding: 10px 8px;
+  border-bottom: 1px solid color-mix(in srgb, var(--edge) 60%, transparent);
+  vertical-align: middle;
+}
+
+table tbody tr {
+  transition: background 0.12s;
+}
+
+table tbody tr[tabindex]:hover,
+table tbody tr[tabindex]:focus-visible {
+  background: color-mix(in srgb, var(--sunken) 70%, transparent);
+  cursor: pointer;
+}
+
+table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+/* Right-aligned figures, marked at the cell rather than guessed from content. */
+table .num,
+table th.num {
+  text-align: right;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
