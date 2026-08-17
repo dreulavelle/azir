@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -273,6 +274,13 @@ func (s *Server) receiveWebhook(w http.ResponseWriter, r *http.Request) {
 	// Every open browser hears about it, so a queue is current within a second
 	// instead of within a polling interval.
 	s.announce(subject)
+
+	// And recall stays current without a timer. The webhook is only a nudge —
+	// its body is never believed — so this refetches the queue and reindexes
+	// what changed, the same way every other reaction to a webhook works.
+	if subject == "ticket" {
+		go s.reindexRecent(context.WithoutCancel(r.Context()))
+	}
 
 	// The event name is logged; the body is not. Knowing that
 	// "ticket_customer_reply" arrived is a diagnostic; keeping what the

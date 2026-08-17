@@ -178,6 +178,14 @@ func (s *Server) Routes() http.Handler {
 	// proposals go through.
 	mux.HandleFunc("POST /api/change/{capability}", s.require(p, s.applyChange))
 
+	// Recall over finished work. Reading it needs no more than reading a
+	// ticket; filling it is an administrator's decision, because it costs
+	// thousands of requests against somebody else's API.
+	mux.HandleFunc("GET /api/recall", s.require(p, ignoreActor(s.searchRecall)))
+	mux.HandleFunc("GET /api/recall/status", s.require(p, ignoreActor(s.getRecallStatus)))
+	mux.HandleFunc("POST /api/recall/backfill",
+		s.require(identity.PermPluginConfigure, s.startBackfill))
+
 	// The frontend is served by the same binary on the same port, so there is
 	// no proxy to configure and no second origin to authorise.
 	if s.Web != nil {

@@ -79,10 +79,45 @@ func (s *Server) assistantTools(ctx context.Context) ([]assistant.Tool, error) {
 		}
 	}
 
-	out := make([]assistant.Tool, 0, len(seen))
+	out := make([]assistant.Tool, 0, len(seen)+1)
 	for _, t := range seen {
 		out = append(out, t)
 	}
+
+	/*
+		Recall is Azir's own, so it comes from here rather than from the
+		registry.
+
+		Every other tool is a way of reaching somebody else's system, which is
+		why they arrive from plugins and need approving one at a time. This one
+		reaches an index Azir built out of tickets an administrator has already
+		let it read. Wrapping it in a plugin to preserve the symmetry would be
+		ceremony: a process, a subject, a schema and an approval, all to search
+		a table in the database core is already holding open.
+
+		It is offered only once something has been indexed. A tool that always
+		answers "nothing found" teaches a model to stop calling it, and it would
+		have learnt that before the first backfill ever ran.
+	*/
+	if total, _, err := s.DB.RecallSize(ctx); err == nil && total > 0 {
+		out = append(out, assistant.Tool{
+			Name: "recall.similar_tickets",
+			Description: "Searches finished tickets for work like this — what the problem looked like " +
+				"and what was actually done about it. Reach for it before working out an answer from " +
+				"first principles: this company has probably met the problem before, and what fixed it " +
+				"on their equipment is better than what fixes it in general. Search the way you would " +
+				"describe the fault, or paste an error code or a model number.",
+			Schema: json.RawMessage(`{
+				"type": "object",
+				"required": ["query"],
+				"properties": {
+					"query": {"type": "string", "description": "What the problem looks like — symptoms, an error, a product."},
+					"this_customer_only": {"type": "boolean", "description": "Restrict to the customer this conversation is about."}
+				}
+			}`),
+		})
+	}
+
 	return out, nil
 }
 
@@ -213,6 +248,11 @@ func (s *Server) onBehalfOf(ctx context.Context, c store.Conversation) (uuid.UUI
 
 func (s *Server) runner(actor identity.Actor, onBehalf uuid.UUID, conversation uuid.UUID) assistant.Runner {
 	return func(ctx context.Context, capability string, args json.RawMessage) (json.RawMessage, error) {
+		// Azir's own index, answered here rather than over NATS.
+		if capability == "recall.similar_tickets" {
+			return s.recallForModel(ctx, onBehalf, args)
+		}
+
 		tool, err := s.resolveCapability(ctx, capability)
 		if err != nil {
 			return nil, err
