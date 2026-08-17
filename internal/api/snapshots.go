@@ -208,7 +208,13 @@ func worstOf(findings []supportinfo.Finding) string {
 // Trimmed to the findings and the facts. The series are thousands of readings
 // and a model cannot see a shape in a list of numbers — what it can use is the
 // sentence somebody already wrote about what those numbers mean.
-func (s *Server) snapshotForModel(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
+//
+// The identifier is optional, and usually absent. A model has no way to know a
+// snapshot's id: it is a uuid that exists on a screen the model cannot see, and
+// a tool that demands one can only be called after a person has pasted it. With
+// no id it reads the newest capture for the customer the conversation is about,
+// which is what somebody means by "check the support info" almost every time.
+func (s *Server) snapshotForModel(ctx context.Context, onBehalf uuid.UUID, raw json.RawMessage) (json.RawMessage, error) {
 	var args struct {
 		SnapshotID string `json:"snapshot_id"`
 	}
@@ -217,14 +223,29 @@ func (s *Server) snapshotForModel(ctx context.Context, raw json.RawMessage) (jso
 			return nil, errors.New("that request could not be read")
 		}
 	}
+
 	id, err := uuid.Parse(strings.TrimSpace(args.SnapshotID))
 	if err != nil {
-		return nil, errors.New("which snapshot? Give its id")
+		if onBehalf == uuid.Nil {
+			return nil, errors.New("which customer's capture? This conversation is not about one")
+		}
+		captures, err := s.DB.Snapshots(ctx, onBehalf)
+		if err != nil || len(captures) == 0 {
+			return nil, errors.New("no support capture has been uploaded for this customer")
+		}
+		id = captures[0].ID
 	}
 
 	stored, err := s.DB.GetSnapshot(ctx, id)
 	if err != nil {
 		return nil, errors.New("no such snapshot")
+	}
+
+	// A capture belongs to the customer it was taken from. Answering about
+	// another one across a conversation boundary would leak one customer's
+	// telephony into another's ticket.
+	if onBehalf != uuid.Nil && stored.CustomerID != onBehalf {
+		return nil, errors.New("that capture belongs to a different customer")
 	}
 
 	var report supportinfo.Snapshot
@@ -233,9 +254,11 @@ func (s *Server) snapshotForModel(ctx context.Context, raw json.RawMessage) (jso
 	}
 
 	return json.Marshal(map[string]any{
-		"system":   report.System,
-		"health":   report.Health,
-		"findings": report.Findings,
-		"note":     "Metrics are summarised in the findings. The raw series are not included; they are thousands of readings and the findings already say what shape they are.",
+		"captured_at": stored.CapturedAt,
+		"filename":    stored.Filename,
+		"system":      report.System,
+		"health":      report.Health,
+		"findings":    report.Findings,
+		"note":        "Metrics are summarised in the findings. The raw series are not included; they are thousands of readings and the findings already say what shape they are.",
 	})
 }

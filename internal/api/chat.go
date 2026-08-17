@@ -29,7 +29,12 @@ import (
 // is currently working, and provides a capability. Anything that writes is
 // excluded before anything else is considered, and there is no flag anywhere
 // that turns that off.
-func (s *Server) assistantTools(ctx context.Context) ([]assistant.Tool, error) {
+// assistantTools is what the model may reach for in this conversation.
+//
+// onBehalf is the customer being discussed, and may be uuid.Nil — either a
+// conversation about nothing in particular, or the settings screen asking what
+// the assistant can do at all rather than what it can do here.
+func (s *Server) assistantTools(ctx context.Context, onBehalf uuid.UUID) ([]assistant.Tool, error) {
 	approved, err := s.DB.ApprovedTools(ctx)
 	if err != nil {
 		return nil, err
@@ -113,6 +118,32 @@ func (s *Server) assistantTools(ctx context.Context) ([]assistant.Tool, error) {
 				"properties": {
 					"query": {"type": "string", "description": "What the problem looks like — symptoms, an error, a product."},
 					"this_customer_only": {"type": "boolean", "description": "Restrict to the customer this conversation is about."}
+				}
+			}`),
+		})
+	}
+
+	/*
+		Support captures, likewise Azir's own.
+
+		Offered only where one exists, and for the same reason as recall: a tool
+		that is always empty teaches a model not to bother. What it returns is
+		the findings — sentences about what is wrong — rather than the metrics
+		they were read from, because a model handed five thousand readings will
+		describe the readings, and what a technician needs is the sentence.
+	*/
+	if onBehalf != uuid.Nil && s.hasCaptures(ctx, onBehalf) {
+		out = append(out, assistant.Tool{
+			Name: "diagnostics.read_capture",
+			Description: "Reads the 3CX support capture taken from this customer's phone system — " +
+				"version, host, extension counts, and what was found wrong in the logs: dead audio, " +
+				"failed logins, licence and certificate trouble. Reach for it whenever the problem " +
+				"is with their phones and you would otherwise be guessing. Defaults to the most " +
+				"recent capture, which is nearly always the one meant.",
+			Schema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"snapshot_id": {"type": "string", "description": "A specific capture. Omit for the latest."}
 				}
 			}`),
 		})
@@ -251,6 +282,9 @@ func (s *Server) runner(actor identity.Actor, onBehalf uuid.UUID, conversation u
 		// Azir's own index, answered here rather than over NATS.
 		if capability == "recall.similar_tickets" {
 			return s.recallForModel(ctx, onBehalf, args)
+		}
+		if capability == "diagnostics.read_capture" {
+			return s.snapshotForModel(ctx, onBehalf, args)
 		}
 
 		tool, err := s.resolveCapability(ctx, capability)
@@ -692,7 +726,7 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request, actor ident
 		return
 	}
 
-	tools, err := s.assistantTools(r.Context())
+	tools, err := s.assistantTools(r.Context(), onBehalf)
 	if err != nil {
 		s.fail(w, err, "could not work out what the assistant can look up")
 		return
@@ -872,7 +906,7 @@ func (s *Server) sendMessageStreaming(w http.ResponseWriter, r *http.Request, ac
 		writeJSON(w, http.StatusServiceUnavailable, errBody(err.Error()))
 		return
 	}
-	tools, err := s.assistantTools(r.Context())
+	tools, err := s.assistantTools(r.Context(), onBehalf)
 	if err != nil {
 		s.fail(w, err, "could not work out what the assistant can look up")
 		return
@@ -1012,10 +1046,17 @@ func (s *Server) getAssistantSettings(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if tools, err := s.assistantTools(r.Context()); err == nil {
+	// What the assistant can reach, in general. Deliberately not the same
+	// question a conversation asks: the capture reader needs a customer to be
+	// about, and there is none here, but leaving it off this list would
+	// understate what an administrator has actually enabled.
+	if tools, err := s.assistantTools(r.Context(), uuid.Nil); err == nil {
 		for _, t := range tools {
 			view.Available = append(view.Available, t.Name)
 		}
+	}
+	if found, err := s.DB.AllSnapshots(r.Context(), 1); err == nil && len(found) > 0 {
+		view.Available = append(view.Available, "diagnostics.read_capture")
 	}
 	writeJSON(w, http.StatusOK, view)
 }
@@ -1131,4 +1172,10 @@ func (s *Server) putAssistantSettings(w http.ResponseWriter, r *http.Request, ac
 		Outcome: audit.OutcomeOK, Detail: enabledWord(cfg.Enabled),
 	})
 	writeJSON(w, http.StatusOK, map[string]bool{"enabled": cfg.Enabled})
+}
+
+// hasCaptures reports whether this customer has a support capture to read.
+func (s *Server) hasCaptures(ctx context.Context, customer uuid.UUID) bool {
+	found, err := s.DB.Snapshots(ctx, customer)
+	return err == nil && len(found) > 0
 }
