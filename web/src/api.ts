@@ -660,6 +660,19 @@ export const api = {
 
   users: () => request<User[]>("/api/users"),
 
+  // Managing an account after it exists. Every rule about who may do what is
+  // enforced on the server; these are only the ways of asking.
+  updateUser: (id: string, patch: { role?: string; disabled?: boolean }) =>
+    request<User[]>(`/api/users/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+
+  setUserPassword: (id: string, password: string) =>
+    request<{ ok: boolean; sessions_ended: number }>(`/api/users/${id}/password`, {
+      method: "POST",
+      body: JSON.stringify({ password }),
+    }),
+
+  removeUser: (id: string) => request<void>(`/api/users/${id}`, { method: "DELETE" }),
+
   createUser: (email: string, displayName: string, role: string, password: string) =>
     request<User>("/api/users", {
       method: "POST",

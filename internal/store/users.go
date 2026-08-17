@@ -281,7 +281,7 @@ func (db *DB) SetUserDisabled(ctx context.Context, id uuid.UUID, disabled bool) 
 func (db *DB) CountAdmins(ctx context.Context) (int, error) {
 	var n int
 	err := db.pool.QueryRow(ctx,
-		`SELECT count(*) FROM users WHERE role = 'admin' AND NOT disabled`).Scan(&n)
+		`SELECT count(*) FROM users WHERE role = $1 AND NOT disabled`, identity.RoleAdmin).Scan(&n)
 	if err != nil {
 		return 0, fmt.Errorf("store: count admins: %w", err)
 	}
@@ -293,4 +293,44 @@ func truncateText(s string, limit int) string {
 		return s
 	}
 	return s[:limit]
+}
+
+// SetUserPassword replaces somebody's password.
+func (db *DB) SetUserPassword(ctx context.Context, id uuid.UUID, password string) error {
+	hash, err := identity.HashPassword(password)
+	if err != nil {
+		return err
+	}
+	tag, err := db.pool.Exec(ctx,
+		`UPDATE users SET password_hash = $2 WHERE id = $1`, id, hash)
+	if err != nil {
+		return fmt.Errorf("store: set password: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// EndSessionsFor signs somebody out everywhere, and reports how many sessions
+// that was. Used when a password changes: a credential replaced because an
+// account was misused has not been replaced if the old session still works.
+func (db *DB) EndSessionsFor(ctx context.Context, id uuid.UUID) (int64, error) {
+	tag, err := db.pool.Exec(ctx, `DELETE FROM sessions WHERE user_id = $1`, id)
+	if err != nil {
+		return 0, fmt.Errorf("store: end sessions: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
+// DeleteUser removes an account and everything hanging off it.
+func (db *DB) DeleteUser(ctx context.Context, id uuid.UUID) error {
+	tag, err := db.pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("store: delete user: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }

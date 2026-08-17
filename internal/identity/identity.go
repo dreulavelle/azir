@@ -54,6 +54,13 @@ const (
 	PermPhoneManage = "phone.manage"
 )
 
+// MinPasswordLength is the floor, named so the rule is stated once rather than
+// as a bare number in every place that checks it.
+const MinPasswordLength = 12
+
+// RoleAdmin is the role that can hand out permissions, including this one.
+const RoleAdmin = "admin"
+
 // AllPermissions is every permission the application defines, for the admin UI
 // to render and for validation when a custom role is created.
 var AllPermissions = []string{
@@ -111,7 +118,7 @@ const (
 
 // HashPassword returns an encoded argon2id hash.
 func HashPassword(password string) (string, error) {
-	if len(password) < 12 {
+	if len(password) < MinPasswordLength {
 		return "", errors.New("identity: password must be at least 12 characters")
 	}
 	salt := make([]byte, saltLen)

@@ -117,6 +117,9 @@ func (s *Server) Routes() http.Handler {
 
 	mux.HandleFunc("GET /api/users", s.require(identity.PermUserManage, ignoreActor(s.listUsers)))
 	mux.HandleFunc("POST /api/users", s.require(identity.PermUserManage, s.createUser))
+	mux.HandleFunc("PATCH /api/users/{id}", s.require(identity.PermUserManage, s.updateUser))
+	mux.HandleFunc("POST /api/users/{id}/password", s.require(identity.PermUserManage, s.setPassword))
+	mux.HandleFunc("DELETE /api/users/{id}", s.require(identity.PermUserManage, s.deleteUser))
 	mux.HandleFunc("GET /api/roles", s.require(identity.PermUserManage, ignoreActor(s.listRoles)))
 
 	mux.HandleFunc("GET /api/audit", s.require(identity.PermAuditRead, ignoreActor(s.listAudit)))

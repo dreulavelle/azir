@@ -2,7 +2,9 @@ import { useCallback, useEffect, useState } from "react";
 import { api, Perm, type Actor, type Role, type User } from "./api";
 import { Tooltip } from "./components";
 import { SignOn } from "./SignOn";
-import { Chip, Empty, Icon, PanelHead, Problem, absolute, ago, initials } from "./ui";
+import { Button, Chip, Empty, Icon, PanelHead, Picker, Problem, TextInput, absolute, ago, initials } from "./ui";
+import { useToast } from "./Toast";
+import { cn } from "@/lib/cn";
 
 /**
  * What each permission actually lets someone do.
@@ -97,40 +99,21 @@ export function Users({ actor }: { actor: Actor }) {
             <thead>
               <tr>
                 <th>Name</th>
-                <th className="w-[190px]">Role</th>
-                <th className="w-[150px]">Last seen</th>
+                <th className="w-[170px]">Role</th>
+                <th className="w-[130px]">Last seen</th>
+                <th className="w-[210px]" />
               </tr>
             </thead>
             <tbody>
               {users.map((u) => (
-                <tr key={u.id} className="cursor-default">
-                  <td>
-                    <div className="flex items-center gap-3">
-                      <span className="grid size-7 shrink-0 place-items-center rounded-md bg-sunken font-mono text-2xs font-semibold text-ink-dim">{initials(u.display_name || u.email)}</span>
-                      <span className="flex flex-col">
-                        <span className="font-medium">
-                          {u.display_name || u.email}
-                          {u.email === actor.email && (
-                            <span className="text-xs text-ink-faint"> — you</span>
-                          )}
-                        </span>
-                        <span className="text-xs text-ink-faint">{u.email}</span>
-                      </span>
-                    </div>
-                  </td>
-                  <td>
-                    <div className="flex items-center gap-2">
-                      <Chip tone="accent">{u.role}</Chip>
-                      {/* How someone signs in matters when working out why they
-                          cannot: a federated account has no password to reset. */}
-                      {u.provider && <Chip>sso</Chip>}
-                      {u.disabled && <Chip tone="urgent">disabled</Chip>}
-                    </div>
-                  </td>
-                  <td className="text-xs text-ink-dim" title={absolute(u.last_seen_at)}>
-                    {u.last_seen_at ? `${ago(u.last_seen_at)}` : "never"}
-                  </td>
-                </tr>
+                <Person
+                  key={u.id}
+                  user={u}
+                  actor={actor}
+                  roles={roles}
+                  onChanged={(next) => setUsers(next)}
+                  onGone={() => void load()}
+                />
               ))}
             </tbody>
           </table>
@@ -217,6 +200,237 @@ export function Users({ actor }: { actor: Actor }) {
       </section>
 
       {actor.permissions.includes(Perm.pluginConfigure) && <SignOn roles={roles} />}
+    </>
+  );
+}
+
+/**
+ * One account, and the things that can be done to it.
+ *
+ * Role and enabled state change in place — a row that is also the editor,
+ * rather than a modal that repeats what is already on screen. The dangerous
+ * two, replacing a password and removing an account, ask first, because
+ * neither can be undone from here.
+ *
+ * Every rule about who may do what is enforced on the server; what is hidden
+ * here is only what would be pointless to offer. The last administrator cannot
+ * demote or disable themselves, and the server refuses it whatever this screen
+ * shows.
+ */
+function Person({
+  user,
+  actor,
+  roles,
+  onChanged,
+  onGone,
+}: {
+  user: User;
+  actor: Actor;
+  roles: Role[];
+  onChanged: (users: User[]) => void;
+  onGone: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [resetting, setResetting] = useState(false);
+  const [password, setPassword] = useState("");
+  const [confirming, setConfirming] = useState(false);
+  const toast = useToast();
+  const self = user.email === actor.email;
+
+  async function patch(change: { role?: string; disabled?: boolean }, said: string) {
+    setBusy(true);
+    try {
+      onChanged(await api.updateUser(user.id, change));
+      toast(said, { tone: "good" });
+    } catch (e) {
+      toast("That did not go through", {
+        tone: "bad",
+        detail: e instanceof Error ? e.message : undefined,
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function savePassword() {
+    setBusy(true);
+    try {
+      const out = await api.setUserPassword(user.id, password);
+      setResetting(false);
+      setPassword("");
+      toast(
+        out.sessions_ended > 0
+          ? `Password set, and ${out.sessions_ended} signed-in ${out.sessions_ended === 1 ? "session was" : "sessions were"} ended`
+          : "Password set",
+        { tone: "good" },
+      );
+    } catch (e) {
+      toast("That password was not accepted", {
+        tone: "bad",
+        detail: e instanceof Error ? e.message : undefined,
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove() {
+    setBusy(true);
+    try {
+      await api.removeUser(user.id);
+      toast(`${user.display_name || user.email} was removed`, { tone: "good" });
+      onGone();
+    } catch (e) {
+      toast("That account was not removed", {
+        tone: "bad",
+        detail: e instanceof Error ? e.message : undefined,
+      });
+      setBusy(false);
+      setConfirming(false);
+    }
+  }
+
+  return (
+    <>
+      <tr className="cursor-default">
+        <td>
+          <div className="flex items-center gap-3">
+            <span className="grid size-7 shrink-0 place-items-center rounded-md bg-sunken font-mono text-2xs font-semibold text-ink-dim">
+              {initials(user.display_name || user.email)}
+            </span>
+            <span className="flex flex-col">
+              <span className={cn("font-medium", user.disabled && "text-ink-dim line-through")}>
+                {user.display_name || user.email}
+                {self && <span className="text-xs text-ink-faint"> — you</span>}
+              </span>
+              <span className="text-xs text-ink-faint">{user.email}</span>
+            </span>
+          </div>
+        </td>
+        <td>
+          <div className="flex items-center gap-2">
+            <Picker
+              className="w-auto"
+              value={user.role}
+              disabled={busy}
+              aria-label={`Role for ${user.email}`}
+              onChange={(e) => void patch({ role: e.target.value }, `Now a ${e.target.value}`)}
+            >
+              {roles.map((r) => (
+                <option key={r.name} value={r.name}>
+                  {r.name}
+                </option>
+              ))}
+            </Picker>
+            {/* How someone signs in matters when working out why they cannot:
+                a federated account has no password to reset. */}
+            {user.provider && <Chip>sso</Chip>}
+          </div>
+        </td>
+        <td className="text-xs text-ink-dim" title={absolute(user.last_seen_at)}>
+          {user.last_seen_at ? ago(user.last_seen_at) : "never"}
+        </td>
+        <td>
+          <div className="flex items-center justify-end gap-1">
+            {!user.provider && (
+              <button
+                className="rounded-md px-2 py-1 text-xs text-ink-dim transition-colors hover:bg-sunken hover:text-ink disabled:opacity-40"
+                disabled={busy}
+                onClick={() => setResetting((v) => !v)}
+              >
+                Password
+              </button>
+            )}
+            <button
+              className="rounded-md px-2 py-1 text-xs text-ink-dim transition-colors hover:bg-sunken hover:text-ink disabled:opacity-40"
+              disabled={busy || self}
+              title={self ? "You cannot disable your own account" : undefined}
+              onClick={() =>
+                void patch(
+                  { disabled: !user.disabled },
+                  user.disabled ? "Account enabled" : "Account disabled",
+                )
+              }
+            >
+              {user.disabled ? "Enable" : "Disable"}
+            </button>
+            <button
+              className="rounded-md px-2 py-1 text-xs text-ink-dim transition-colors hover:bg-critical/10 hover:text-critical disabled:opacity-40"
+              disabled={busy || self}
+              title={self ? "You cannot remove your own account" : undefined}
+              onClick={() => setConfirming(true)}
+            >
+              Remove
+            </button>
+          </div>
+        </td>
+      </tr>
+
+      {resetting && (
+        <tr>
+          <td colSpan={4} className="pb-3">
+            <form
+              className="flex flex-wrap items-center gap-2 rounded-md border border-edge bg-sunken/60 p-3"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void savePassword();
+              }}
+            >
+              <span className="text-xs text-ink-dim">
+                New password for {user.email}. Hand it over yourself — nothing is emailed.
+              </span>
+              <TextInput
+                className="w-56"
+                type="password"
+                autoComplete="new-password"
+                value={password}
+                placeholder="At least 12 characters"
+                onChange={(e) => setPassword(e.target.value)}
+              />
+              <Button weight="primary" disabled={busy || password.length < 12}>
+                Set password
+              </Button>
+              <Button
+                weight="quiet"
+                type="button"
+                onClick={() => {
+                  setResetting(false);
+                  setPassword("");
+                }}
+              >
+                Cancel
+              </Button>
+              <span className="w-full text-2xs text-ink-faint">
+                Every signed-in session for this account ends.
+              </span>
+            </form>
+          </td>
+        </tr>
+      )}
+
+      {confirming && (
+        <tr>
+          <td colSpan={4} className="pb-3">
+            <div className="flex flex-wrap items-center gap-3 rounded-md border border-critical/30 bg-critical/[0.06] p-3">
+              <span className="text-xs">
+                Remove <strong className="font-medium">{user.email}</strong>? Their history in the
+                activity log stays; the account and its sessions do not.
+              </span>
+              <Button
+                weight="quiet"
+                className="text-critical hover:bg-critical/10 hover:text-critical"
+                disabled={busy}
+                onClick={() => void remove()}
+              >
+                {busy ? "Removing…" : "Remove the account"}
+              </Button>
+              <Button weight="quiet" onClick={() => setConfirming(false)}>
+                Keep it
+              </Button>
+            </div>
+          </td>
+        </tr>
+      )}
     </>
   );
 }
