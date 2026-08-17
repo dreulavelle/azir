@@ -1,4 +1,5 @@
-import { Perm, type Actor } from "../api";
+import { type Actor } from "../api";
+import { SETTINGS_TABS } from "./settingsTabs";
 import { Tabs } from "../components";
 import type { Route } from "../router";
 import { AssistantSettings } from "../AssistantSettings";
@@ -18,24 +19,6 @@ import { Customers as CustomerSpine } from "../Customers";
 
 type Tab = { id: string; label: string; needs: string; render: () => React.ReactNode };
 
-/**
- * Which settings tabs this person has.
- *
- * Exported so the navigation can ask the same question the page answers.
- * Deciding it in two places is how a rail ends up hiding a door to a room that
- * exists — and someone who finds the URL wonders which of the two is the bug.
- */
-export function settingsTabsFor(actor: Actor): string[] {
-  return TAB_PERMISSIONS.filter(([, needs]) => actor.permissions.includes(needs)).map(([id]) => id);
-}
-
-const TAB_PERMISSIONS: [string, string][] = [
-  ["plugins", Perm.toolRead],
-  ["assistant", Perm.pluginConfigure],
-  ["people", Perm.userManage],
-  ["customers", Perm.toolRead],
-  ["audit", Perm.auditRead],
-];
 
 export function Settings({
   actor,
@@ -46,44 +29,22 @@ export function Settings({
   tab?: string;
   go: (to: Route) => void;
 }) {
-  const tabs: Tab[] = [
-    {
-      id: "plugins",
-      label: "Plugins",
-      needs: Perm.toolRead,
-      render: () => <Plugins actor={actor} />,
-    },
-    {
-      id: "assistant",
-      label: "Assistant",
-      needs: Perm.pluginConfigure,
-      render: () => <AssistantSettings />,
-    },
-    {
-      id: "people",
-      label: "People",
-      needs: Perm.userManage,
-      render: () => <Users actor={actor} />,
-    },
-    {
-      id: "customers",
-      label: "Customer list",
-      needs: Perm.toolRead,
-      render: () => <CustomerSpine actor={actor} />,
-    },
-    {
-      id: "branding",
-      label: "Branding",
-      needs: Perm.pluginConfigure,
-      render: () => <BrandingSettings />,
-    },
-    {
-      id: "audit",
-      label: "Activity log",
-      needs: Perm.auditRead,
-      render: () => <Audit />,
-    },
-  ].filter((t) => actor.permissions.includes(t.needs));
+  // What each tab shows. The list of tabs and who may see them lives in
+  // settingsTabs, so the navigation rail and this page cannot disagree about
+  // which rooms exist.
+  const render: Record<string, () => React.ReactNode> = {
+    plugins: () => <Plugins actor={actor} />,
+    assistant: () => <AssistantSettings />,
+    people: () => <Users actor={actor} />,
+    customers: () => <CustomerSpine actor={actor} />,
+    branding: () => <BrandingSettings />,
+    audit: () => <Audit />,
+  };
+
+  const tabs: Tab[] = SETTINGS_TABS.filter((t) => actor.permissions.includes(t.needs)).map((t) => ({
+    ...t,
+    render: render[t.id],
+  }));
 
   const current = tabs.find((t) => t.id === tab) ?? tabs[0];
 

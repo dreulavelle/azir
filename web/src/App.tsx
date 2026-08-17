@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import {
   api,
   onSessionExpired,
@@ -7,7 +7,6 @@ import {
   type Actor,
   type AuthState,
 } from "./api";
-import { AssistantPanel } from "./Assistant";
 import { Gate } from "./Auth";
 import { Dialog, Tooltip, TooltipLayer } from "./components";
 import { useShortcuts, type Chord } from "./keyboard";
@@ -24,7 +23,29 @@ import { Tickets } from "./pages/Tickets";
 import { TicketDetail } from "./pages/TicketDetail";
 import { Customers, CustomerDetail } from "./pages/CustomerPages";
 import { Chats } from "./pages/Chats";
-import { Settings, settingsTabsFor } from "./pages/Settings";
+import { settingsTabsFor } from "./pages/settingsTabs";
+
+/**
+ * The administrative screens, fetched when somebody opens them.
+ *
+ * Plugins, assistant configuration, people, the customer spine and the audit
+ * log are one screen a technician visits rarely and a large amount of code to
+ * carry through a shift in the queue.
+ */
+const Settings = lazy(() => import("./pages/Settings").then((m) => ({ default: m.Settings })));
+
+/**
+ * The assistant, fetched the first time somebody opens it.
+ *
+ * It brings the whole markdown stack with it — remark, micromark, the mdast
+ * and hast trees — which is the largest thing in the application and useless
+ * until there is an answer to render. A technician who spends the morning in
+ * the queue should not pay for it on the first paint.
+ */
+const AssistantPanel = lazy(() =>
+  import("./Assistant").then((m) => ({ default: m.AssistantPanel })),
+);
+
 
 type Session =
   | { state: "loading" }
@@ -328,18 +349,32 @@ function Console() {
         {route.name === "customers" && <Customers query={route.query} go={go} />}
         {route.name === "customer" && <CustomerDetail id={route.id} go={go} actor={actor} />}
         {route.name === "chats" && <Chats go={go} />}
-        {route.name === "settings" && <Settings actor={actor} tab={route.tab} go={go} />}
+        {route.name === "settings" && (
+          <Suspense fallback={<div className="mx-auto max-w-[1180px] px-6 py-6"><div className="h-40 animate-pulse rounded-lg bg-sunken" /></div>}>
+            <Settings actor={actor} tab={route.tab} go={go} />
+          </Suspense>
+        )}
           </div>
           {assistantOpen && (
-            <AssistantPanel
-              key={subjectKey(route)}
-              subject={subjectOf(route)}
-              subjectLabel={subjectLabel(route)}
-              seed={ask}
-              who={initials(actor.display_name || actor.email)}
-              onSeedUsed={() => setAsk("")}
-              onClose={() => setAssistantOpen(false)}
-            />
+            // The fallback is the panel's own shape rather than a spinner, so
+            // opening it does not move the layout twice.
+            <Suspense
+              fallback={
+                <aside className="w-[420px] shrink-0 border-l border-edge bg-panel">
+                  <div className="m-4 h-8 animate-pulse rounded-md bg-sunken" />
+                </aside>
+              }
+            >
+              <AssistantPanel
+                key={subjectKey(route)}
+                subject={subjectOf(route)}
+                subjectLabel={subjectLabel(route)}
+                seed={ask}
+                who={initials(actor.display_name || actor.email)}
+                onSeedUsed={() => setAsk("")}
+                onClose={() => setAssistantOpen(false)}
+              />
+            </Suspense>
           )}
         </div>
       </div>
