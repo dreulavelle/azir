@@ -236,18 +236,24 @@ export function Life({
 }) {
   if (ageDays <= 0) return <span className="inline-block" style={{ width }} aria-hidden="true" />;
 
-  const span = Math.max((ageDays / Math.max(longest, 1)) * width, 3);
-  const silent = Math.min(silentDays / ageDays, 1) * span;
-  const tone = silentDays >= 14 ? "bg-critical" : silentDays >= 5 ? "bg-attention" : "bg-edge-strong";
+  // Square root rather than linear, because one forgotten ticket sets the
+  // scale for the whole screen: against a ninety day outlier, a linear bar
+  // renders every ordinary ticket as the same one-pixel speck, which says
+  // nothing at all. Compressing the range keeps the old ones visibly longest
+  // while leaving the recent ones readable.
+  const span = Math.max(Math.sqrt(ageDays / Math.max(longest, 1)) * width, 8);
+  const silent = Math.min(silentDays / Math.max(ageDays, 0.01), 1) * span;
+  const tone = silentDays >= 14 ? "bg-critical" : silentDays >= 5 ? "bg-attention" : "bg-steady";
 
   return (
     <span
-      className="inline-flex h-[3px] overflow-hidden rounded-full bg-edge align-middle"
+      className="inline-flex h-1 overflow-hidden rounded-full bg-edge align-middle"
       style={{ width: span }}
       aria-hidden="true"
       title={`open ${Math.round(ageDays)}d, quiet for ${Math.round(silentDays)}d`}
     >
-      <span className="h-full bg-edge-strong/60" style={{ width: span - silent }} />
+      {/* The part of its life something was happening, then the silence. */}
+      <span className="h-full bg-edge-strong" style={{ width: span - silent }} />
       <span className={cn("h-full", tone)} style={{ width: silent }} />
     </span>
   );

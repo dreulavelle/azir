@@ -6,20 +6,16 @@ import { work, type Actor, type Technician, type Ticket } from "./api";
  * be assigned to.
  *
  * One request for both, because both come from one capability and two screens
- * asking the same question twice is two round trips for one answer. `ready`
- * separates "we have not looked yet" from "we looked and there is nothing" —
- * they lead to different things being said on screen.
+ * asking the same question twice is two round trips for one answer.
  */
 export function useHelpdeskSchema(): {
   statuses: string[] | null;
   technicians: Technician[] | null;
-  ready: boolean;
 } {
   const [state, setState] = useState<{
     statuses: string[] | null;
     technicians: Technician[] | null;
   }>({ statuses: null, technicians: null });
-  const [ready, setReady] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -32,14 +28,13 @@ export function useHelpdeskSchema(): {
           technicians: answer.data.technicians ?? [],
         });
       })
-      .catch(() => {})
-      .finally(() => !cancelled && setReady(true));
+      .catch(() => {});
     return () => {
       cancelled = true;
     };
   }, []);
 
-  return { ...state, ready };
+  return state;
 }
 
 /**
@@ -51,10 +46,12 @@ export function useHelpdeskSchema(): {
  * created as "Dreu" against a Syncro user called "Dreu Lavelle" is the normal
  * case, not the edge case.
  *
- * The failure that matters is the quiet one. If this cannot make the match, the
- * queue shows nothing under "Assigned to you" — which reads as good news and is
- * actually a broken screen. So resolution reports whether it succeeded, and the
- * screen says so rather than showing an empty list with no explanation.
+ * So the match is attempted three ways, best evidence first, and the last is a
+ * comparison of plain strings. Nothing about which one succeeded reaches the
+ * screen: a technician has no way to act on it and no reason to care which of
+ * two systems has a field filled in. Unassigned tickets are always listed
+ * beneath, and Everyone shows the whole queue, so an incomplete match costs a
+ * click rather than hiding work behind a warning nobody asked for.
  */
 
 /** Lower-cased and trimmed, since neither system is consistent about either. */
@@ -71,14 +68,7 @@ function localPart(email?: string): string {
 export type Match = {
   /** Whether a ticket is assigned to the signed-in person. */
   isMine: (ticket: Ticket) => boolean;
-  /**
-   * How the match was made, so the screen can be honest about it:
-   * "email" and "name" mean a technician record was found in the helpdesk;
-   * "guess" means we are comparing strings and could be wrong;
-   * "none" means the helpdesk could not be asked at all.
-   */
-  by: "email" | "name" | "guess" | "none";
-  /** The technician this resolved to, when one was found. */
+  /** The technician this resolved to, when the helpdesk had a record for one. */
   technician?: Technician;
 };
 
@@ -88,7 +78,7 @@ export type Match = {
  * An address match is the only reliable one, so it is tried first. A display
  * name match is accepted next because plenty of directories never populate an
  * address on the helpdesk side. Failing both, tickets are matched by comparing
- * the assignee string directly — which is a guess, and is labelled as one.
+ * the assignee string against everything we know the person by.
  */
 export function matcher(actor: Actor, technicians: Technician[] | null): Match {
   const email = key(actor.email);
@@ -96,23 +86,22 @@ export function matcher(actor: Actor, technicians: Technician[] | null): Match {
 
   const byEmail = technicians?.find((t) => t.email && key(t.email) === email);
   if (byEmail) {
-    return { isMine: assignedTo(byEmail), by: "email", technician: byEmail };
+    return { isMine: assignedTo(byEmail), technician: byEmail };
   }
 
   const byName = technicians?.find((t) => key(t.name) === name);
   if (byName) {
-    return { isMine: assignedTo(byName), by: "name", technician: byName };
+    return { isMine: assignedTo(byName), technician: byName };
   }
 
   // No technician record to anchor on. Compare what the ticket says against
-  // everything we know the person by, and say that this is what we are doing.
+  // everything we know the person by.
   const known = new Set([name, email, localPart(actor.email)].filter(Boolean));
   return {
     isMine: (ticket) => {
       const assignee = key(ticket.assigned_to);
       return assignee !== "" && known.has(assignee);
     },
-    by: technicians === null ? "none" : "guess",
   };
 }
 

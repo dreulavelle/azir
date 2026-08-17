@@ -3,6 +3,7 @@ import {
   chat,
   NotProvided,
   work,
+  type Contact,
   type CustomerRecord,
   type Ticket,
   type Timeline,
@@ -121,8 +122,6 @@ export function TicketDetail({
     <div className="mx-auto max-w-[1180px] px-6 py-6">
       <Header ticket={ticket} busy={busy} onRefresh={() => void load(true)} go={go} />
 
-      <Vitals timeline={timeline} />
-
       <div className="mt-8 grid gap-8 lg:grid-cols-[minmax(0,1fr)_300px]">
         <div className="min-w-0">
           {opening && <Opening entry={opening} subject={ticket.subject} />}
@@ -133,9 +132,7 @@ export function TicketDetail({
         <aside className="flex flex-col gap-3">
           <Facts ticket={ticket} />
 
-          {ticket.customer_id && (
-            <CustomerCard id={ticket.customer_id} fallback={ticket.customer} go={go} />
-          )}
+          <WhoToCall ticket={ticket} go={go} />
 
           {ticket.customer_id && (
             <SameCustomer
@@ -146,22 +143,6 @@ export function TicketDetail({
             />
           )}
 
-          {/* What this history cannot show, in the plugin's own words.
-              A footnote about the limits of the source, not a problem with the
-              ticket — so it is quiet and sits under the facts it qualifies,
-              rather than shouting above the thread it does not describe. */}
-          {timeline.notes && timeline.notes.length > 0 && (
-            <div className="rounded-lg border border-dashed border-edge px-4 py-3">
-              <Label className="mb-2 block">Worth knowing</Label>
-              <div className="flex flex-col gap-1.5">
-                {timeline.notes.map((note) => (
-                  <p key={note} className="text-xs leading-relaxed text-ink-faint">
-                    {note}
-                  </p>
-                ))}
-              </div>
-            </div>
-          )}
         </aside>
       </div>
     </div>
@@ -304,86 +285,6 @@ function Header({
 }
 
 /**
- * The ticket's condition, in four numbers.
- *
- * Full width and directly under the header, because these describe the ticket
- * as a whole and were previously squeezed into a sidebar two at a time. Each is
- * coloured by whether it is a problem, since a number a reader has to evaluate
- * for themselves is a number they will skip. Thresholds are stated in one place
- * so they can be argued with.
- */
-function Vitals({ timeline }: { timeline: Timeline }) {
-  const first = timeline.first_response_minutes ?? 0;
-  const gap = timeline.longest_gap_hours ?? 0;
-
-  const cells: { label: string; value: string; note?: string; tone: string }[] = [
-    {
-      label: "to first reply",
-      value: first ? duration(first) : "none yet",
-      note: first ? undefined : "nobody has answered",
-      tone: !first ? "bad" : first > 240 ? "warn" : "good",
-    },
-    {
-      label: "longest silence",
-      value: gap ? `${gap}h` : "—",
-      tone: gap >= 72 ? "bad" : gap >= 24 ? "warn" : "",
-    },
-    {
-      label: "back and forth",
-      // Zero because nobody replied and zero because we cannot tell who did
-      // are different facts, and only one of them is about the ticket.
-      value: timeline.round_trips_unknown ? "unclear" : String(timeline.round_trips),
-      note: timeline.round_trips_unknown ? "sides cannot be told apart" : undefined,
-      // Many round trips is not failure, but it is a signal that the thread is
-      // not converging and might be worth a call instead.
-      tone: timeline.round_trips_unknown ? "" : timeline.round_trips >= 6 ? "warn" : "",
-    },
-    {
-      label: "time logged",
-      value: duration(timeline.total_logged_minutes),
-      tone: "",
-    },
-  ];
-
-  const colour = (tone: string) =>
-    tone === "bad"
-      ? "text-critical"
-      : tone === "warn"
-        ? "text-attention"
-        : tone === "good"
-          ? "text-steady"
-          : "text-ink";
-
-  return (
-    <>
-      {timeline.stale && (
-        <p className="mt-5 rounded-lg border border-attention/30 bg-attention/10 px-3.5 py-2.5 text-sm text-attention">
-          This ticket has gone quiet.
-        </p>
-      )}
-      <dl className="mt-5 grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-edge bg-edge sm:grid-cols-4">
-        {cells.map((c) => (
-          <div key={c.label} className="bg-panel px-4 py-3">
-            <dd
-              className={cn(
-                "font-mono text-xl font-medium tabular-nums tracking-tight",
-                colour(c.tone),
-              )}
-            >
-              {c.value}
-            </dd>
-            <dt className="mt-0.5 font-mono text-2xs uppercase tracking-[0.09em] text-ink-faint">
-              {c.label}
-            </dt>
-            {c.note && <p className="mt-1 text-2xs text-ink-faint">{c.note}</p>}
-          </div>
-        ))}
-      </dl>
-    </>
-  );
-}
-
-/**
  * The message the ticket is actually about.
  *
  * Pinned above the thread rather than left in it. A long ticket opens at the
@@ -475,7 +376,7 @@ function Thread({ entries }: { entries: TimelineEntry[] }) {
                 <span className="h-px flex-1 bg-attention/25" />
               </div>
             )}
-            <Event entry={entry} />
+            <Event entry={entry} first={i === 0} />
           </div>
         );
       })}
@@ -506,7 +407,7 @@ function openedBy(entry: TimelineEntry): string {
   return actor.length > 1 ? `Opened by ${actor}` : "Opened";
 }
 
-function Event({ entry }: { entry: TimelineEntry }) {
+function Event({ entry, first }: { entry: TimelineEntry; first: boolean }) {
   // The kinds a plugin can emit are open-ended, so this reads intent from the
   // word rather than switching on a closed set it does not control.
   const kind = entry.kind.toLowerCase();
@@ -526,10 +427,16 @@ function Event({ entry }: { entry: TimelineEntry }) {
   );
 
   return (
-    <div className="relative flex gap-3 pb-6 last:pb-0">
+    // Entries are separated rather than stacked. Run together, a message that
+    // signs off with a name butts straight into the next entry's header, which
+    // is also a name — and the reader cannot tell where one ends.
+    <div className={cn("relative flex gap-3 pb-8 last:pb-0", !first && "mt-6 border-t border-edge/60 pt-6")}>
       {/* The spine, drawn behind the glyphs so the thread reads as one
           conversation rather than as a stack of separate boxes. */}
-      <span className="absolute bottom-0 left-[13px] top-8 w-px bg-edge" aria-hidden="true" />
+      <span
+        className={cn("absolute bottom-0 left-[13px] w-px bg-edge", first ? "top-8" : "top-14")}
+        aria-hidden="true"
+      />
 
       <div
         className={cn(
@@ -544,25 +451,37 @@ function Event({ entry }: { entry: TimelineEntry }) {
       </div>
 
       <div className="min-w-0 flex-1 pt-0.5">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className={cn("text-sm", isCreation ? "text-ink-dim" : "font-medium")}>
+        {/* The name alone on the left, everything about it on the right. It
+            used to sit in a row of same-sized grey text and disappeared into
+            it; who is speaking is the first thing the eye should land on. */}
+        <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+          <span
+            className={cn(
+              "text-sm font-semibold tracking-tight",
+              // Both sides get the same weight and colour. The brand violet is
+              // the assistant's alone, and colour-coding the speaker on top of
+              // the glyph, the label and the tinted ground would be the fourth
+              // way of saying one thing.
+              isCreation ? "font-medium text-ink-dim" : "text-ink",
+            )}
+          >
             {isCreation ? openedBy(entry) : whoSaidIt(entry, customer, isTime)}
           </span>
-          {/* Which side spoke, said outright. It is the fact the whole thread
-              hangs on, and a subtly different border was not carrying it. */}
-          {!isTime && !isCreation && (
-            <Label className={customer ? "text-ink-dim" : "text-ink-faint"}>
-              {customer ? "customer" : "us"}
-            </Label>
-          )}
-          {isNote && <Chip tone="warn">internal</Chip>}
-          {isTime && entry.minutes ? <Chip>{duration(entry.minutes)}</Chip> : null}
-          <Label title={absolute(entry.at)}>{ago(entry.at)}</Label>
+          <span className="flex items-center gap-2">
+            {!isTime && !isCreation && (
+              <Label className={customer ? "text-ink-dim" : "text-ink-faint"}>
+                {customer ? "customer" : "us"}
+              </Label>
+            )}
+            {isNote && <Chip tone="warn">internal</Chip>}
+            {isTime && entry.minutes ? <Chip>{duration(entry.minutes)}</Chip> : null}
+            <Label title={absolute(entry.at)}>{ago(entry.at)}</Label>
+          </span>
         </div>
         {entry.body && !isCreation && (
           <div
             className={cn(
-              "mt-1.5 whitespace-pre-wrap break-words text-sm leading-relaxed",
+              "mt-2.5 whitespace-pre-wrap break-words text-sm leading-relaxed",
               // A customer's words sit on their own ground, so scanning the
               // thread tells you who was speaking without reading a word of it.
               customer && "rounded-lg border border-edge bg-sunken/60 px-3.5 py-2.5",
@@ -607,65 +526,140 @@ function Facts({ ticket }: { ticket: Ticket }) {
  * Who to call.
  *
  * The next move on a stalled ticket is often a phone call, and the number for
- * it was two pages away. One request buys it, and the panel simply does not
- * appear if the contact details are not readable.
+ * it was two pages away.
+ *
+ * A ticket frequently names nobody — a customer writes in from an address that
+ * was never turned into a contact record, which is the ordinary case rather
+ * than the broken one. So this is built around the company, which always
+ * exists, and the reporter is an addition when the ticket happens to have one.
+ * Everyone else at the company is listed underneath, because when there is no
+ * named reporter the useful question becomes "who there can I ring".
  */
-function CustomerCard({
-  id,
-  fallback,
+function WhoToCall({
+  ticket,
   go,
 }: {
-  id: number;
-  fallback?: string;
+  ticket: Ticket;
   go: (to: Route) => void;
 }) {
+  const id = ticket.customer_id;
   const [customer, setCustomer] = useState<CustomerRecord | null>(null);
+  const [contacts, setContacts] = useState<Contact[] | null>(null);
 
   useEffect(() => {
+    if (!id) return;
     let cancelled = false;
     setCustomer(null);
+    setContacts(null);
     work
       .getCustomer(id)
-      .then((answer) => !cancelled && setCustomer(answer.data))
+      .then((a) => !cancelled && setCustomer(a.data))
       .catch(() => {});
+    work
+      .contacts(id)
+      .then((a) => !cancelled && setContacts(a.data.items ?? []))
+      // No contacts capability, or no permission for it. The company details
+      // are still worth showing on their own.
+      .catch(() => !cancelled && setContacts([]));
     return () => {
       cancelled = true;
     };
   }, [id]);
 
-  const name = customer?.business_name || customer?.name || fallback;
-  if (!customer || (!customer.email && !customer.phone)) return null;
+  if (!id) return null;
+
+  const reporter = ticket.contact;
+  const company = customer?.business_name || customer?.name || ticket.customer;
+  // The reporter is usually also in the contact list; showing them twice reads
+  // as a bug rather than as emphasis.
+  const others = (contacts ?? []).filter(
+    (c) => !reporter || (c.id !== reporter.id && c.name !== reporter.name),
+  );
 
   return (
     <Panel className="p-4">
-      <Label className="mb-2 block">Contact</Label>
-      <button
-        className="block max-w-full truncate text-left text-sm font-medium underline-offset-4 transition-colors hover:text-azir hover:underline"
-        onClick={() => go({ name: "customer", id: String(id) })}
-      >
-        {name}
-      </button>
-      <div className="mt-2.5 flex flex-col gap-1.5 text-xs">
-        {customer.phone && (
-          <a
-            className="flex items-center gap-2 text-ink-dim transition-colors hover:text-ink"
-            href={`tel:${customer.phone.replace(/[^\d+]/g, "")}`}
-          >
-            <Icon.phone />
-            <span className="truncate font-mono tabular-nums">{customer.phone}</span>
-          </a>
-        )}
-        {customer.email && (
-          <a
-            className="flex items-center gap-2 text-ink-dim transition-colors hover:text-ink"
-            href={`mailto:${customer.email}`}
-          >
-            <Icon.mail />
-            <span className="truncate">{customer.email}</span>
-          </a>
-        )}
+      <Label className="mb-2.5 block">Who to call</Label>
+
+      {reporter ? (
+        <Person contact={reporter} lead />
+      ) : (
+        <p className="mb-3 text-xs text-ink-faint">
+          This ticket does not name anyone, so it is the company below.
+        </p>
+      )}
+
+      <div className={cn(reporter && "mt-3 border-t border-edge pt-3")}>
+        <button
+          className="block max-w-full truncate text-left text-sm font-medium underline-offset-4 transition-colors hover:text-azir hover:underline"
+          onClick={() => go({ name: "customer", id: String(id) })}
+        >
+          {company || "This customer"}
+        </button>
+        <Reach phone={customer?.phone} email={customer?.email} />
       </div>
+
+      {others.length > 0 && (
+        <details className="mt-3 border-t border-edge pt-3">
+          <summary className="cursor-pointer list-none">
+            <Label className="transition-colors hover:text-ink">
+              {others.length} more {others.length === 1 ? "person" : "people"} here
+            </Label>
+          </summary>
+          <div className="mt-2.5 flex flex-col gap-3">
+            {others.slice(0, 8).map((c) => (
+              <Person key={c.id ?? c.name} contact={c} />
+            ))}
+          </div>
+        </details>
+      )}
     </Panel>
+  );
+}
+
+/** One person, with whatever ways there are to reach them. */
+function Person({ contact, lead }: { contact: Contact; lead?: boolean }) {
+  return (
+    <div>
+      <div className="flex flex-wrap items-baseline gap-x-2">
+        <span className={cn("text-sm", lead ? "font-semibold" : "font-medium")}>
+          {contact.name}
+        </span>
+        {lead && <Label>reported this</Label>}
+      </div>
+      {contact.title && <p className="text-xs text-ink-faint">{contact.title}</p>}
+      <Reach phone={contact.phone} mobile={contact.mobile} email={contact.email} />
+    </div>
+  );
+}
+
+/** Phone numbers and an address, as things you can actually press. */
+function Reach({ phone, mobile, email }: { phone?: string; mobile?: string; email?: string }) {
+  const dial = (n: string) => `tel:${n.replace(/[^\d+]/g, "")}`;
+  if (!phone && !mobile && !email) {
+    return <p className="mt-1 text-xs text-ink-faint">No number or address on record.</p>;
+  }
+  return (
+    <div className="mt-1.5 flex flex-col gap-1 text-xs">
+      {phone && (
+        <a className="flex items-center gap-2 text-ink-dim transition-colors hover:text-ink" href={dial(phone)}>
+          <Icon.phone />
+          <span className="truncate font-mono tabular-nums">{phone}</span>
+        </a>
+      )}
+      {mobile && mobile !== phone && (
+        <a className="flex items-center gap-2 text-ink-dim transition-colors hover:text-ink" href={dial(mobile)}>
+          <Icon.phone />
+          <span className="truncate font-mono tabular-nums">{mobile}</span>
+          <Label>mobile</Label>
+        </a>
+      )}
+      {email && (
+        <a className="flex items-center gap-2 text-ink-dim transition-colors hover:text-ink" href={`mailto:${email}`}>
+          <Icon.mail />
+          <span className="truncate">{email}</span>
+        </a>
+      )}
+    </div>
   );
 }
 
@@ -684,6 +678,7 @@ function CustomerCard({
  */
 function AskAzir({ timeline, ask }: { timeline: Timeline; ask: (question: string) => void }) {
   const [ready, setReady] = useState<boolean | null>(null);
+  const [typed, setTyped] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -751,25 +746,48 @@ function AskAzir({ timeline, ask }: { timeline: Timeline; ask: (question: string
       ];
 
   return (
-    // The one panel on the page that acts rather than reports, and the only one
-    // wearing the brand — because this is where the assistant takes over.
-    <div className="mt-8 rounded-lg border border-azir/25 bg-azir/[0.04] p-4">
-      <div className="flex items-start gap-3">
-        <span
-          className="grid size-7 shrink-0 place-items-center rounded-md bg-azir/15 text-azir"
-          aria-hidden="true"
-        >
+    // The one thing on this page that acts rather than reports, and the only
+    // one wearing the brand — this is where the assistant takes over.
+    <div className="mt-8">
+      <div className="mb-2.5 flex items-center gap-2">
+        <span className="text-azir" aria-hidden="true">
           <Icon.spark />
         </span>
-        <div>
-          <strong className="text-sm font-semibold">Ask Azir about this ticket</strong>
-          <p className="mt-0.5 text-xs text-ink-dim">
-            It has read the history above, this customer's other tickets, and your documentation.
-          </p>
-        </div>
+        <strong className="text-sm font-semibold">Ask Azir about this ticket</strong>
       </div>
 
-      <div className="mt-3.5 flex flex-wrap gap-2 pl-10">
+      {/* A field rather than a row of buttons. Three canned questions answer
+          three questions; a technician standing in front of a ticket has their
+          own, and the buttons were teaching them the tool only does three
+          things. The suggestions stay underneath as a way in, not as the menu. */}
+      <form
+        className="group flex items-center gap-2 rounded-lg border border-edge bg-sunken px-3 py-2 transition-colors focus-within:border-azir"
+        onSubmit={(e) => {
+          e.preventDefault();
+          const q = typed.trim();
+          if (!q) return;
+          setTyped("");
+          ask(q);
+        }}
+      >
+        <input
+          className="h-7 flex-1 border-0 bg-transparent p-0 text-sm placeholder:text-ink-faint focus-visible:outline-none"
+          value={typed}
+          placeholder="Ask anything about this ticket…"
+          aria-label="Ask Azir about this ticket"
+          onChange={(e) => setTyped(e.target.value)}
+        />
+        <button
+          type="submit"
+          disabled={!typed.trim()}
+          className="grid size-7 shrink-0 place-items-center rounded-md bg-azir text-azir-ink transition-opacity disabled:opacity-30"
+          aria-label="Ask"
+        >
+          <Icon.send />
+        </button>
+      </form>
+
+      <div className="mt-2.5 flex flex-wrap gap-2">
         {asks.map((a) => (
           <button
             key={a.label}
@@ -780,11 +798,6 @@ function AskAzir({ timeline, ask }: { timeline: Timeline; ask: (question: string
           </button>
         ))}
       </div>
-
-      <p className="mt-3 pl-10 text-2xs text-ink-faint">
-        Answers are drafts for you to check. Nothing is sent to the customer, and any change to the
-        ticket waits for you to approve it.
-      </p>
     </div>
   );
 }

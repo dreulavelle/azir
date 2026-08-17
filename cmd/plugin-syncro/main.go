@@ -107,6 +107,22 @@ func definition() plugin.Plugin {
 				Handler: guarded("customers.get", getCustomer),
 			},
 			{
+				Name:        "customers.contacts",
+				Summary:     "Lists the people at a customer, with their phone numbers.",
+				Freshness:   &plugin.Freshness{Soft: 30 * time.Minute, Hard: 4 * time.Hour},
+				Description: "The named people at one customer and how to reach them. A customer record holds the company's own address and main line; this is who to actually call.",
+				Provides:    []plugin.Capability{plugin.CapCustomersContacts},
+				Schema: json.RawMessage(`{
+					"type": "object",
+					"properties": {
+						"customer_id": {"type": "integer", "description": "Syncro customer id"},
+						"page": {"type": "integer", "minimum": 1, "default": 1},
+						"per_page": {"type": "integer", "minimum": 1, "maximum": 100, "default": 25}
+					}
+				}`),
+				Handler: guarded("customers.contacts", listContacts),
+			},
+			{
 				Name:      "tickets.search",
 				Summary:   "Finds tickets by text, status or customer. No message contents.",
 				Freshness: &plugin.Freshness{Soft: 60 * time.Second, Hard: 5 * time.Minute},
@@ -499,6 +515,27 @@ func getTicket(ctx context.Context, req plugin.Request) (any, error) {
 		return nil, err
 	}
 	return c.GetTicket(ctx, a.ID)
+}
+
+func listContacts(ctx context.Context, req plugin.Request) (any, error) {
+	a, err := args[struct {
+		pageArgs
+		CustomerID int64 `json:"customer_id"`
+	}](req)
+	if err != nil {
+		return nil, err
+	}
+	c, err := client(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	customerID := a.CustomerID
+	if customerID == 0 && req.CustomerID != "" {
+		if id, ok := syncroIDFor(ctx, req.CustomerID); ok {
+			customerID = id
+		}
+	}
+	return c.Contacts(ctx, customerID, a.Page, a.PerPage)
 }
 
 func listAssets(ctx context.Context, req plugin.Request) (any, error) {

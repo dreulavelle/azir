@@ -13,17 +13,19 @@ import "fmt"
 type Capability string
 
 const (
-	CapCustomersList   Capability = "customers.list"
-	CapCustomersGet    Capability = "customers.get"
-	CapWorkItemsSearch Capability = "work_items.search"
-	CapWorkItemsGet    Capability = "work_items.get"
-	CapTimeEntriesList Capability = "time_entries.list"
-	CapAssetsList      Capability = "assets.list"
-	CapCallsList       Capability = "calls.list"
-	CapDocsSearch      Capability = "documentation.search"
-	CapInvoicesList    Capability = "invoices.list"
-	CapAccessCheck     Capability = "access.check"
-	CapRecordingsGet   Capability = "recordings.get"
+	CapCustomersList Capability = "customers.list"
+	CapCustomersGet  Capability = "customers.get"
+	// CapCustomersContacts is the people at a customer: who to actually call.
+	CapCustomersContacts Capability = "customers.contacts"
+	CapWorkItemsSearch   Capability = "work_items.search"
+	CapWorkItemsGet      Capability = "work_items.get"
+	CapTimeEntriesList   Capability = "time_entries.list"
+	CapAssetsList        Capability = "assets.list"
+	CapCallsList         Capability = "calls.list"
+	CapDocsSearch        Capability = "documentation.search"
+	CapInvoicesList      Capability = "invoices.list"
+	CapAccessCheck       Capability = "access.check"
+	CapRecordingsGet     Capability = "recordings.get"
 
 	// CapWorkItemsTimeline is one work item's history as a single ordered
 	// sequence, with whatever the plugin can compute about its shape.
@@ -94,6 +96,7 @@ const (
 var vocabulary = map[Capability]struct{}{
 	CapCustomersList:       {},
 	CapCustomersGet:        {},
+	CapCustomersContacts:   {},
 	CapWorkItemsSearch:     {},
 	CapWorkItemsGet:        {},
 	CapWorkItemsTimeline:   {},

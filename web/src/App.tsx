@@ -17,7 +17,7 @@ import { useFallbackPoll, useLiveChanges } from "./live";
 import { useTicketWatch } from "./watch";
 import { cn } from "@/lib/cn";
 import { BrandingProvider, Mark, useBranding } from "./branding";
-import { Icon, initials, statusTone } from "./ui";
+import { Icon, initials, statusTone, type Signal } from "./ui";
 import { Triage } from "./pages/Triage";
 import { Tickets } from "./pages/Tickets";
 import { TicketDetail } from "./pages/TicketDetail";
@@ -190,9 +190,9 @@ function Console() {
 
   return (
     <div className="flex min-h-screen">
-      <nav className="fixed inset-y-0 left-0 flex w-[232px] flex-col gap-0.5 border-r border-edge bg-panel px-3 py-4">
+      <nav className="fixed inset-y-0 left-0 flex w-[232px] flex-col border-r border-edge bg-panel px-3 py-4">
         <a
-          className="mb-5 flex items-center gap-2.5 px-2"
+          className="mb-6 flex items-center gap-2.5 px-2"
           href={href({ name: "triage" })}
           onClick={link(go, { name: "triage" })}
         >
@@ -202,57 +202,73 @@ function Console() {
           <span className="text-base font-semibold tracking-tight">{brand.effective_name}</span>
         </a>
 
+        {/* Grouped, because Chats is a different kind of thing from a queue and
+            an undifferentiated list of four says they are all the same. */}
+        <NavGroup label="Queue" />
         <NavItem
           icon={<Icon.triage />}
           label="Triage"
+          chord="G T"
           active={route.name === "triage"}
           count={openCount ?? undefined}
-          alarm={(openCount ?? 0) > 0}
           onClick={() => go({ name: "triage" })}
         />
         <NavItem
           icon={<Icon.ticket />}
           label="Tickets"
+          chord="G K"
           active={route.name === "tickets" || route.name === "ticket"}
           onClick={() => go({ name: "tickets" })}
         />
         <NavItem
           icon={<Icon.people />}
           label="Customers"
+          chord="G C"
           active={route.name === "customers" || route.name === "customer"}
           onClick={() => go({ name: "customers" })}
         />
+
+        <NavGroup label="Assistant" />
         <NavItem
           icon={<Icon.spark />}
           label="Chats"
+          chord="G H"
           active={route.name === "chats"}
           onClick={() => go({ name: "chats" })}
         />
 
-        <div className="mt-auto flex flex-col gap-0.5 border-t border-edge pt-3">
+        <div className="mt-auto flex flex-col gap-1 pt-3">
           {canAdmin && (
             <NavItem
               icon={<Icon.settings />}
               label="Settings"
+              chord="G S"
               active={route.name === "settings"}
               onClick={() => go({ name: "settings" })}
             />
           )}
-          <button
-            className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left transition-colors hover:bg-sunken"
-            onClick={() => void signOut()}
-            title="Sign out"
-          >
-            <span className="grid size-7 shrink-0 place-items-center rounded-md bg-sunken font-mono text-2xs font-semibold text-ink-dim">
+
+          {/* Who you are, and separately a way out. The whole block used to be
+              one sign-out button, so reaching for your own name logged you out. */}
+          <div className="mt-1 flex items-center gap-2.5 rounded-lg border border-edge bg-sunken/60 px-2.5 py-2">
+            <span className="grid size-7 shrink-0 place-items-center rounded-md bg-azir/12 font-mono text-2xs font-semibold text-azir">
               {initials(actor.display_name || actor.email)}
             </span>
-            <span className="flex min-w-0 flex-col">
+            <span className="flex min-w-0 flex-1 flex-col">
               <span className="truncate text-xs font-medium">
                 {actor.display_name || actor.email}
               </span>
-              <span className="text-2xs text-ink-faint">{actor.role} · sign out</span>
+              <span className="text-2xs text-ink-faint">{actor.role}</span>
             </span>
-          </button>
+            <button
+              className="shrink-0 rounded-md p-1 text-ink-faint transition-colors hover:bg-panel hover:text-ink"
+              onClick={() => void signOut()}
+              title="Sign out"
+              aria-label="Sign out"
+            >
+              <Icon.out />
+            </button>
+          </div>
         </div>
       </nav>
 
@@ -450,44 +466,87 @@ function link(go: (to: Route) => void, to: Route) {
   };
 }
 
+/** A section heading in the rail, in the structural voice. */
+function NavGroup({ label }: { label: string }) {
+  return (
+    <span className="mb-1 mt-4 px-2.5 font-mono text-2xs font-medium uppercase tracking-[0.09em] text-ink-faint first:mt-0">
+      {label}
+    </span>
+  );
+}
+
+/**
+ * How many open tickets is a problem.
+ *
+ * Any number above zero used to be drawn in the critical colour, which meant
+ * the rail was permanently red on a healthy queue — and a warning that is
+ * always on is a warning nobody sees. These say something: a couple of dozen is
+ * a busy morning, fifty is a backlog.
+ */
+function pressure(count: number): Signal {
+  if (count > 50) return "critical";
+  if (count > 25) return "attention";
+  return "idle";
+}
+
 function NavItem({
   icon,
   label,
   active,
   count,
-  alarm,
+  chord,
   onClick,
 }: {
   icon: React.ReactNode;
   label: string;
   active: boolean;
   count?: number;
-  alarm?: boolean;
+  /** The keystroke that also gets here, shown on hover so it can be learned. */
+  chord?: string;
   onClick: () => void;
 }) {
+  const tone = count !== undefined ? pressure(count) : "idle";
   return (
     <button
       className={cn(
-        "flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-sm font-medium transition-colors",
-        active ? "bg-sunken text-ink" : "text-ink-dim hover:bg-sunken/60 hover:text-ink",
+        "group relative flex w-full items-center gap-2.5 rounded-md py-2 pl-3.5 pr-2.5 text-sm font-medium transition-colors",
+        active ? "bg-azir/10 text-ink" : "text-ink-dim hover:bg-sunken hover:text-ink",
       )}
       onClick={onClick}
     >
-      <span className={cn("shrink-0", active ? "text-ink" : "text-ink-faint")}>{icon}</span>
-      {label}
-      {count !== undefined && count > 0 && (
-        <span
-          className={cn(
-            "ml-auto font-mono text-2xs tabular-nums",
-            alarm ? "text-critical" : "text-ink-faint",
-          )}
-        >
-          {count}
-        </span>
+      {/* The brand runs down the edge of wherever you are. A filled grey box
+          said "hovered" as much as it said "here". */}
+      {active && (
+        <span className="absolute inset-y-1.5 left-0 w-[3px] rounded-full bg-azir" aria-hidden="true" />
       )}
+      <span className={cn("shrink-0", active ? "text-azir" : "text-ink-faint")}>{icon}</span>
+      {label}
+
+      <span className="ml-auto flex items-center gap-2">
+        {/* The shortcut exists either way; showing it on hover is how anybody
+            finds out. It gives way to the count when there is one. */}
+        {chord && count === undefined && (
+          <span className="hidden font-mono text-2xs tracking-[0.09em] text-ink-faint opacity-0 transition-opacity group-hover:opacity-100 lg:inline">
+            {chord}
+          </span>
+        )}
+        {count !== undefined && count > 0 && (
+          <span className="flex items-center gap-1.5">
+            <span className={cn("size-1.5 rounded-full", RAIL_TONE[tone])} />
+            <span className="font-mono text-2xs tabular-nums text-ink-dim">{count}</span>
+          </span>
+        )}
+      </span>
     </button>
   );
 }
+
+const RAIL_TONE: Record<Signal, string> = {
+  critical: "bg-critical",
+  attention: "bg-attention",
+  steady: "bg-steady",
+  idle: "bg-edge-strong",
+};
 
 /**
  * What the assistant should already know about, taken from the route.

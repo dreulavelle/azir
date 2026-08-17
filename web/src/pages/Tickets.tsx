@@ -133,7 +133,7 @@ export function Tickets({
   // about. Reading statuses off the visible rows meant a status that happened
   // not to be on screen could not be filtered for — including, once the
   // finished ones are hidden by default, every finished status there is.
-  const { statuses: defined, technicians, ready: askedHelpdesk } = useHelpdeskSchema();
+  const { statuses: defined, technicians } = useHelpdeskSchema();
 
   const statuses = useMemo(() => {
     if (defined && defined.length > 0) return defined;
@@ -268,7 +268,7 @@ export function Tickets({
           {/* Picking a status by name means you want that status, finished ones
               included — so the Open/All control follows rather than fighting it. */}
           <select
-            className="h-8 rounded-md border border-edge bg-sunken px-2 text-sm focus-visible:border-azir focus-visible:outline-none"
+            className="h-8 w-auto rounded-md border border-edge bg-sunken px-2 text-sm focus-visible:border-azir focus-visible:outline-none"
             value={status ?? ""}
             aria-label="Filter by status"
             onChange={(e) =>
@@ -287,7 +287,7 @@ export function Tickets({
           </select>
 
           <select
-            className="h-8 rounded-md border border-edge bg-sunken px-2 text-sm focus-visible:border-azir focus-visible:outline-none"
+            className="h-8 w-auto rounded-md border border-edge bg-sunken px-2 text-sm focus-visible:border-azir focus-visible:outline-none"
             value={sort}
             aria-label="Order"
             onChange={(e) => set({ sort: e.target.value as TicketSort })}
@@ -321,18 +321,6 @@ export function Tickets({
       {missing && <Empty headline="No helpdesk is connected yet" />}
       {error && <Problem>{error}</Problem>}
       {!tickets && !error && !missing && <Loading rows={8} />}
-
-      {/* The quiet failure this screen can have: nobody in the helpdesk matches
-          the account signed in, so "Assigned to you" is empty and reads as good
-          news. Said out loud, with the fix, rather than left to be discovered. */}
-      {tickets && owner === "yours" && askedHelpdesk && me.by === "guess" && (
-        <p className="mb-4 rounded-lg border border-attention/30 bg-attention/10 px-3.5 py-2.5 text-xs text-attention">
-          No technician in the helpdesk matches{" "}
-          <strong className="font-medium">{actor.email}</strong>, so tickets are being matched on
-          your name alone and some of yours may be missing. Set the address on your technician
-          record in the helpdesk to fix it, or use Everyone to see the whole queue.
-        </p>
-      )}
 
       {tickets && count === 0 && (
         <Empty headline={query ? "Nothing matched" : "Nothing to pick up"}>

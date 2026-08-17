@@ -9,10 +9,12 @@ import {
   CornerUpLeft,
   ExternalLink,
   ListFilter,
+  LogOut,
   Phone,
   Plus,
   RefreshCw,
   Search,
+  SendHorizontal,
   Settings2,
   Sparkles,
   StickyNote,
@@ -45,6 +47,8 @@ export const Icon = {
   tick: () => <Check className="size-3.5" />,
   refresh: () => <RefreshCw className="size-3.5" />,
   external: () => <ExternalLink className="size-3.5" />,
+  send: () => <SendHorizontal className="size-3.5" />,
+  out: () => <LogOut className="size-3.5" />,
   person: () => <UserRound className="size-3.5" />,
   business: () => <Building2 className="size-3.5" />,
   phone: () => <Phone className="size-3.5" />,
@@ -512,7 +516,12 @@ export function CopyButton({
 
 /** Initials for an avatar, from whatever name or address is available. */
 export function initials(name: string): string {
-  const parts = name.replace(/@.*/, "").split(/[\s._-]+/).filter(Boolean);
+  // Letters only. Splitting on whitespace alone let punctuation through, so an
+  // account called "Claude (verification)" wore a badge reading "C(".
+  const parts = name
+    .replace(/@.*/, "")
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter(Boolean);
   if (parts.length === 0) return "?";
   if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();

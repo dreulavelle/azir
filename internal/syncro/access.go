@@ -56,6 +56,7 @@ type probe struct {
 var probes = []probe{
 	{"tickets", "/tickets"},
 	{"customers", "/customers"},
+	{"contacts", "/contacts"},
 	{"assets", "/customer_assets"},
 	{"invoices", "/invoices"},
 	{"documentation", "/wiki_pages"},
@@ -71,6 +72,7 @@ var requiredResources = []string{"tickets", "customers"}
 var toolResources = map[string]string{
 	"customers.search":   "customers",
 	"customers.get":      "customers",
+	"customers.contacts": "contacts",
 	"tickets.search":     "tickets",
 	"tickets.get":        "tickets",
 	"tickets.timeline":   "tickets",

@@ -33,6 +33,8 @@ type Ticket struct {
 	AssignedTo  string `json:"assigned_to,omitempty"`
 	CreatedAt   string `json:"created_at,omitempty"`
 	UpdatedAt   string `json:"updated_at,omitempty"`
+	// Contact is who raised it, when the ticket names somebody.
+	Contact *Contact `json:"contact,omitempty"`
 	// URL is where a person opens this ticket in Syncro. Stamped by the client,
 	// which knows the account's own address; a trimmed record has no idea where
 	// it came from.
@@ -40,6 +42,21 @@ type Ticket struct {
 	// Comments are only populated by a single-ticket fetch. A search returning
 	// every comment for every hit would swamp the context window.
 	Comments []Comment `json:"comments,omitempty"`
+}
+
+// Contact is a person at a customer: who to call about this.
+//
+// A customer record is a company and its main line. The person who actually
+// reported the fault is somebody at that company, and reaching them is the
+// thing a technician is trying to do when a ticket stalls.
+type Contact struct {
+	ID     int64  `json:"id,omitempty"`
+	Name   string `json:"name"`
+	Email  string `json:"email,omitempty"`
+	Phone  string `json:"phone,omitempty"`
+	Mobile string `json:"mobile,omitempty"`
+	Title  string `json:"title,omitempty"`
+	Notes  string `json:"notes,omitempty"`
 }
 
 // Comment is one entry on a ticket thread.
@@ -150,6 +167,21 @@ type wireTicket struct {
 		FullName     string `json:"fullname"`
 	} `json:"customer"`
 
+	// Who reported it. Absent on a ticket raised against the company rather
+	// than a named person, which is why every field below is optional.
+	ContactID int64 `json:"contact_id"`
+	Contact   *struct {
+		ID        int64  `json:"id"`
+		Name      string `json:"name"`
+		Firstname string `json:"firstname"`
+		Lastname  string `json:"lastname"`
+		Email     string `json:"email"`
+		Phone     string `json:"phone"`
+		Mobile    string `json:"mobile"`
+		Title     string `json:"title"`
+		Notes     string `json:"notes"`
+	} `json:"contact"`
+
 	// Null on an unassigned ticket. The populated shape is unverified against
 	// a live assigned ticket, so the fallbacks below are deliberate.
 	User *struct {
@@ -237,6 +269,17 @@ func (w wireTicket) trim(withComments bool) Ticket {
 	if w.User != nil {
 		t.AssignedTo = firstNonEmpty(w.User.FullName, w.User.Fullname, w.User.Name, w.User.Email)
 	}
+	if c := w.Contact; c != nil {
+		name := firstNonEmpty(c.Name, strings.TrimSpace(c.Firstname+" "+c.Lastname), c.Email)
+		// A contact with no way to reach it and no name is not a contact.
+		if name != "" || c.Email != "" || c.Phone != "" || c.Mobile != "" {
+			t.Contact = &Contact{
+				ID: firstNonZero(c.ID, w.ContactID), Name: name, Email: c.Email,
+				Phone: c.Phone, Mobile: c.Mobile, Title: c.Title,
+				Notes: truncate(c.Notes, 300),
+			}
+		}
+	}
 	if withComments {
 		for _, c := range w.Comments {
 			body := c.Body
@@ -263,6 +306,16 @@ func (w wireTicket) trim(withComments bool) Ticket {
 		}
 	}
 	return t
+}
+
+// firstNonZero returns the first value that is not zero.
+func firstNonZero(values ...int64) int64 {
+	for _, v := range values {
+		if v != 0 {
+			return v
+		}
+	}
+	return 0
 }
 
 // firstNonEmpty returns the first value that is not blank.

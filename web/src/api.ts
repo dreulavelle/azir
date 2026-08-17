@@ -239,6 +239,7 @@ export const Cap = {
   ticketTimeline: "work_items.timeline",
   ticketSchema: "work_items.schema",
   customerList: "customers.list",
+  customerContacts: "customers.contacts",
   customerGet: "customers.get",
   customerStanding: "customers.standing",
   timeEntries: "time_entries.list",
@@ -265,6 +266,8 @@ export type Ticket = {
   assigned_to?: string;
   created_at?: string;
   updated_at?: string;
+  /** Who reported it, when the ticket names somebody. Often it names nobody. */
+  contact?: Contact;
   /** Where to open this ticket in the system it came from, when it says. */
   url?: string;
   comments?: Comment[];
@@ -277,6 +280,17 @@ export type Comment = {
   hidden: boolean;
   tech?: string;
   created_at?: string;
+};
+
+/** A named person at a customer, and how to reach them. */
+export type Contact = {
+  id?: number;
+  name: string;
+  email?: string;
+  phone?: string;
+  mobile?: string;
+  title?: string;
+  notes?: string;
 };
 
 /** Someone a work item can be assigned to, as the connected system knows them. */
@@ -484,6 +498,9 @@ export const work = {
     perform<Paged<CustomerRecord>>(Cap.customerList, args, { refresh }),
 
   getCustomer: (id: number) => perform<CustomerRecord>(Cap.customerGet, { id }),
+
+  contacts: (customer_id: number) =>
+    perform<Paged<Contact>>(Cap.customerContacts, { customer_id, per_page: 50 }),
 
   assets: (customer_id: number) => perform<Paged<Asset>>(Cap.assets, { customer_id }),
 

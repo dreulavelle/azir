@@ -58,7 +58,7 @@ func TestPartialPermissionsDegradeGracefully(t *testing.T) {
 func TestFullPermissionsEnableEverything(t *testing.T) {
 	full := syncro.Access{
 		Reachable: map[string]bool{
-			"tickets": true, "customers": true, "assets": true,
+			"tickets": true, "customers": true, "assets": true, "contacts": true,
 			"invoices": true, "documentation": true, "time_entries": true,
 		},
 	}
