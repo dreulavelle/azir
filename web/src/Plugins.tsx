@@ -60,7 +60,10 @@ export function Plugins({ actor }: { actor: Actor }) {
 
   useEffect(() => {
     void load();
-    const id = setInterval(() => void load(), 15000);
+  // Every fifteen seconds was four requests a minute for a list that changes
+  // when a plugin restarts and at no other time. A minute is still faster than
+  // anyone notices, and a restart shows up on the next look either way.
+    const id = setInterval(() => void load(), 60_000);
     return () => clearInterval(id);
   }, [load]);
 

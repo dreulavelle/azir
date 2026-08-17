@@ -305,6 +305,66 @@ func main() {
 				Handler: bulkUpdateExtensions,
 			},
 			{
+				Name: "extensions.options",
+				Description: "Applies the same extension options to many extensions at once — the settings on an " +
+					"extension's page, such as whether the PBX delivers audio, whether remote non-tunnel " +
+					"connections are blocked, voicemail behaviour, recording, and the app and integration " +
+					"toggles. Name the extensions, or give a numeric range. Changes options only: it can never " +
+					"set a password, an extension number, or anything else about who an extension is.",
+				Summary:            "Applies the same options to many extensions at once.",
+				Provides:           []plugin.Capability{plugin.CapPhoneExtensionOptions},
+				Mutates:            true,
+				RequiresPermission: "phone.manage",
+				Schema: json.RawMessage(`{
+					"type": "object",
+					"required": ["options"],
+					"properties": {
+						"extensions": {
+							"type": "array",
+							"items": {"type": "string"},
+							"description": "The extensions to change. Use this, or from with to."
+						},
+						"from": {"type": "string", "description": "First extension of an inclusive range."},
+						"to": {"type": "string", "description": "Last extension of an inclusive range."},
+						"options": {
+							"type": "object",
+							"description": "3CX's own option names, e.g. PbxDeliversAudio, BlockTunnel, AllowLanOnly, VMEnabled, RecordCalls, Enabled, HideInPhonebook, EnableHotdesking, SendEmailMissedCalls, MS365SignInEnabled. Anything not an extension option is refused by name."
+						}
+					}
+				}`),
+				Handler: setExtensionOptions,
+			},
+			{
+				Name: "phones.reprovision",
+				Description: "Tells one handset to fetch its configuration again. The standard fix for a phone " +
+					"that has drifted from its settings or will not register. Identify it by MAC address, which " +
+					"devices.list reports.",
+				Summary:            "Makes a handset reload its configuration.",
+				Provides:           []plugin.Capability{plugin.CapPhoneHandsetAction},
+				Mutates:            true,
+				RequiresPermission: "phone.manage",
+				Schema: json.RawMessage(`{
+					"type": "object",
+					"required": ["mac"],
+					"properties": {"mac": {"type": "string", "description": "The handset's MAC address."}}
+				}`),
+				Handler: phoneAction("ReprovisionPhone"),
+			},
+			{
+				Name:               "phones.reboot",
+				Description:        "Restarts one handset, by MAC address. Any call on it at the time is dropped.",
+				Summary:            "Restarts a handset.",
+				Provides:           []plugin.Capability{plugin.CapPhoneHandsetAction},
+				Mutates:            true,
+				RequiresPermission: "phone.manage",
+				Schema: json.RawMessage(`{
+					"type": "object",
+					"required": ["mac"],
+					"properties": {"mac": {"type": "string", "description": "The handset's MAC address."}}
+				}`),
+				Handler: phoneAction("RebootPhone"),
+			},
+			{
 				Name: "extensions.create",
 				Description: "Creates one or more new extensions. Numbers are named explicitly, or a starting " +
 					"number and a count are given and the extensions are made in sequence. Reports what was " +
@@ -651,7 +711,12 @@ func (c pbx) post(ctx context.Context, path string, body any, into any) error {
 		if len(detail) > 300 {
 			detail = detail[:300]
 		}
-		return plugin.Errorf("400", "the phone system would not create that: %s", detail)
+		if detail == "" {
+			// The status alone, rather than a sentence that says nothing. A 4xx
+			// with an empty body is a real answer and hiding it wastes an hour.
+			return plugin.Errorf("400", "the phone system refused that with HTTP %d and said nothing", res.StatusCode)
+		}
+		return plugin.Errorf("400", "the phone system would not accept that: %s", detail)
 	}
 
 	if into == nil {
@@ -691,6 +756,56 @@ func (c pbx) remove(ctx context.Context, path string) error {
 		}
 		return plugin.Errorf("400", "the phone system would not remove that: %s", detail)
 	}
+	return nil
+}
+
+/*
+action invokes one of 3CX's named operations, such as Pbx.MultiUserUpdate.
+
+Separate from post because an action is not a create, and the headers a create
+needs are wrong here: an action answers 204 with no entity, so asking for the
+representation back makes the server build one that does not exist. That is a
+500 with an empty body, which says nothing about the cause and costs an hour.
+*/
+func (c pbx) action(ctx context.Context, name string, body any, into any) error {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return plugin.Errorf("500", "the request could not be prepared")
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.base+"/xapi/v1/"+name, bytes.NewReader(payload))
+	if err != nil {
+		return plugin.Errorf("500", "the request could not be prepared")
+	}
+	req.Header.Set("authorization", "Bearer "+c.token)
+	req.Header.Set("content-type", "application/json")
+
+	res, err := (&http.Client{Timeout: 25 * time.Second}).Do(req)
+	if err != nil {
+		return plugin.Errorf("502", "the phone system could not be reached")
+	}
+	defer res.Body.Close() //nolint:errcheck // best effort
+
+	switch {
+	case res.StatusCode == http.StatusForbidden:
+		return plugin.Errorf("403", "that extension does not have permission to do this")
+	case res.StatusCode >= 400:
+		raw, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
+		detail := strings.TrimSpace(string(raw))
+		if len(detail) > 300 {
+			detail = detail[:300]
+		}
+		if detail == "" {
+			return plugin.Errorf("400", "the phone system refused that with HTTP %d and said nothing", res.StatusCode)
+		}
+		return plugin.Errorf("400", "the phone system would not accept that: %s", detail)
+	}
+
+	if into == nil {
+		return nil
+	}
+	_ = json.NewDecoder(io.LimitReader(res.Body, 8<<20)).Decode(into)
 	return nil
 }
 

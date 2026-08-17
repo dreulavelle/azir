@@ -87,7 +87,9 @@ export function Audit() {
       }
     };
     void load();
-    const id = setInterval(() => void load(), 15000);
+  // A minute rather than fifteen seconds. The log is read while somebody is
+  // looking into something, not watched like a monitor.
+    const id = setInterval(() => void load(), 60_000);
     return () => clearInterval(id);
   }, []);
 

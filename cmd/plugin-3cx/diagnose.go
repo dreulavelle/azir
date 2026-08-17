@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -192,7 +193,8 @@ func extensionDetail(ctx context.Context, req plugin.Request) (any, error) {
 	q.Set("$select", "Number,DisplayName,FirstName,LastName,EmailAddress,Enabled,"+
 		"IsRegistered,CurrentProfileName,OutboundCallerID,QueueStatus,"+
 		"VMEnabled,VMEmailOptions,VMPlayCallerID,SendEmailMissedCalls,"+
-		"EnableHotdesking,Require2FA,HideInPhonebook,Language")
+		"EnableHotdesking,Require2FA,HideInPhonebook,Language,"+
+		"PbxDeliversAudio,BlockTunnel,AllowLanOnly,RecordCalls,Internal")
 	q.Set("$expand", "Groups($select=Name),ForwardingProfiles($select=Name,CustomName,OfficeHoursAutoQueueLogOut)")
 	q.Set("$filter", fmt.Sprintf("Number eq '%s'", odata(number)))
 	q.Set("$top", "1")
@@ -217,6 +219,11 @@ func extensionDetail(ctx context.Context, req plugin.Request) (any, error) {
 			Require2FA   bool   `json:"Require2FA"`
 			Hidden       bool   `json:"HideInPhonebook"`
 			Language     string `json:"Language"`
+			PbxAudio     bool   `json:"PbxDeliversAudio"`
+			BlockTunnel  bool   `json:"BlockTunnel"`
+			LanOnly      bool   `json:"AllowLanOnly"`
+			RecordCalls  bool   `json:"RecordCalls"`
+			InternalOnly bool   `json:"Internal"`
 			Groups       []struct {
 				Name string `json:"Name"`
 			} `json:"Groups"`
@@ -261,25 +268,30 @@ func extensionDetail(ctx context.Context, req plugin.Request) (any, error) {
 	}
 
 	return map[string]any{
-		"extension":              u.Number,
-		"name":                   firstNonBlank(u.DisplayName, strings.TrimSpace(u.FirstName+" "+u.LastName)),
-		"email":                  u.Email,
-		"enabled":                u.Enabled,
-		"registered":             u.Registered,
-		"status_profile":         u.Profile,
-		"queue_status":           u.QueueStatus,
-		"outbound_caller_id":     u.CallerID,
-		"voicemail_on":           u.VMEnabled,
-		"voicemail_email":        u.VMEmail,
-		"voicemail_caller_id":    u.VMCallerID,
-		"missed_call_emails":     u.MissedEmails,
-		"hotdesking":             u.Hotdesking,
-		"two_factor_required":    u.Require2FA,
-		"hidden_in_phonebook":    u.Hidden,
-		"language":               u.Language,
-		"groups":                 groups,
-		"forwarding_profiles":    profiles,
-		"why_calls_may_not_land": why,
+		"extension":               u.Number,
+		"name":                    firstNonBlank(u.DisplayName, strings.TrimSpace(u.FirstName+" "+u.LastName)),
+		"email":                   u.Email,
+		"enabled":                 u.Enabled,
+		"registered":              u.Registered,
+		"status_profile":          u.Profile,
+		"queue_status":            u.QueueStatus,
+		"outbound_caller_id":      u.CallerID,
+		"voicemail_on":            u.VMEnabled,
+		"voicemail_email":         u.VMEmail,
+		"voicemail_caller_id":     u.VMCallerID,
+		"missed_call_emails":      u.MissedEmails,
+		"hotdesking":              u.Hotdesking,
+		"two_factor_required":     u.Require2FA,
+		"hidden_in_phonebook":     u.Hidden,
+		"language":                u.Language,
+		"pbx_delivers_audio":      u.PbxAudio,
+		"block_remote_non_tunnel": u.BlockTunnel,
+		"lan_only":                u.LanOnly,
+		"records_calls":           u.RecordCalls,
+		"internal_calls_only":     u.InternalOnly,
+		"groups":                  groups,
+		"forwarding_profiles":     profiles,
+		"why_calls_may_not_land":  why,
 	}, nil
 }
 
@@ -556,4 +568,246 @@ func fillTemplate(message string, params []string) string {
 		}
 		return params[n-1]
 	})
+}
+
+// --- mass editing -------------------------------------------------------------
+
+/*
+editable is every extension option this plugin will set in bulk, and the type
+each one takes.
+
+An allowlist rather than a pass-through, and the reason is the same one that
+governs every read here: 3CX's user object carries AuthID, AuthPassword and the
+phone's web password alongside these. A bulk editor that forwarded whatever it
+was handed would be a way to set a SIP password on forty extensions at once,
+from a tool whose whole point is convenience — and the assistant can propose
+calls to it.
+
+The names are 3CX's own, so what an administrator reads in the console is what
+they write here. The comments are the console's wording, which is not always
+the same thing.
+*/
+var editable = map[string]string{
+	// The two on every MSP's list.
+	"PbxDeliversAudio": "bool", // "PBX delivers audio"
+	"BlockTunnel":      "bool", // "Block remote non-tunnel connections" — false unblocks
+	"AllowLanOnly":     "bool", // refuse anything that is not on the LAN
+	"SRTPMode":         "string",
+
+	"Enabled":              "bool",
+	"Internal":             "bool", // may only call internally
+	"HideInPhonebook":      "bool",
+	"EnableHotdesking":     "bool",
+	"SendEmailMissedCalls": "bool",
+
+	// Voicemail.
+	"VMEnabled":         "bool",
+	"VMDisablePinAuth":  "bool",
+	"VMPlayCallerID":    "bool",
+	"VMPlayMsgDateTime": "string",
+	"VMEmailOptions":    "string",
+	"PinProtected":      "bool",
+
+	// Recording.
+	"RecordCalls":             "bool",
+	"RecordExternalCallsOnly": "bool",
+	"RecordEmailNotify":       "bool",
+	"AllowOwnRecordings":      "bool",
+
+	// Apps and integrations.
+	"MyPhoneShowRecordings":        "bool",
+	"MyPhoneHideForwardings":       "bool",
+	"MyPhoneAllowDeleteRecordings": "bool",
+	"GoogleSignInEnabled":          "bool",
+	"GoogleCalendarEnabled":        "bool",
+	"GoogleContactsEnabled":        "bool",
+	"MS365SignInEnabled":           "bool",
+	"MS365CalendarEnabled":         "bool",
+	"MS365ContactsEnabled":         "bool",
+	"MS365TeamsEnabled":            "bool",
+
+	"CallScreening":     "bool",
+	"TranscriptionMode": "string",
+	"PromptSet":         "string",
+}
+
+type bulkOptionsArgs struct {
+	Extensions []string       `json:"extensions"`
+	From       string         `json:"from"`
+	To         string         `json:"to"`
+	Options    map[string]any `json:"options"`
+}
+
+/*
+setExtensionOptions applies one set of options to many extensions at once.
+
+3CX has its own bulk endpoint, so this is one call rather than forty — which
+matters both for the PBX and for how long somebody waits. Extensions are named
+explicitly or given as an inclusive range, because "every extension" is not
+something this should be able to express by accident.
+
+It reports which numbers it matched before changing anything, so a range that
+quietly covered fewer extensions than expected is visible in the answer rather
+than discovered later.
+*/
+func setExtensionOptions(ctx context.Context, req plugin.Request) (any, error) {
+	var args bulkOptionsArgs
+	if len(req.Args) > 0 {
+		if err := json.Unmarshal(req.Args, &args); err != nil {
+			return nil, plugin.Errorf("400", "those arguments could not be read")
+		}
+	}
+	if len(args.Options) == 0 {
+		return nil, plugin.Errorf("400", "nothing to change: give at least one option")
+	}
+
+	// Refused by name, so a caller learns which option is not available rather
+	// than watching the change silently do nothing.
+	settings := map[string]any{}
+	var refused []string
+	for key, value := range args.Options {
+		kind, ok := editable[key]
+		if !ok {
+			refused = append(refused, key)
+			continue
+		}
+		switch kind {
+		case "bool":
+			b, ok := value.(bool)
+			if !ok {
+				return nil, plugin.Errorf("400", "%s is either true or false", key)
+			}
+			settings[key] = b
+		default:
+			settings[key] = value
+		}
+	}
+	if len(refused) > 0 {
+		sort.Strings(refused)
+		return nil, plugin.Errorf("400",
+			"this cannot set %s. It changes extension options only, never credentials or numbering",
+			strings.Join(refused, ", "))
+	}
+
+	wanted, err := args.numbers()
+	if err != nil {
+		return nil, err
+	}
+
+	conn, err := connect(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	known, err := extensionIDs(ctx, conn)
+	if err != nil {
+		return nil, err
+	}
+
+	// One PATCH per extension rather than 3CX's own MultiUserUpdate.
+	//
+	// That endpoint exists and takes exactly this shape, and it answers a bare
+	// HTTP 500 with no body for a partial object — which is precisely what a
+	// caller changing two settings out of forty-seven has to send. Guessing
+	// which of the other forty-five it wants populated is not a foundation.
+	//
+	// Fifty sequential changes is a few seconds and stays well inside the rate
+	// limit, and it buys what the bulk call could not: a result per extension.
+	// Eight changed and two skipped is the case that actually happens, and one
+	// success or one failure cannot express it.
+	results := make([]map[string]any, 0, len(wanted))
+	changed := 0
+	for _, number := range wanted {
+		id, ok := known[number]
+		if !ok {
+			results = append(results, map[string]any{
+				"extension": number, "changed": false, "reason": "no extension here has that number",
+			})
+			continue
+		}
+		if err := conn.patch(ctx, fmt.Sprintf("Users(%d)", id), settings); err != nil {
+			results = append(results, map[string]any{
+				"extension": number, "changed": false, "reason": plainReason(err),
+			})
+			continue
+		}
+		changed++
+		results = append(results, map[string]any{"extension": number, "changed": true})
+	}
+
+	return map[string]any{
+		"changed":  changed,
+		"asked":    len(wanted),
+		"options":  settings,
+		"results":  results,
+		"complete": changed == len(wanted),
+	}, nil
+}
+
+// numbers resolves either way of naming extensions into one list.
+func (a bulkOptionsArgs) numbers() ([]string, error) {
+	if len(a.Extensions) > 0 && (a.From != "" || a.To != "") {
+		return nil, plugin.Errorf("400", "name the extensions or give a range, not both")
+	}
+
+	if len(a.Extensions) > 0 {
+		if len(a.Extensions) > howManyAtOnce {
+			return nil, plugin.Errorf("400", "that is more than %d at once", howManyAtOnce)
+		}
+		return a.Extensions, nil
+	}
+
+	from, err1 := strconv.Atoi(strings.TrimSpace(a.From))
+	to, err2 := strconv.Atoi(strings.TrimSpace(a.To))
+	if err1 != nil || err2 != nil {
+		return nil, plugin.Errorf("400", "give a list of extensions, or a numeric range from and to")
+	}
+	if to < from {
+		return nil, plugin.Errorf("400", "%d is before %d", to, from)
+	}
+	if to-from+1 > howManyAtOnce {
+		return nil, plugin.Errorf("400", "that range covers more than %d extensions", howManyAtOnce)
+	}
+
+	// The whole range is asked for, and whatever does not exist comes back as
+	// not_found rather than being skipped in silence — a range is usually typed
+	// from memory, and the interesting case is the one that is not there.
+	out := make([]string, 0, to-from+1)
+	for n := from; n <= to; n++ {
+		out = append(out, strconv.Itoa(n))
+	}
+	return out, nil
+}
+
+/*
+phoneAction reboots or reprovisions a handset.
+
+The two things a technician does to a phone that will not behave, and until now
+both meant somebody physically at the desk or a remote session onto a machine on
+that network. A reprovision in particular is the standard fix for a handset that
+has drifted from its configuration, and it is one call.
+*/
+func phoneAction(what string) func(context.Context, plugin.Request) (any, error) {
+	return func(ctx context.Context, req plugin.Request) (any, error) {
+		var args struct {
+			MAC string `json:"mac"`
+		}
+		if len(req.Args) > 0 {
+			if err := json.Unmarshal(req.Args, &args); err != nil {
+				return nil, plugin.Errorf("400", "those arguments could not be read")
+			}
+		}
+		mac := strings.TrimSpace(args.MAC)
+		if mac == "" {
+			return nil, plugin.Errorf("400", "which handset? Give its MAC address — devices.list has them")
+		}
+
+		conn, err := connect(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		if err := conn.action(ctx, "Users/Pbx."+what, map[string]any{"mac": mac}, nil); err != nil {
+			return nil, err
+		}
+		return map[string]any{"mac": mac, "action": what, "sent": true}, nil
+	}
 }
