@@ -77,6 +77,7 @@ func definition() plugin.Plugin {
 		Tools: []plugin.Tool{
 			{
 				Name:        "customers.search",
+				Summary:     "Finds customers by name, business, email or phone.",
 				Freshness:   &plugin.Freshness{Soft: 30 * time.Minute, Hard: 4 * time.Hour},
 				Description: "Find customers by name, business, email or phone. Returns a page of matches with contact details.",
 				Provides:    []plugin.Capability{plugin.CapCustomersList},
@@ -92,6 +93,7 @@ func definition() plugin.Plugin {
 			},
 			{
 				Name:        "customers.get",
+				Summary:     "Looks up one customer's contact details and notes.",
 				Freshness:   &plugin.Freshness{Soft: 30 * time.Minute, Hard: 4 * time.Hour},
 				Description: "Fetch one customer by their Syncro id, including contact details and notes.",
 				Provides:    []plugin.Capability{plugin.CapCustomersGet},
@@ -106,6 +108,7 @@ func definition() plugin.Plugin {
 			},
 			{
 				Name:      "tickets.search",
+				Summary:   "Finds tickets by text, status or customer. No message contents.",
 				Freshness: &plugin.Freshness{Soft: 60 * time.Second, Hard: 5 * time.Minute},
 				Description: "Search tickets by free text, status, or customer. Returns summaries without " +
 					"comment threads; use tickets.get for the full conversation on one ticket.",
@@ -124,6 +127,7 @@ func definition() plugin.Plugin {
 			},
 			{
 				Name:        "tickets.get",
+				Summary:     "Opens one ticket, including its full conversation.",
 				Freshness:   &plugin.Freshness{Soft: 30 * time.Second, Hard: 2 * time.Minute},
 				Description: "Fetch one ticket including its full comment thread. This is the tool to reach for when helping with a specific ticket.",
 				Provides:    []plugin.Capability{plugin.CapWorkItemsGet},
@@ -138,12 +142,13 @@ func definition() plugin.Plugin {
 			},
 			{
 				Name:      "tickets.timeline",
+				Summary:   "Rebuilds one ticket's history and works out where it stalled.",
 				Freshness: &plugin.Freshness{Soft: 30 * time.Second, Hard: 2 * time.Minute},
 				Description: "The full history of one ticket in one chronological sequence — creation, " +
 					"every message, and logged time — with computed signals: time to first response, " +
 					"longest gap, how many times the conversation changed sides, and whether it has gone quiet. " +
 					"Reach for this when helping with a specific ticket.",
-				Provides: []plugin.Capability{plugin.CapWorkItemsGet},
+				Provides: []plugin.Capability{plugin.CapWorkItemsTimeline},
 				Schema: json.RawMessage(`{
 					"type": "object",
 					"required": ["id"],
@@ -155,6 +160,7 @@ func definition() plugin.Plugin {
 			},
 			{
 				Name:      "time.entries",
+				Summary:   "Reads logged time, so you can see what work was recorded.",
 				Freshness: &plugin.Freshness{Soft: 5 * time.Minute, Hard: 30 * time.Minute},
 				Description: "Logged time entries, filterable by customer and date window. Use this to " +
 					"find work that was done, or to check whether time was booked against a customer in a period.",
@@ -173,6 +179,7 @@ func definition() plugin.Plugin {
 			},
 			{
 				Name:      "docs.search",
+				Summary:   "Searches your Syncro wiki for documented procedures.",
 				Freshness: &plugin.Freshness{Soft: 6 * time.Hour, Hard: 24 * time.Hour},
 				Description: "Search the company's Syncro wiki — documented procedures, runbooks and " +
 					"setup guides. Prefer a documented procedure over general knowledge when one exists.",
@@ -188,6 +195,7 @@ func definition() plugin.Plugin {
 			},
 			{
 				Name:      "invoices.list",
+				Summary:   "Reads invoices, to see what has been billed and what is outstanding.",
 				Freshness: &plugin.Freshness{Soft: 10 * time.Minute, Hard: 1 * time.Hour},
 				Description: "List invoices, optionally only paid or only unpaid, and optionally for one " +
 					"customer or ticket. Use this to answer what has been billed and what is outstanding.",
@@ -206,11 +214,12 @@ func definition() plugin.Plugin {
 			},
 			{
 				Name:      "customers.standing",
+				Summary:   "Totals up what one customer owes and how much is overdue.",
 				Freshness: &plugin.Freshness{Soft: 10 * time.Minute, Hard: 1 * time.Hour},
 				Description: "A customer's financial position: what is outstanding, how much is overdue, " +
 					"and the unpaid invoices behind the total. The balance is summed from unpaid invoices " +
 					"because Syncro exposes no balance field, and the response says so.",
-				Provides: []plugin.Capability{plugin.CapInvoicesList},
+				Provides: []plugin.Capability{plugin.CapCustomerStanding},
 				Schema: json.RawMessage(`{
 					"type": "object",
 					"required": ["customer_id"],
@@ -222,10 +231,11 @@ func definition() plugin.Plugin {
 				Handler: guarded("customers.standing", customerStanding),
 			},
 			{
-				Name: "tickets.comment",
+				Name:    "tickets.comment",
+				Summary: "Posts a reply or an internal note on a ticket.",
 				Description: "Post a message to a ticket — a public reply the customer receives, or a " +
 					"hidden internal note they never see. Never offered to the model: only a person can send this.",
-				Provides:           []plugin.Capability{plugin.CapWorkItemsGet},
+				Provides:           []plugin.Capability{plugin.CapWorkItemsComment},
 				Mutates:            true,
 				RequiresPermission: "ticket.comment",
 				Schema: json.RawMessage(`{
@@ -242,10 +252,11 @@ func definition() plugin.Plugin {
 				Handler: guarded("tickets.comment", postComment),
 			},
 			{
-				Name: "tickets.update",
+				Name:    "tickets.update",
+				Summary: "Changes a ticket's status, assignee, priority or customer.",
 				Description: "Change a ticket's status, assignee, priority, or the customer it belongs to. " +
 					"Reassigning the customer is how a PagerDuty ticket on a generic account reaches the right one.",
-				Provides:           []plugin.Capability{plugin.CapWorkItemsGet},
+				Provides:           []plugin.Capability{plugin.CapWorkItemsUpdate},
 				Mutates:            true,
 				RequiresPermission: "ticket.status",
 				Schema: json.RawMessage(`{
@@ -262,16 +273,18 @@ func definition() plugin.Plugin {
 				Handler: guarded("tickets.update", updateTicket),
 			},
 			{
-				Name: "tickets.options",
+				Name:    "tickets.options",
+				Summary: "Reads the statuses and technicians your account has set up.",
 				Description: "The statuses and technicians this Syncro account defines, so an interface can " +
 					"offer real choices instead of guessing at them.",
-				Provides:  []plugin.Capability{plugin.CapWorkItemsGet},
+				Provides:  []plugin.Capability{plugin.CapWorkItemsSchema},
 				Freshness: &plugin.Freshness{Soft: 1 * time.Hour, Hard: 12 * time.Hour},
 				Schema:    json.RawMessage(`{"type": "object", "properties": {}}`),
 				Handler:   guarded("tickets.options", ticketOptions),
 			},
 			{
-				Name: "access.check",
+				Name:    "access.check",
+				Summary: "Checks what your Syncro key is allowed to do.",
 				Description: "Report what the configured Syncro API token is permitted to do, and whether " +
 					"it holds more permission than Azir needs.",
 				Provides: []plugin.Capability{plugin.CapAccessCheck},
@@ -280,6 +293,7 @@ func definition() plugin.Plugin {
 			},
 			{
 				Name:        "assets.list",
+				Summary:     "Lists a customer's machines and devices.",
 				Freshness:   &plugin.Freshness{Soft: 1 * time.Hour, Hard: 12 * time.Hour},
 				Description: "List a customer's assets — machines, devices and their serials.",
 				Provides:    []plugin.Capability{plugin.CapAssetsList},
