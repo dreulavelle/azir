@@ -61,7 +61,7 @@ export function Settings({
     <div className="mx-auto max-w-[1180px] px-6 py-6">
       <h1 className="mb-4 text-2xl font-semibold tracking-tight">Settings</h1>
 
-      <div style={{ marginBottom: 22 }}>
+      <div className="mb-5">
         <Tabs
           value={current.id}
           onChange={(id) => go({ name: "settings", tab: id })}

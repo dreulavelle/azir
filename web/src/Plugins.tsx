@@ -672,7 +672,7 @@ function WriteSwitch({
       <div className={enabled ? "write-gate is-on" : "write-gate"}>
         <div className="min-w-0 flex-1">
           <div className="mb-1 flex items-center gap-2">
-            <strong style={{ fontSize: 13.5 }}>Let Azir make changes in {plugin}</strong>
+            <strong className="text-sm">Let Azir make changes in {plugin}</strong>
             {/* Coloured for attention, not approval: this is the one setting
                 where the permissive state is the notable one. */}
             {enabled && <Chip tone="urgent">on</Chip>}

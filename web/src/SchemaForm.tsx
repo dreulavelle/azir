@@ -40,8 +40,8 @@ export function SchemaForm({
 
   return (
     <form
-      className="flex flex-col gap-4"
-      style={{ gap: 16, maxWidth: 520 }}
+      className="gap-4 max-w-[520px] flex flex-col gap-4"
+      
       onSubmit={(e) => {
         e.preventDefault();
         onSave(draft);
@@ -94,7 +94,7 @@ function Field({
       <label htmlFor={id} className="flex items-center gap-2 text-sm font-medium">
         {prop.title ?? name}
         {required && (
-          <span style={{ color: "var(--urgent)" }} aria-hidden="true">
+          <span className="text-critical" aria-hidden="true">
             *
           </span>
         )}
@@ -121,7 +121,7 @@ function Field({
         <input
           id={id}
           type="checkbox"
-          style={{ width: 16, height: 16 }}
+          className="size-4"
           checked={value === true}
           onChange={(e) => onChange(e.target.checked)}
         />

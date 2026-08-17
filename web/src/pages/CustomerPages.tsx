@@ -153,9 +153,9 @@ export function Customers({
           <thead>
             <tr>
               <th>Customer</th>
-              <th style={{ width: 230 }}>Main contact</th>
-              <th style={{ width: 130 }}>Phone</th>
-              <th style={{ width: 110 }}>
+              <th className="w-[230px]">Main contact</th>
+              <th className="w-[130px]">Phone</th>
+              <th className="w-[110px]">
                 <span className="flex items-center gap-2">
                   Tickets
                   <Explain side="left">
@@ -727,8 +727,7 @@ function CustomerTickets({
         <span className="text-xs text-ink-faint">{open.length} open</span>
         {closed.length > 0 && (
           <button
-            className="rounded-md px-2 py-1 text-xs text-ink-dim transition-colors hover:bg-sunken hover:text-ink"
-            style={{ marginLeft: "auto" }}
+            className="ml-auto rounded-md px-2 py-1 text-xs text-ink-dim transition-colors hover:bg-sunken hover:text-ink"
             onClick={() => setShowResolved((v) => !v)}
           >
             {showResolved ? "Hide" : "Show"} {closed.length} resolved
@@ -847,16 +846,16 @@ function RecentTime({ customerId }: { customerId: number }) {
         {entries && entries.length > 0 && <span className="text-xs text-ink-faint">{duration(total)}</span>}
       </PanelHead>
       <div className="p-4">
-        {!entries && <div className="animate-pulse rounded-lg bg-sunken" style={{ height: 44 }} />}
+        {!entries && <div className="h-11 animate-pulse rounded-lg bg-sunken" />}
         {entries && entries.length === 0 && (
           <p className="text-xs text-ink-faint">
             No time has been logged against this customer.
           </p>
         )}
         {entries && entries.length > 0 && (
-          <div className="flex flex-col gap-2" style={{ gap: 9 }}>
+          <div className="flex flex-col gap-2">
             {entries.slice(0, 6).map((e) => (
-              <div key={e.id} className="flex items-center justify-between gap-3" style={{ gap: 10, alignItems: "baseline" }}>
+              <div key={e.id} className="flex items-baseline justify-between gap-2.5">
                 <span className="truncate text-xs">{e.notes || e.user || "Work logged"}</span>
                 <span className="whitespace-nowrap text-xs text-ink-faint">{duration(e.minutes)}</span>
               </div>

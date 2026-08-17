@@ -171,7 +171,7 @@ export function CommandPalette({
                   onMouseEnter={() => setCursor(i)}
                   onClick={item.run}
                 >
-                  <span style={{ opacity: 0.6, display: "grid", placeItems: "center" }}>
+                  <span className="grid place-items-center opacity-60">
                     {item.group === "Go to" ? <Icon.triage /> : <Icon.ticket />}
                   </span>
                   <span className="min-w-0 flex-1 truncate">{item.label}</span>

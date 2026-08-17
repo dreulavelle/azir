@@ -81,34 +81,34 @@ export function Users({ actor }: { actor: Actor }) {
   }, [load]);
 
   if (error) return <Problem>{error}</Problem>;
-  if (!users) return <div className="animate-pulse rounded-lg bg-sunken" style={{ height: 200 }} />;
+  if (!users) return <div className="h-50 animate-pulse rounded-lg bg-sunken" />;
 
   return (
     <>
-      <section className="rounded-lg border border-edge bg-panel shadow-e1" style={{ marginBottom: 16 }}>
+      <section className="mb-4 rounded-lg border border-edge bg-panel shadow-e1">
         <PanelHead>
           <h2>People</h2>
           <span className="text-xs text-ink-faint">
             {users.length} account{users.length === 1 ? "" : "s"}
           </span>
         </PanelHead>
-        <div className="p-4" style={{ paddingTop: 0 }}>
+        <div className="p-4 pt-0">
           <table className="w-full border-collapse text-sm">
             <thead>
               <tr>
                 <th>Name</th>
-                <th style={{ width: 190 }}>Role</th>
-                <th style={{ width: 150 }}>Last seen</th>
+                <th className="w-[190px]">Role</th>
+                <th className="w-[150px]">Last seen</th>
               </tr>
             </thead>
             <tbody>
               {users.map((u) => (
-                <tr key={u.id} style={{ cursor: "default" }}>
+                <tr key={u.id} className="cursor-default">
                   <td>
                     <div className="flex items-center gap-3">
                       <span className="grid size-7 shrink-0 place-items-center rounded-md bg-sunken font-mono text-2xs font-semibold text-ink-dim">{initials(u.display_name || u.email)}</span>
-                      <span className="flex flex-col gap-2" style={{ gap: 0 }}>
-                        <span style={{ fontWeight: 550 }}>
+                      <span className="flex flex-col">
+                        <span className="font-medium">
                           {u.display_name || u.email}
                           {u.email === actor.email && (
                             <span className="text-xs text-ink-faint"> — you</span>
@@ -139,12 +139,12 @@ export function Users({ actor }: { actor: Actor }) {
         </div>
       </section>
 
-      <section className="rounded-lg border border-edge bg-panel shadow-e1" style={{ marginBottom: 16 }}>
+      <section className="mb-4 rounded-lg border border-edge bg-panel shadow-e1">
         <PanelHead>
           <h2>Roles</h2>
         </PanelHead>
         <div className="p-4">
-          <p className="text-xs text-ink-dim" style={{ margin: "0 0 12px", maxWidth: "68ch" }}>
+          <p className="mb-3 max-w-[68ch] text-xs text-ink-dim">
             Every check asks what someone is allowed to do, never what their
             role is called — so a new role with its own mix of these is a
             setting, not a rebuild.
@@ -152,13 +152,13 @@ export function Users({ actor }: { actor: Actor }) {
 
           {/* A grid rather than a list per role: the useful question is which
               roles hold a given ability, and that reads down a column. */}
-          <div style={{ overflowX: "auto" }}>
+          <div className="overflow-x-auto">
             <table className="w-full border-collapse text-sm">
               <thead>
                 <tr>
                   <th>Can they…</th>
                   {roles.map((r) => (
-                    <th key={r.name} style={{ textAlign: "center", width: 112 }}>
+                    <th key={r.name} className="w-[112px] text-center">
                       {r.name}
                     </th>
                   ))}
@@ -177,7 +177,7 @@ export function Users({ actor }: { actor: Actor }) {
                     ...inGroup.map((p) => {
                       const { label, note } = permission(p);
                       return (
-                        <tr key={p} style={{ cursor: "default" }}>
+                        <tr key={p} className="cursor-default">
                           <td>
                             {note ? (
                               <Tooltip content={note}>
@@ -252,7 +252,7 @@ function NewUser({ roles, onCreated }: { roles: Role[]; onCreated: () => void })
 
   if (!open) {
     return (
-      <button className="flex h-7 items-center gap-1.5 rounded-md border border-edge bg-panel px-2.5 text-xs font-medium transition-colors hover:bg-sunken disabled:opacity-50" style={{ marginTop: 16 }} onClick={() => setOpen(true)}>
+      <button className="mt-4 flex h-7 items-center gap-1.5 rounded-md border border-edge bg-panel px-2.5 text-xs font-medium transition-colors hover:bg-sunken disabled:opacity-50" onClick={() => setOpen(true)}>
         <Icon.plus />
         Add a person
       </button>
@@ -261,14 +261,7 @@ function NewUser({ roles, onCreated }: { roles: Role[]; onCreated: () => void })
 
   return (
     <form
-      className="flex flex-col gap-2"
-      style={{
-        gap: 15,
-        maxWidth: 480,
-        marginTop: 18,
-        paddingTop: 18,
-        borderTop: "1px solid var(--line)",
-      }}
+      className="mt-5 flex max-w-[480px] flex-col gap-4 border-t border-edge pt-5"
       onSubmit={(e) => void submit(e)}
     >
       <div className="flex flex-col gap-1.5">

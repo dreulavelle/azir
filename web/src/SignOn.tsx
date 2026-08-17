@@ -77,7 +77,7 @@ export function SignOn({ roles }: { roles: Role[] }) {
   }
 
   if (error && !settings) return <Problem>{error}</Problem>;
-  if (!settings) return <div className="animate-pulse rounded-lg bg-sunken" style={{ height: 160 }} />;
+  if (!settings) return <div className="h-40 animate-pulse rounded-lg bg-sunken" />;
 
   const set = (patch: Partial<AuthSettings> & { client_secret?: string }) =>
     setDraft((d) => ({ ...d, ...patch }));
@@ -98,7 +98,7 @@ export function SignOn({ roles }: { roles: Role[] }) {
       </PanelHead>
 
       <div className="p-4">
-      <p className="max-w-[70ch] text-xs text-ink-faint" style={{ marginTop: 0 }}>
+      <p className="max-w-[70ch] text-xs text-ink-faint">
         The provider says who someone is. Azir still decides what they may do —
         a role is set here, not read from a directory group, so a change over
         there cannot quietly turn a technician into an administrator here.
@@ -193,7 +193,7 @@ export function SignOn({ roles }: { roles: Role[] }) {
           </p>
           <input
             id="sso-provision"
-            style={{ width: 16, height: 16 }}
+            className="size-4"
             type="checkbox"
             checked={draft.auto_provision === true}
             onChange={(e) => set({ auto_provision: e.target.checked })}

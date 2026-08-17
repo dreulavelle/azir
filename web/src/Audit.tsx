@@ -169,8 +169,8 @@ export function Audit() {
         </div>
       </div>
 
-      <div className="p-4" style={{ paddingTop: 0 }}>
-        {!events && <div className="animate-pulse rounded-lg bg-sunken" style={{ height: 200 }} />}
+      <div className="pt-0 p-4" >
+        {!events && <div className="h-50 animate-pulse rounded-lg bg-sunken"  />}
         {events && shown.length === 0 && (
           <Empty headline={events.length === 0 ? "Nothing recorded yet" : "Nothing matches those filters"} />
         )}
@@ -205,7 +205,7 @@ export function Audit() {
 
                   <span className="mt-0.5 grid size-6 shrink-0 place-items-center rounded-md bg-sunken font-mono text-[9px] font-semibold text-ink-dim">{initials(e.actor_user_id || "?")}</span>
 
-                  <span className="flex min-w-0 flex-1 flex-col gap-0.5" style={{ gap: 1 }}>
+                  <span className="gap-px flex min-w-0 flex-1 flex-col gap-0.5" >
                     <span className="text-sm">
                       <strong>{e.actor_user_id || "someone"}</strong>{" "}
                       {note ? (

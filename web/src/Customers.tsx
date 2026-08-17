@@ -49,15 +49,15 @@ export function Customers({ actor }: { actor: Actor }) {
         {customers && <span className="text-xs text-ink-faint">{customers.length}</span>}
       </PanelHead>
       <div className="p-4">
-        <p className="text-xs text-ink-dim" style={{ maxWidth: "68ch" }}>
+        <p className="max-w-[68ch] text-xs text-ink-dim">
           Azir owns this entity; external systems map onto it. A record with no
           linked systems is valid — a walk-in with no PSA record still gets memory.
         </p>
 
         {mayManage && (
-          <form className="flex items-center gap-2" style={{ marginBottom: 14 }} onSubmit={(e) => void create(e)}>
+          <form className="mb-3.5 flex items-center gap-2" onSubmit={(e) => void create(e)}>
             <TextInput
-              style={{ maxWidth: 280 }}
+              className="max-w-[280px]"
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="Customer name"
@@ -71,7 +71,7 @@ export function Customers({ actor }: { actor: Actor }) {
         )}
 
         {note && <Problem>{note}</Problem>}
-        {!customers && <div className="animate-pulse rounded-lg bg-sunken" style={{ height: 100 }} />}
+        {!customers && <div className="h-25 animate-pulse rounded-lg bg-sunken" />}
         {customers && customers.length === 0 && <Empty headline="No customer records yet" />}
 
         {customers && customers.length > 0 && (
@@ -79,14 +79,14 @@ export function Customers({ actor }: { actor: Actor }) {
             <thead>
               <tr>
                 <th>Name</th>
-                <th style={{ width: 300 }}>Linked systems</th>
+                <th className="w-[300px]">Linked systems</th>
               </tr>
             </thead>
             <tbody>
               {customers.map((c) => (
-                <tr key={c.id} style={{ cursor: "default" }}>
+                <tr key={c.id} className="cursor-default">
                   <td>
-                    <div style={{ fontWeight: 550 }}>{c.display_name}</div>
+                    <div className="font-medium">{c.display_name}</div>
                     <div className="font-mono text-2xs tabular-nums text-ink-faint">{c.id}</div>
                   </td>
                   <td className="text-xs">

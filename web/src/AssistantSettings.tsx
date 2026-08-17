@@ -216,7 +216,7 @@ export function AssistantSettings() {
     }
   }
 
-  if (!settings) return <div className="animate-pulse rounded-lg bg-sunken" style={{ height: 200 }} />;
+  if (!settings) return <div className="h-50 animate-pulse rounded-lg bg-sunken"  />;
 
   const set = (patch: Partial<Settings> & { api_key?: string }) =>
     setDraft((d) => ({ ...d, ...patch }));
@@ -247,7 +247,7 @@ export function AssistantSettings() {
       </PanelHead>
 
       <div className="p-4">
-        <p className="text-xs text-ink-dim" style={{ margin: "0 0 18px", maxWidth: "68ch" }}>
+        <p className="mb-5 max-w-[68ch] text-xs text-ink-dim" >
           The assistant reads your tickets, customers and documentation to answer
           questions and draft replies. It uses your own account with the model
           provider — Azir never sends your customers' data anywhere else, and
@@ -511,8 +511,8 @@ export function AssistantSettings() {
 
         {/* The consequence of the approval decisions on the Plugins tab,
             in one place, so nobody has to infer it by reading switches. */}
-        <div style={{ marginTop: 26 }}>
-          <div className="flex items-center gap-2" style={{ marginBottom: 8 }}>
+        <div className="mt-6">
+          <div className="mb-2 flex items-center gap-2" >
             <span className="font-mono text-2xs font-medium uppercase tracking-[0.09em] text-ink-faint">What it can look up</span>
             <Explain side="right">
               Exactly what you have allowed on the Plugins tab. The assistant
@@ -522,12 +522,12 @@ export function AssistantSettings() {
           </div>
 
           {settings.available_lookups.length === 0 ? (
-            <p className="text-xs text-ink-faint" style={{ margin: 0 }}>
+            <p className="text-xs text-ink-faint" >
               Nothing yet. Allow some information on the Plugins tab and it
               appears here.
             </p>
           ) : (
-            <div className="flex items-center gap-3" style={{ flexWrap: "wrap", gap: 6 }}>
+            <div className="flex-wrap gap-1.5 flex items-center gap-3" >
               {settings.available_lookups.map((c) => (
                 <Chip key={c} tone="accent">
                   {LOOKUP_WORDS[c] ?? c}
@@ -536,7 +536,7 @@ export function AssistantSettings() {
             </div>
           )}
 
-          <p className="text-xs text-ink-faint" style={{ marginTop: 12, maxWidth: "68ch" }}>
+          <p className="mt-3 max-w-[68ch] text-xs text-ink-faint" >
             It can draft a reply but never send one. Anything that changes a
             ticket stays with a person, so a message written by a customer can
             never cause an action.
