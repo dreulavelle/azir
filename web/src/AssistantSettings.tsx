@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { chat, type AssistantSettings as Settings } from "./api";
 import { Explain, Select, Switch, Tooltip } from "./components";
 import { useToast } from "./Toast";
-import { Chip, Label } from "./ui";
+import { Button, Chip, Label, PanelHead } from "./ui";
 
 /**
  * Which model answers, and what it is allowed to see.
@@ -111,7 +111,10 @@ function ModelList({
           rows={4}
           spellCheck={false}
           value={chosen.join("\n")}
-          onChange={(e) => onChange(e.target.value.split("\n").map((m) => m.trim()))}
+          // Trimmed on the way out rather than per keystroke: normalising what
+          // is already on screen fights whoever is typing into it.
+          onChange={(e) => onChange(e.target.value.split("\n"))}
+          onBlur={(e) => onChange(e.target.value.split("\n").map((m) => m.trim()).filter(Boolean))}
         />
       </div>
     );
@@ -220,7 +223,7 @@ export function AssistantSettings() {
 
   return (
     <section className="rounded-lg border border-edge bg-panel shadow-e1">
-      <div className="flex items-baseline justify-between gap-3 border-b border-edge px-4 py-3">
+      <PanelHead>
         <div className="flex items-center gap-2">
           <h2>Assistant</h2>
           {settings.enabled && <Chip tone="good">on</Chip>}
@@ -241,7 +244,7 @@ export function AssistantSettings() {
             />
           </span>
         </Tooltip>
-      </div>
+      </PanelHead>
 
       <div className="p-4">
         <p className="text-xs text-ink-dim" style={{ margin: "0 0 18px", maxWidth: "68ch" }}>
@@ -500,9 +503,9 @@ export function AssistantSettings() {
           </div>
 
           <div>
-            <button className="h-8 rounded-md bg-azir px-3.5 text-sm font-medium text-azir-ink transition-opacity hover:opacity-90 disabled:opacity-50" disabled={busy} onClick={() => void save(settings.enabled)}>
+            <Button weight="primary" disabled={busy} onClick={() => void save(settings.enabled)}>
               {busy ? "Saving…" : "Save"}
-            </button>
+            </Button>
           </div>
         </div>
 

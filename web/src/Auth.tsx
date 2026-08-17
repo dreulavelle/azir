@@ -2,6 +2,7 @@ import { Mark, useBranding } from "./branding";
 import { SignInScene } from "./scene";
 import { useState } from "react";
 import { api, type AuthState } from "./api";
+import { Problem } from "./ui";
 
 /**
  * The sign-in screen, and the first-run screen that creates the administrator.
@@ -45,7 +46,7 @@ export function Gate({ state, onDone }: { state: AuthState; onDone: () => void }
           {state.needs_setup ? "first run" : "sign in"}
         </p>
 
-        {ssoError && <p className="rounded-lg border border-critical/30 bg-critical/10 px-3 py-2 text-sm text-critical">{ssoError}</p>}
+        {ssoError && <Problem>{ssoError}</Problem>}
 
         {state.needs_setup ? (
           <SetupForm onDone={onDone} />
@@ -110,7 +111,7 @@ function LoginForm({ onDone }: { onDone: () => void }) {
         onChange={(e) => setPassword(e.target.value)}
       />
 
-      {error && <p className="rounded-lg border border-critical/30 bg-critical/10 px-3 py-2 text-sm text-critical">{error}</p>}
+      {error && <Problem>{error}</Problem>}
 
       <button type="submit" disabled={busy}>
         {busy ? "Signing in…" : "Sign in"}
@@ -180,7 +181,7 @@ function SetupForm({ onDone }: { onDone: () => void }) {
         value={password}
         onChange={(e) => setPassword(e.target.value)}
       />
-      <p className={tooShort ? "notice notice-bad" : "hint"}>
+      <p className={tooShort ? "text-xs text-critical" : "text-xs text-ink-faint"}>
         At least 12 characters.
       </p>
 
@@ -193,9 +194,9 @@ function SetupForm({ onDone }: { onDone: () => void }) {
         value={confirm}
         onChange={(e) => setConfirm(e.target.value)}
       />
-      {mismatch && <p className="rounded-lg border border-critical/30 bg-critical/10 px-3 py-2 text-sm text-critical">These do not match.</p>}
+      {mismatch && <Problem>These do not match.</Problem>}
 
-      {error && <p className="rounded-lg border border-critical/30 bg-critical/10 px-3 py-2 text-sm text-critical">{error}</p>}
+      {error && <Problem>{error}</Problem>}
 
       <button type="submit" disabled={busy || tooShort || mismatch}>
         {busy ? "Creating…" : "Create administrator"}

@@ -1,11 +1,15 @@
 import { useEffect, useState, type ReactNode } from "react";
 import {
+  AtSign,
+  Building2,
   Check,
   ChevronLeft,
   Clock,
   Copy,
   CornerUpLeft,
+  ExternalLink,
   ListFilter,
+  Phone,
   Plus,
   RefreshCw,
   Search,
@@ -13,6 +17,7 @@ import {
   Sparkles,
   StickyNote,
   Ticket as TicketIcon,
+  UserRound,
   Users,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
@@ -39,6 +44,11 @@ export const Icon = {
   copy: () => <Copy className="size-3.5" />,
   tick: () => <Check className="size-3.5" />,
   refresh: () => <RefreshCw className="size-3.5" />,
+  external: () => <ExternalLink className="size-3.5" />,
+  person: () => <UserRound className="size-3.5" />,
+  business: () => <Building2 className="size-3.5" />,
+  phone: () => <Phone className="size-3.5" />,
+  mail: () => <AtSign className="size-3.5" />,
 };
 
 // --- the design language -----------------------------------------------------
@@ -154,6 +164,101 @@ export function Panel({
   );
 }
 
+/** The bar across the top of a panel: a name on the left, a count on the right. */
+export function PanelHead({
+  children,
+  className,
+}: {
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <div
+      className={cn(
+        "flex items-baseline justify-between gap-3 border-b border-edge px-4 py-3",
+        className,
+      )}
+    >
+      {children}
+    </div>
+  );
+}
+
+// --- controls ----------------------------------------------------------------
+//
+// These exist because the same hundred-and-thirty character class string was
+// pasted onto twenty-one inputs across eleven files. That is not a style
+// complaint: it means the focus ring, the disabled state and the placeholder
+// colour could only ever be changed in twenty-one places at once, and the three
+// that had already drifted apart proved nobody was going to manage it.
+
+const CONTROL =
+  "h-8 w-full rounded-md border border-edge bg-sunken px-2.5 text-sm placeholder:text-ink-faint focus-visible:border-azir focus-visible:outline-none disabled:opacity-50";
+
+export function TextInput({
+  className,
+  ...rest
+}: React.InputHTMLAttributes<HTMLInputElement>) {
+  return <input className={cn(CONTROL, className)} {...rest} />;
+}
+
+export function Picker({
+  className,
+  children,
+  ...rest
+}: React.SelectHTMLAttributes<HTMLSelectElement>) {
+  return (
+    <select className={cn(CONTROL, className)} {...rest}>
+      {children}
+    </select>
+  );
+}
+
+export function TextArea({
+  className,
+  ...rest
+}: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
+  return (
+    <textarea
+      className={cn(
+        "w-full resize-y rounded-md border border-edge bg-sunken px-2.5 py-2 text-sm placeholder:text-ink-faint focus-visible:border-azir focus-visible:outline-none disabled:opacity-50",
+        className,
+      )}
+      {...rest}
+    />
+  );
+}
+
+/**
+ * A button, in the three weights this product actually uses.
+ *
+ * `primary` commits to something, `standing` is the ordinary bordered action,
+ * and `quiet` is for the ones that should be available without asking to be
+ * noticed — Clear, Cancel, Reset.
+ */
+export function Button({
+  weight = "standing",
+  className,
+  children,
+  ...rest
+}: React.ButtonHTMLAttributes<HTMLButtonElement> & {
+  weight?: "primary" | "standing" | "quiet";
+}) {
+  const WEIGHT = {
+    primary:
+      "h-8 rounded-md bg-azir px-3.5 text-sm font-medium text-azir-ink transition-opacity hover:opacity-90 disabled:opacity-50",
+    standing:
+      "flex h-8 items-center gap-1.5 rounded-md border border-edge bg-panel px-3 text-sm font-medium transition-colors hover:bg-sunken disabled:opacity-50",
+    quiet:
+      "rounded-md px-2 py-1 text-xs text-ink-dim transition-colors hover:bg-sunken hover:text-ink disabled:opacity-50",
+  };
+  return (
+    <button className={cn(WEIGHT[weight], className)} {...rest}>
+      {children}
+    </button>
+  );
+}
+
 // --- time --------------------------------------------------------------------
 
 /**
@@ -202,6 +307,13 @@ export function actionTitle(name: string): string {
   return readable.charAt(0).toUpperCase() + readable.slice(1);
 }
 
+/** Whole and fractional days since a timestamp. Zero for anything unreadable. */
+export function daysSince(iso?: string): number {
+  if (!iso) return 0;
+  const ms = Date.now() - new Date(iso).getTime();
+  return Number.isNaN(ms) ? 0 : ms / 86_400_000;
+}
+
 export function absolute(iso?: string): string {
   if (!iso) return "";
   const d = new Date(iso);
@@ -229,11 +341,28 @@ export function duration(minutes?: number): string {
  */
 export function statusTone(status?: string): "good" | "warn" | "urgent" | "accent" | "" {
   const s = (status ?? "").toLowerCase();
-  if (/resolv|closed|complete|done/.test(s)) return "good";
+  if (isDone(status)) return "good";
   if (/wait|hold|pending|parts/.test(s)) return "warn";
   if (/new|open|unassigned/.test(s)) return "accent";
   if (/escalat|urgent|breach/.test(s)) return "urgent";
   return "";
+}
+
+/**
+ * Whether a status means nobody is working on this any more.
+ *
+ * The word is read for intent because the statuses are whatever the connected
+ * system defines, and word boundaries are the whole trick: "Incomplete"
+ * contains "complete" and means the opposite, and a live ticket vanishing out
+ * of the queue is the worst way to find that out.
+ *
+ * The same rule lives in Go (internal/syncro/status.go, IsDone) because that is
+ * where the filtering happens. The two have to agree — a ticket the server
+ * excluded but the interface counts leaves a number that does not describe the
+ * list beneath it.
+ */
+export function isDone(status?: string): boolean {
+  return /\b(resolv|close|complete|done|cancel)/i.test(status ?? "");
 }
 
 /** Priority, normalised across the "0 Urgent" / "High" spellings in the wild. */

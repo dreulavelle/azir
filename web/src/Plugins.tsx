@@ -13,7 +13,7 @@ import { cn } from "@/lib/cn";
 import { Collapsible, Dialog, Explain, Switch, Tooltip } from "./components";
 import { SchemaForm } from "./SchemaForm";
 import { useToast } from "./Toast";
-import { Chip, CopyButton, Empty, Label, Problem, ago } from "./ui";
+import { Chip, CopyButton, Empty, Label, Problem, actionTitle, ago } from "./ui";
 
 /**
  * Connected systems.
@@ -37,12 +37,6 @@ function refreshPhrase(soft: string): string {
   if (min && min !== "0") return `every ${min} minutes`;
   if (s && s !== "0") return `every ${s} seconds`;
   return "";
-}
-
-/** What an action is called, without the dotted identifier. */
-function actionTitle(name: string): string {
-  const readable = name.replace(/[._]/g, " ");
-  return readable.charAt(0).toUpperCase() + readable.slice(1);
 }
 
 export function Plugins({ actor }: { actor: Actor }) {

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, type AuthSettings, type Role } from "./api";
+import { Button, PanelHead, Problem, TextInput } from "./ui";
 
 /**
  * Single sign-on settings.
@@ -9,9 +10,24 @@ import { api, type AuthSettings, type Role } from "./api";
  * would have to go and look up. Another OpenID Connect provider is the same
  * form with the issuer filled in directly.
  */
+/** Splits the domains field into the list the server stores. */
+function domainList(text: string): string[] {
+  return text
+    .split(",")
+    .map((d) => d.trim())
+    .filter(Boolean);
+}
+
 export function SignOn({ roles }: { roles: Role[] }) {
   const [settings, setSettings] = useState<AuthSettings | null>(null);
   const [draft, setDraft] = useState<Partial<AuthSettings> & { client_secret?: string }>({});
+  // The domains field holds what was typed, not what it parses to.
+  //
+  // It used to be derived from the parsed list on every keystroke, which meant
+  // typing a comma produced an empty final entry, the empty entry was filtered
+  // out, and the comma disappeared from under the cursor — making it literally
+  // impossible to enter a second domain. Text stays text until it is saved.
+  const [domains, setDomains] = useState("");
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -30,6 +46,7 @@ export function SignOn({ roles }: { roles: Role[] }) {
         redirect_url: loaded.redirect_url,
         client_secret: "",
       });
+      setDomains((loaded.allowed_domains ?? []).join(", "));
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "could not load sign-on settings");
@@ -45,7 +62,7 @@ export function SignOn({ roles }: { roles: Role[] }) {
     setNote(null);
     setError(null);
     try {
-      await api.saveAuthSettings({ ...draft, enabled });
+      await api.saveAuthSettings({ ...draft, allowed_domains: domainList(domains), enabled });
       setNote(
         enabled
           ? "Saved and verified against the provider. Single sign-on is on."
@@ -59,7 +76,7 @@ export function SignOn({ roles }: { roles: Role[] }) {
     }
   }
 
-  if (error && !settings) return <p className="rounded-lg border border-critical/30 bg-critical/10 px-3 py-2 text-sm text-critical">{error}</p>;
+  if (error && !settings) return <Problem>{error}</Problem>;
   if (!settings) return <div className="animate-pulse rounded-lg bg-sunken" style={{ height: 160 }} />;
 
   const set = (patch: Partial<AuthSettings> & { client_secret?: string }) =>
@@ -67,12 +84,18 @@ export function SignOn({ roles }: { roles: Role[] }) {
 
   return (
     <section className="rounded-lg border border-edge bg-panel shadow-e1">
-      <div className="flex items-baseline justify-between gap-3 border-b border-edge px-4 py-3">
+      <PanelHead>
         <h2>Single sign-on</h2>
-        <span className={settings.enabled ? "chip chip-good" : "chip"}>
+        <span
+          className={
+            settings.enabled
+              ? "inline-flex items-center rounded border border-steady/25 bg-steady/10 px-1.5 py-px text-2xs font-medium text-steady"
+              : "inline-flex items-center rounded border border-edge bg-sunken px-1.5 py-px text-2xs font-medium text-ink-dim"
+          }
+        >
           {settings.enabled ? "on" : "off"}
         </span>
-      </div>
+      </PanelHead>
 
       <div className="p-4">
       <p className="max-w-[70ch] text-xs text-ink-faint" style={{ marginTop: 0 }}>
@@ -88,7 +111,7 @@ export function SignOn({ roles }: { roles: Role[] }) {
             Register this exactly, in the app registration's Web platform. The
             provider refuses anything that does not match character for character.
           </p>
-          <input className="h-8 w-full rounded-md border border-edge bg-sunken px-2.5 text-sm placeholder:text-ink-faint focus-visible:border-azir focus-visible:outline-none disabled:opacity-50" id="sso-callback" readOnly value={settings.callback_url} onFocus={(e) => e.target.select()} />
+          <TextInput id="sso-callback" readOnly value={settings.callback_url} onFocus={(e) => e.target.select()} />
         </div>
 
         <div className="flex flex-col gap-1.5">
@@ -98,8 +121,7 @@ export function SignOn({ roles }: { roles: Role[] }) {
             keeps sign-in to your directory instead of to every Microsoft account
             there is.
           </p>
-          <input
-            className="h-8 w-full rounded-md border border-edge bg-sunken px-2.5 text-sm placeholder:text-ink-faint focus-visible:border-azir focus-visible:outline-none disabled:opacity-50"
+          <TextInput
             id="sso-tenant"
             value={draft.tenant_id ?? ""}
             placeholder="00000000-0000-0000-0000-000000000000"
@@ -109,8 +131,7 @@ export function SignOn({ roles }: { roles: Role[] }) {
 
         <div className="flex flex-col gap-1.5">
           <label htmlFor="sso-client">Application (client) ID</label>
-          <input
-            className="h-8 w-full rounded-md border border-edge bg-sunken px-2.5 text-sm placeholder:text-ink-faint focus-visible:border-azir focus-visible:outline-none disabled:opacity-50"
+          <TextInput
             id="sso-client"
             value={draft.client_id ?? ""}
             onChange={(e) => set({ client_id: e.target.value })}
@@ -126,8 +147,7 @@ export function SignOn({ roles }: { roles: Role[] }) {
             Certificates &amp; secrets → New client secret. Copy the Value, not
             the Secret ID.
           </p>
-          <input
-            className="h-8 w-full rounded-md border border-edge bg-sunken px-2.5 text-sm placeholder:text-ink-faint focus-visible:border-azir focus-visible:outline-none disabled:opacity-50"
+          <TextInput
             id="sso-secret"
             type="password"
             autoComplete="new-password"
@@ -143,20 +163,26 @@ export function SignOn({ roles }: { roles: Role[] }) {
             Comma separated. Leave empty to allow anyone the provider
             authenticates, which is only reasonable for a directory you control.
           </p>
-          <input
-            className="h-8 w-full rounded-md border border-edge bg-sunken px-2.5 text-sm placeholder:text-ink-faint focus-visible:border-azir focus-visible:outline-none disabled:opacity-50"
+          <TextInput
             id="sso-domains"
-            value={(draft.allowed_domains ?? []).join(", ")}
+            value={domains}
             placeholder="cooli.ai, example.com"
-            onChange={(e) =>
-              set({
-                allowed_domains: e.target.value
-                  .split(",")
-                  .map((d) => d.trim())
-                  .filter(Boolean),
-              })
-            }
+            onChange={(e) => setDomains(e.target.value)}
           />
+          {/* What it parses to, so the effect of the punctuation is visible
+              without having to save and reload to find out. */}
+          {domainList(domains).length > 0 && (
+            <p className="flex flex-wrap gap-1.5 text-2xs">
+              {domainList(domains).map((d) => (
+                <span
+                  key={d}
+                  className="inline-flex items-center rounded border border-edge bg-sunken px-1.5 py-px font-mono text-ink-dim"
+                >
+                  {d}
+                </span>
+              ))}
+            </p>
+          )}
         </div>
 
         <div className="flex flex-col gap-1.5">
@@ -195,20 +221,20 @@ export function SignOn({ roles }: { roles: Role[] }) {
           </div>
         )}
 
-        {error && <p className="rounded-lg border border-critical/30 bg-critical/10 px-3 py-2 text-sm text-critical">{error}</p>}
+        {error && <Problem>{error}</Problem>}
         {note && <p className="rounded-lg border border-steady/30 bg-steady/10 px-3 py-2 text-sm text-steady">{note}</p>}
 
         <div className="flex items-center gap-2">
           {/* Enabling verifies against the provider before it saves, so a
               typo fails here rather than at the moment someone tries to
               sign in with it. */}
-          <button className="h-8 rounded-md bg-azir px-3.5 text-sm font-medium text-azir-ink transition-opacity hover:opacity-90 disabled:opacity-50" disabled={busy} onClick={() => void save(true)}>
+          <Button weight="primary" disabled={busy} onClick={() => void save(true)}>
             {busy ? "Checking…" : settings.enabled ? "Save and re-check" : "Verify and turn on"}
-          </button>
+          </Button>
           {settings.enabled && (
-            <button className="rounded-md px-2 py-1 text-xs text-ink-dim transition-colors hover:bg-sunken hover:text-ink" disabled={busy} onClick={() => void save(false)}>
+            <Button weight="quiet" disabled={busy} onClick={() => void save(false)}>
               Turn off
-            </button>
+            </Button>
           )}
         </div>
       </div>

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api, Perm, type Actor, type Role, type User } from "./api";
 import { Tooltip } from "./components";
 import { SignOn } from "./SignOn";
-import { Chip, Empty, Icon, Problem, absolute, ago, initials } from "./ui";
+import { Chip, Empty, Icon, PanelHead, Problem, absolute, ago, initials } from "./ui";
 
 /**
  * What each permission actually lets someone do.
@@ -86,12 +86,12 @@ export function Users({ actor }: { actor: Actor }) {
   return (
     <>
       <section className="rounded-lg border border-edge bg-panel shadow-e1" style={{ marginBottom: 16 }}>
-        <div className="flex items-baseline justify-between gap-3 border-b border-edge px-4 py-3">
+        <PanelHead>
           <h2>People</h2>
           <span className="text-xs text-ink-faint">
             {users.length} account{users.length === 1 ? "" : "s"}
           </span>
-        </div>
+        </PanelHead>
         <div className="p-4" style={{ paddingTop: 0 }}>
           <table className="w-full border-collapse text-sm">
             <thead>
@@ -140,9 +140,9 @@ export function Users({ actor }: { actor: Actor }) {
       </section>
 
       <section className="rounded-lg border border-edge bg-panel shadow-e1" style={{ marginBottom: 16 }}>
-        <div className="flex items-baseline justify-between gap-3 border-b border-edge px-4 py-3">
+        <PanelHead>
           <h2>Roles</h2>
-        </div>
+        </PanelHead>
         <div className="p-4">
           <p className="text-xs text-ink-dim" style={{ margin: "0 0 12px", maxWidth: "68ch" }}>
             Every check asks what someone is allowed to do, never what their
@@ -327,7 +327,7 @@ function NewUser({ roles, onCreated }: { roles: Role[]; onCreated: () => void })
         <p className="max-w-[70ch] text-xs text-ink-faint">At least 12 characters.</p>
       </div>
 
-      {note && <p className="rounded-lg border border-critical/30 bg-critical/10 px-3 py-2 text-sm text-critical">{note}</p>}
+      {note && <Problem>{note}</Problem>}
 
       <div className="flex items-center gap-2">
         <button type="submit" className="h-8 rounded-md bg-azir px-3.5 text-sm font-medium text-azir-ink transition-opacity hover:opacity-90 disabled:opacity-50" disabled={busy}>

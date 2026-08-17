@@ -2,7 +2,7 @@ import { cn } from "@/lib/cn";
 import { useEffect, useMemo, useState } from "react";
 import { api, type AuditEvent } from "./api";
 import { Explain, Select, Tooltip } from "./components";
-import { Chip, Empty, Icon, Problem, absolute, actionTitle, ago, initials } from "./ui";
+import { Chip, Empty, Icon, PanelHead, Problem, absolute, actionTitle, ago, initials } from "./ui";
 
 /**
  * What has happened, in words.
@@ -110,7 +110,7 @@ export function Audit() {
 
   return (
     <section className="rounded-lg border border-edge bg-panel shadow-e1">
-      <div className="flex items-baseline justify-between gap-3 border-b border-edge px-4 py-3">
+      <PanelHead>
         <div className="flex items-center gap-2">
           <h2>Activity</h2>
           <Explain>
@@ -126,7 +126,7 @@ export function Audit() {
               : `${shown.length} of ${events.length}`}
           </span>
         )}
-      </div>
+      </PanelHead>
 
       <div className="px-4 pt-4">
         <div className="mb-4 flex flex-wrap items-center gap-2">

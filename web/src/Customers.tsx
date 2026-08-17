@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, Perm, type Actor, type Customer } from "./api";
-import { Empty, Icon, Problem } from "./ui";
+import { Empty, Icon, PanelHead, Problem, TextInput } from "./ui";
 
 /**
  * Azir's own customer records.
@@ -44,10 +44,10 @@ export function Customers({ actor }: { actor: Actor }) {
 
   return (
     <section className="rounded-lg border border-edge bg-panel shadow-e1">
-      <div className="flex items-baseline justify-between gap-3 border-b border-edge px-4 py-3">
+      <PanelHead>
         <h2>Customer records</h2>
         {customers && <span className="text-xs text-ink-faint">{customers.length}</span>}
-      </div>
+      </PanelHead>
       <div className="p-4">
         <p className="text-xs text-ink-dim" style={{ maxWidth: "68ch" }}>
           Azir owns this entity; external systems map onto it. A record with no
@@ -56,8 +56,7 @@ export function Customers({ actor }: { actor: Actor }) {
 
         {mayManage && (
           <form className="flex items-center gap-2" style={{ marginBottom: 14 }} onSubmit={(e) => void create(e)}>
-            <input
-              className="h-8 w-full rounded-md border border-edge bg-sunken px-2.5 text-sm placeholder:text-ink-faint focus-visible:border-azir focus-visible:outline-none disabled:opacity-50"
+            <TextInput
               style={{ maxWidth: 280 }}
               value={name}
               onChange={(e) => setName(e.target.value)}

@@ -23,19 +23,7 @@ import { Explain, Tooltip } from "../components";
 import { useToast } from "../Toast";
 import type { Route } from "../router";
 import { TicketRow } from "./Triage";
-import {
-  Empty,
-  Icon,
-  Loading,
-  Panel,
-  Problem,
-  Stat,
-  Label,
-  ago,
-  duration,
-  initials,
-  statusTone,
-} from "../ui";
+import { Button, Empty, Icon, Label, Loading, Panel, PanelHead, Problem, Stat, ago, duration, initials, statusTone } from "../ui";
 
 /** Everyone the connected systems know about. */
 export function Customers({
@@ -798,10 +786,10 @@ function CustomerEquipment({ customerId }: { customerId: number }) {
 
   return (
     <div className="rounded-lg border border-edge bg-panel shadow-e1">
-      <div className="flex items-baseline justify-between gap-3 border-b border-edge px-4 py-3">
+      <PanelHead>
         <h3 className="text-sm font-medium">Equipment</h3>
         {assets && <span className="text-xs text-ink-faint">{assets.length}</span>}
-      </div>
+      </PanelHead>
       <div className="p-4">
         {!assets && <div className="h-14 animate-pulse rounded-lg bg-sunken" />}
         {assets && assets.length === 0 && (
@@ -822,9 +810,9 @@ function CustomerEquipment({ customerId }: { customerId: number }) {
               </div>
             ))}
             {assets && assets.length > 8 && (
-              <button className="rounded-md px-2 py-1 text-xs text-ink-dim transition-colors hover:bg-sunken hover:text-ink" onClick={() => setShowAll((v) => !v)}>
+              <Button weight="quiet" onClick={() => setShowAll((v) => !v)}>
                 {showAll ? "Show fewer" : `Show all ${assets.length}`}
-              </button>
+              </Button>
             )}
           </div>
         )}
@@ -854,10 +842,10 @@ function RecentTime({ customerId }: { customerId: number }) {
 
   return (
     <div className="rounded-lg border border-edge bg-panel shadow-e1">
-      <div className="flex items-baseline justify-between gap-3 border-b border-edge px-4 py-3">
+      <PanelHead>
         <h3 className="text-sm font-medium">Recorded work</h3>
         {entries && entries.length > 0 && <span className="text-xs text-ink-faint">{duration(total)}</span>}
-      </div>
+      </PanelHead>
       <div className="p-4">
         {!entries && <div className="animate-pulse rounded-lg bg-sunken" style={{ height: 44 }} />}
         {entries && entries.length === 0 && (

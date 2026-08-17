@@ -77,13 +77,6 @@ function connect() {
 }
 
 /**
- * Runs `onChange` when something of the given kind changes elsewhere.
- *
- * The subject is deliberately coarse — "tickets", "customers" — because the
- * message is a nudge to go and look, not the change itself. What actually
- * changed is read back through the ordinary authenticated path.
- */
-/**
  * Runs `onChange` on a slow timer, but only while push is not working.
  *
  * Paired with useLiveChanges rather than replacing it: push is the fast path
@@ -98,6 +91,17 @@ export function useFallbackPoll(onChange: () => void) {
   }, [onChange]);
 }
 
+/**
+ * Runs `onChange` when something of the given kind changes elsewhere.
+ *
+ * The subject is deliberately coarse — "tickets", "customers" — because the
+ * message is a nudge to go and look, not the change itself. What actually
+ * changed is read back through the ordinary authenticated path.
+ *
+ * `onChange` must be stable — wrap it in useCallback. An identity that changes
+ * every render re-runs this effect every render, and when it is the only
+ * listener that closes and reopens the shared connection each time.
+ */
 export function useLiveChanges(subjects: string[], onChange: () => void) {
   useEffect(() => {
     const wanted = new Set(subjects);
