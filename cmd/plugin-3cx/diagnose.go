@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/dreulavelle/azir/pkg/plugin"
 )
@@ -969,5 +970,86 @@ func reviewExtensions(ctx context.Context, req plugin.Request) (any, error) {
 		// Said plainly. An empty list means everything matches, not that
 		// nothing was checked.
 		"nothing_to_suggest": len(suggestions) == 0,
+	}, nil
+}
+
+/*
+capture pulls a diagnostic capture off a live phone system.
+
+3CX has no API for generating a support bundle — that is a button in its own
+console and the zip comes out on the machine. What it does have is the event
+log, which is the single most useful table in the bundle: the same rows, with
+the same event ids, including the per-call quality reports.
+
+So this is not a support bundle and does not pretend to be one. It is the part
+of it that can be had over the wire, which is enough to answer most of the
+questions somebody would collect a bundle for, and it takes seconds rather than
+the ten minutes of asking a customer to press the button and send the file.
+
+Paged rather than topped: the interesting event is rarely in the last twenty.
+*/
+func capture(ctx context.Context, req plugin.Request) (any, error) {
+	var args struct {
+		Days int `json:"days"`
+	}
+	if len(req.Args) > 0 {
+		_ = json.Unmarshal(req.Args, &args)
+	}
+	if args.Days <= 0 {
+		args.Days = 7
+	}
+	if args.Days > 30 {
+		args.Days = 30
+	}
+
+	conn, err := connect(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	since := time.Now().AddDate(0, 0, -args.Days).UTC()
+	events := make([]map[string]any, 0, captureEvents)
+
+	for skip := 0; skip < captureEvents; skip += pageSize {
+		q := url.Values{}
+		q.Set("$top", fmt.Sprint(pageSize))
+		q.Set("$skip", fmt.Sprint(skip))
+		q.Set("$orderby", "TimeGenerated desc")
+		q.Set("$select", "EventId,Type,Message,Source,TimeGenerated")
+		q.Set("$filter", fmt.Sprintf("TimeGenerated ge %s", since.Format(time.RFC3339)))
+
+		var page struct {
+			Value []struct {
+				EventID int    `json:"EventId"`
+				Type    string `json:"Type"`
+				Message string `json:"Message"`
+				Source  string `json:"Source"`
+				At      string `json:"TimeGenerated"`
+			} `json:"value"`
+		}
+		if err := conn.get(ctx, "EventLogs", q, &page); err != nil {
+			// A page that fails after others succeeded is still a capture,
+			// just a shorter one. Losing the whole thing to one bad page
+			// would be a worse answer than a partial log.
+			if len(events) == 0 {
+				return nil, err
+			}
+			break
+		}
+		for _, e := range page.Value {
+			events = append(events, map[string]any{
+				"at": e.At, "id": fmt.Sprint(e.EventID),
+				"severity": e.Type, "source": e.Source, "message": e.Message,
+			})
+		}
+		if len(page.Value) < pageSize {
+			break
+		}
+	}
+
+	return map[string]any{
+		"events": events,
+		"days":   args.Days,
+		"host":   strings.TrimPrefix(conn.base, "https://"),
 	}, nil
 }

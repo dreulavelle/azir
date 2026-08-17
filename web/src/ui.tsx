@@ -301,6 +301,26 @@ export function ago(iso?: string): string {
   return `${elapsed} ago`;
 }
 
+/**
+ * Time still to run, for the things that expire rather than the things that
+ * happened.
+ *
+ * `since` counts backwards and clamps anything in the future to "just now",
+ * which read as "expires just now" on a capture with a fortnight left on it.
+ */
+export function until(iso?: string): string {
+  if (!iso) return "—";
+  const ms = new Date(iso).getTime() - Date.now();
+  if (Number.isNaN(ms)) return "—";
+  if (ms <= 0) return "any moment";
+  const mins = Math.floor(ms / 60000);
+  if (mins < 60) return `in ${mins}m`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `in ${hours}h`;
+  const days = Math.floor(hours / 24);
+  return `in ${days}d`;
+}
+
 /** A dotted internal name as something to read: "tickets.search" → "Search tickets". */
 export function actionTitle(name: string): string {
   const parts = name.split(".");

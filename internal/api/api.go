@@ -182,6 +182,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/snapshots", s.require(p, ignoreActor(s.listSnapshots)))
 	mux.HandleFunc("GET /api/snapshots/{id}", s.require(p, ignoreActor(s.getSnapshot)))
 	mux.HandleFunc("POST /api/snapshots", s.require(p, s.uploadSnapshot))
+	mux.HandleFunc("POST /api/snapshots/pull", s.require(p, s.pullSnapshot))
+	mux.HandleFunc("POST /api/snapshots/{id}/attach", s.require(p, s.attachSnapshot))
+	mux.HandleFunc("POST /api/snapshots/{id}/keep", s.require(p, s.keepSnapshot))
 	mux.HandleFunc("DELETE /api/snapshots/{id}", s.require(p, s.deleteSnapshot))
 
 	// Recall over finished work. Reading it needs no more than reading a

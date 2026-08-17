@@ -153,6 +153,27 @@ func main() {
 			},
 
 			{
+				Name: "diagnostics.capture",
+				Description: "Pulls the phone system's event log for the last few days and analyses it the same " +
+					"way an uploaded support bundle is analysed. Use it when somebody reports a phone problem " +
+					"and there is no support zip to hand — it finds trunks flapping, calls being refused, " +
+					"unidentified inbound calls and poor call quality.",
+				Summary:  "Collects a diagnostic capture from a customer's phone system.",
+				Provides: []plugin.Capability{plugin.CapPhoneCapture},
+				Freshness: &plugin.Freshness{
+					Soft: 10 * time.Minute,
+					Hard: time.Hour,
+				},
+				Schema: json.RawMessage(`{
+					"type": "object",
+					"properties": {
+						"days": {"type": "integer", "minimum": 1, "maximum": 30, "description": "How far back to collect. Defaults to 7."}
+					}
+				}`),
+				Handler: capture,
+			},
+
+			{
 				Name: "events.recent",
 				Description: "Recent events the phone system logged — failed registrations, licence warnings, service problems. " +
 					"Use it when the status looks wrong and you need to know since when, or why.",
@@ -500,7 +521,11 @@ func main() {
 // has to be paged. maxExtensions is a ceiling on how far paging will go, so a
 // misconfigured filter cannot walk a very large PBX forever.
 const (
-	pageSize      = 100
+	pageSize = 100
+	// captureEvents bounds a pulled capture. Two thousand events is a busy
+	// fortnight and a request that finishes; the whole log on a large site is
+	// hundreds of thousands and belongs in an uploaded bundle, not a page.
+	captureEvents = 2000
 	maxExtensions = 2000
 )
 

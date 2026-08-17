@@ -207,6 +207,43 @@ func run(log *slog.Logger) error {
 		}
 	}()
 
+	/*
+		Diagnostic captures whose time is up.
+
+		Unlike the sweeps above this one is not housekeeping, it is the
+		retention promise being kept. A capture holds a customer's extension
+		numbers, MAC addresses, internal addressing and the names of the people
+		who administer their phone system; the reason it goes away on its own
+		is that nobody should have to remember to delete it. Anything worth
+		keeping has been pinned by somebody, and pinning is what clears the
+		expiry.
+
+		Hourly, and once at startup, so a deployment that spends a fortnight
+		switched off does not come back up serving expired data.
+	*/
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		sweep := func() {
+			if n, err := db.SweepSnapshots(ctx); err != nil {
+				log.Warn("could not expire diagnostic captures", "error", err)
+			} else if n > 0 {
+				log.Info("expired diagnostic captures", "count", n)
+			}
+		}
+		sweep()
+		t := time.NewTicker(time.Hour)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				sweep()
+			}
+		}
+	}()
+
 	server := &api.Server{
 		NC:    nc,
 		Reg:   reg,

@@ -5,16 +5,18 @@ A support bundle is what 3CX produces when you press "collect support info": a
 zip of several hundred files, tens of megabytes, holding a week of metrics, a
 packet capture, every service log and the whole configuration. It is the thing
 an engineer asks for when a problem has resisted everything else, and it is
-almost never read, because reading it means unzipping it and knowing which nine
-of those four hundred files matter.
+almost never read, because reading it means unzipping it and knowing which
+dozen of those four hundred files matter.
 
-This reads those nine.
+This reads that dozen: the system's own account of itself, its event log, the
+call quality it measured, the packets it captured, and a fortnight of metrics
+for the machine, its network and each service on it.
 
-What comes out is deliberately small: a page of facts, a handful of series worth
-drawing, and a list of findings — each one a sentence about something actually
-wrong, with the evidence that says so. The bundle itself is not kept. It belongs
-to a customer, it is enormous, and every useful thing in it survives as a
-finding.
+What comes out is deliberately small — a few hundred kilobytes from forty
+megabytes. A page of facts, some series worth drawing, and a list of findings,
+each one a sentence about something actually wrong with the evidence that says
+so. The bundle itself is not kept. It belongs to a customer, it is enormous,
+and every useful thing in it survives as a finding.
 */
 package supportinfo
 
@@ -39,12 +41,19 @@ const (
 	// real bundle is eighteen megabytes of tunnel chatter; the findings live in
 	// the first part of it and nothing is served by holding the rest.
 	maxFile = 24 << 20
-	// maxSeries is how many points a chart keeps. A week at two-minute
-	// intervals is five thousand, which draws fine and stores small.
-	maxSeries = 6000
+	// maxSeries is how many points a chart keeps.
+	//
+	// A week at two-minute intervals is five thousand, and there are now five
+	// of these — which was most of a megabyte of stored report to draw charts
+	// a few hundred pixels wide. Twelve hundred is finer than any screen can
+	// resolve and a fifth of the size.
+	maxSeries = 1200
 	// maxEvidence bounds how many example lines one finding carries. Three is
 	// enough to recognise a pattern; three hundred is a log file again.
 	maxEvidence = 3
+	// maxRows bounds a streamed table. The audit log on a busy system runs to
+	// half a million rows and this is a web request, not a batch job.
+	maxRows = 1_000_000
 )
 
 // Snapshot is everything worth keeping from one bundle.
@@ -53,6 +62,20 @@ type Snapshot struct {
 	Health   []Check   `json:"health"`
 	Findings []Finding `json:"findings"`
 	Series   Series    `json:"series"`
+	// Network is throughput, derived from the interface counters.
+	Network *Network `json:"network,omitempty"`
+	// Services is what each 3CX service was doing with the machine.
+	Services []Service `json:"services,omitempty"`
+	// Events is the phone system's own event log, grouped.
+	Events Events `json:"events"`
+	// Quality is what callers actually heard, where the log carried it.
+	Quality *Quality `json:"quality,omitempty"`
+	// Capture is the packet capture, where the bundle had one.
+	Capture *Capture `json:"capture,omitempty"`
+	// Phones are the handsets with no provisioning template.
+	Phones []Phone `json:"phones,omitempty"`
+	// Changes is who changed what on this phone system.
+	Changes *Changes `json:"changes,omitempty"`
 	// Read is what the parser actually found and understood, so a bundle from
 	// a version that moved things is visibly under-read rather than silently
 	// thin.
@@ -63,7 +86,10 @@ type Snapshot struct {
 
 // System is the page of facts about the machine and the PBX on it.
 type System struct {
-	Version       string    `json:"version,omitempty"`
+	Version string `json:"version,omitempty"`
+	// FQDN is the phone system's own address, which is how a bundle says
+	// which customer it came from without anybody being asked.
+	FQDN          string    `json:"fqdn,omitempty"`
 	OS            string    `json:"os,omitempty"`
 	CPUModel      string    `json:"cpu_model,omitempty"`
 	CPUCount      int       `json:"cpu_count,omitempty"`
@@ -136,9 +162,16 @@ type Series struct {
 var wanted = []string{
 	"ExtraLogging/tcxSystemInfo",
 	"ExtraLogging/Health",
+	"ExtraLogging/tcxNslookup",
 	"ExtraLogging/tcxVirtWhat",
+	"ExtraLogging/unsupportedPhones",
 	"DbTables/tsdb.system.csv",
+	"DbTables/tsdb.network.csv",
+	"DbTables/tsdb.services.csv",
+	"DbTables/eventlog.csv",
+	"DbTables/audit_log.csv",
 	"Logs/3CXMediaServer",
+	"Logs/dump.pcap",
 	"LinuxLogs/auth.log",
 }
 
@@ -166,15 +199,37 @@ func Read(r io.ReaderAt, size int64) (Snapshot, error) {
 	// the one.
 	media := mediaTotals{silent: map[string]int{}}
 	auth := authTotals{from: map[string]int{}}
+	events := newEventTotals()
+	quality := newQualityTotals()
+	network := newNetworkTotals()
+	audit := newAuditTotals()
+	services := newServiceTotals()
 
 	for _, f := range archive.File {
 		name := f.Name
 		switch {
 		case strings.Contains(name, "ExtraLogging/tcxSystemInfo"):
 			if body, err := readAll(f); err == nil {
-				snap.System = readSystemInfo(body)
+				system := readSystemInfo(body)
+				// Merged rather than assigned: the FQDN may already have been
+				// read from the DNS lookup, and this file does not carry it.
+				system.FQDN = snap.System.FQDN
+				system.Virtualised = snap.System.Virtualised
+				snap.System = system
 				snap.System.CapturedAt = f.Modified
 				mark(&snap, seen, "ExtraLogging/tcxSystemInfo", name)
+			}
+
+		case strings.Contains(name, "ExtraLogging/tcxNslookup"):
+			if body, err := readAll(f); err == nil {
+				snap.System.FQDN = readFQDN(body)
+				mark(&snap, seen, "ExtraLogging/tcxNslookup", name)
+			}
+
+		case strings.Contains(name, "ExtraLogging/unsupportedPhones"):
+			if body, err := readAll(f); err == nil {
+				snap.Phones = readPhones(body)
+				mark(&snap, seen, "ExtraLogging/unsupportedPhones", name)
 			}
 
 		case strings.Contains(name, "ExtraLogging/Health"):
@@ -195,6 +250,69 @@ func Read(r io.ReaderAt, size int64) (Snapshot, error) {
 				mark(&snap, seen, "DbTables/tsdb.system.csv", name)
 			}
 
+		case strings.HasSuffix(name, "DbTables/tsdb.network.csv"):
+			if err := stream(f, func(get column) {
+				at, ok := parseTime(get("time"))
+				if !ok {
+					return
+				}
+				sent, _ := number(get("bytes_sent"))
+				received, _ := number(get("bytes_received"))
+				network.readNetwork(strings.TrimSpace(get("id")), at, sent, received)
+			}); err == nil {
+				mark(&snap, seen, "DbTables/tsdb.network.csv", name)
+			}
+
+		case strings.HasSuffix(name, "DbTables/tsdb.services.csv"):
+			if err := stream(f, func(get column) {
+				memory, ok := number(get("private_memory"))
+				if !ok {
+					return
+				}
+				services.readService(atoi(get("service")), memory,
+					atoi(get("thread_count")), atoi(get("process_count")))
+			}); err == nil {
+				mark(&snap, seen, "DbTables/tsdb.services.csv", name)
+			}
+
+		case strings.HasSuffix(name, "DbTables/audit_log.csv"):
+			if err := stream(f, func(get column) {
+				at, _ := parseTime(get("time_stamp"))
+				audit.readAudit(at, get("user_name"), get("ip"),
+					get("object_name"), get("prev_data"), get("new_data"))
+			}); err == nil {
+				mark(&snap, seen, "DbTables/audit_log.csv", name)
+			}
+
+		case strings.HasSuffix(name, "DbTables/eventlog.csv"):
+			if err := stream(f, func(get column) {
+				at, _ := parseTime(get("timegenerated"))
+				id := strings.TrimSpace(get("eventid"))
+				message := get("message")
+				events.readEvent(strings.TrimSpace(get("source")), id,
+					strings.TrimSpace(get("severity")), message, at)
+				// The call quality reports live inside the event log as
+				// escaped JSON on one particular event id.
+				if id == "10034" {
+					quality.readQuality(message)
+				}
+			}); err == nil {
+				events.source = name
+				mark(&snap, seen, "DbTables/eventlog.csv", name)
+			}
+
+		case strings.HasSuffix(name, ".pcap"):
+			// Streamed rather than read: a capture is the largest thing in the
+			// bundle after the audit log and none of it needs to be held.
+			if rc, err := f.Open(); err == nil {
+				capture, err := readPcap(rc)
+				_ = rc.Close()
+				if err == nil {
+					snap.Capture = capture
+					mark(&snap, seen, "Logs/dump.pcap", name)
+				}
+			}
+
 		case strings.Contains(name, "Logs/3CXMediaServer"):
 			if body, err := readAll(f); err == nil {
 				readMediaLog(body, name, &media)
@@ -208,6 +326,12 @@ func Read(r io.ReaderAt, size int64) (Snapshot, error) {
 			}
 		}
 	}
+
+	snap.Events = events.result()
+	snap.Quality = quality.result()
+	snap.Network = network.result()
+	snap.Changes = audit.result()
+	snap.Services = services.result()
 
 	if len(snap.Read) == 0 {
 		return Snapshot{}, errors.New("nothing in that zip looked like a 3CX support bundle")
@@ -229,6 +353,13 @@ func Read(r io.ReaderAt, size int64) (Snapshot, error) {
 
 	snap.Findings = append(snap.Findings, media.finding()...)
 	snap.Findings = append(snap.Findings, auth.finding()...)
+	snap.Findings = append(snap.Findings, events.findings()...)
+	snap.Findings = append(snap.Findings, quality.findings(events.source)...)
+	snap.Findings = append(snap.Findings, captureFindings(snap.Capture, "Logs/dump.pcap")...)
+	snap.Findings = append(snap.Findings, phoneFindings(snap.Phones)...)
+	snap.Findings = append(snap.Findings, audit.findings("DbTables/audit_log.csv")...)
+	snap.Findings = append(snap.Findings, serviceFindings(snap.Services, snap.System.TotalMemoryGB)...)
+	snap.Findings = append(snap.Findings, networkFindings(snap.Network)...)
 	snap.Findings = append(snap.Findings, judgeResources(snap.System, snap.Series)...)
 	snap.Findings = append(snap.Findings, judgeHealth(snap.Health)...)
 	sortFindings(snap.Findings)
@@ -240,6 +371,69 @@ func mark(snap *Snapshot, seen map[string]bool, key, actual string) {
 		seen[key] = true
 		snap.Read = append(snap.Read, actual)
 	}
+}
+
+/*
+column reads one field of the row being streamed, by header name.
+
+Case-insensitive, because the same table is spelled TimeGenerated in the API
+and timegenerated in the CSV dump of it, and a lookup that silently returns
+nothing is how a section ends up empty with no error anywhere.
+*/
+type column func(name string) string
+
+/*
+stream reads a CSV entry a row at a time, without holding it.
+
+This exists for the two tables that cannot be read any other way. The event log
+is fifty thousand rows, and the audit log on a busy system is half a million and
+a hundred and twenty megabytes — larger than the rest of the bundle put
+together. Reading either into a []byte first would mean holding it, and the
+limit that stops that would truncate the file mid-row.
+
+encoding/csv rather than splitting on newlines, because the messages contain
+them: an unidentified-call event carries the whole INVITE it could not place,
+line breaks and all, quoted inside one field.
+*/
+func stream(f *zip.File, fn func(get column)) error {
+	rc, err := f.Open()
+	if err != nil {
+		return err
+	}
+	defer rc.Close() //nolint:errcheck // read-only
+
+	reader := csv.NewReader(bufio.NewReaderSize(rc, 1<<20))
+	reader.FieldsPerRecord = -1
+	// A log line with an unbalanced quote in it should cost that row, not the
+	// whole table.
+	reader.LazyQuotes = true
+	reader.ReuseRecord = true
+
+	head, err := reader.Read()
+	if err != nil {
+		return err
+	}
+	at := make(map[string]int, len(head))
+	for i, name := range head {
+		at[strings.ToLower(strings.TrimSpace(clean([]byte(name))))] = i
+	}
+
+	var row []string
+	get := column(func(name string) string {
+		if i, ok := at[strings.ToLower(name)]; ok && i < len(row) {
+			return row[i]
+		}
+		return ""
+	})
+
+	for read := 0; read < maxRows; read++ {
+		row, err = reader.Read()
+		if err != nil {
+			break
+		}
+		fn(get)
+	}
+	return nil
 }
 
 // readAll reads one entry, bounded.

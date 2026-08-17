@@ -379,7 +379,7 @@ function Console() {
         {route.name === "customer" && <CustomerDetail id={route.id} go={go} actor={actor} />}
         {route.name === "chats" && <Chats go={go} />}
         {(route.name === "diagnostics" || route.name === "snapshot") && (
-          <Diagnostics openId={route.name === "snapshot" ? route.id : undefined} go={go} />
+          <Diagnostics openId={route.name === "snapshot" ? route.id : undefined} go={go} actor={actor} />
         )}
         {route.name === "settings" && (
           <Suspense fallback={<div className="mx-auto max-w-[1180px] px-6 py-6"><div className="h-40 animate-pulse rounded-lg bg-sunken" /></div>}>

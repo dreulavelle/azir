@@ -78,6 +78,11 @@ const (
 	CapPhoneExtensionOptions Capability = "phone_system.extension_options"
 	CapPhoneHandsetAction    Capability = "phone_system.handset_action"
 	CapPhoneReview           Capability = "phone_system.review"
+	// CapPhoneCapture is a diagnostic capture pulled from a live phone system
+	// rather than uploaded as a file. Distinct from CapPhoneEvents, which is
+	// the last few events for a screen: this is the whole log, paged, for
+	// something that is going to analyse it.
+	CapPhoneCapture Capability = "phone_system.capture"
 
 	// CapPhoneStatus is whether a customer's phone system is healthy: how many
 	// extensions and trunks are registered against how many exist, how many
@@ -143,6 +148,7 @@ var vocabulary = map[Capability]struct{}{
 	CapPhoneExtensionOptions: {},
 	CapPhoneHandsetAction:    {},
 	CapPhoneReview:           {},
+	CapPhoneCapture:          {},
 	CapCallsList:             {},
 	CapDocsSearch:            {},
 	CapInvoicesList:          {},

@@ -524,6 +524,8 @@ export type SnapshotReport = {
     ivrs?: number;
     virtualised?: string;
     captured_at?: string;
+    /** The phone system's own address, which is how a bundle names itself. */
+    fqdn?: string;
   };
   health: { name: string; says: string; ok: boolean }[];
   findings: Finding[];
@@ -532,14 +534,114 @@ export type SnapshotReport = {
     free_memory_gb?: { at: string; value: number }[];
     free_disk_gb?: { at: string; value: number }[];
   };
+  network?: {
+    interface: string;
+    sent_mbps?: { at: string; value: number }[];
+    received_mbps?: { at: string; value: number }[];
+    peak_sent_mbps?: number;
+    peak_received_mbps?: number;
+    total_sent_gb?: number;
+    total_received_gb?: number;
+  };
+  services?: {
+    name: string;
+    memory_mb: number;
+    peak_memory_mb?: number;
+    growth_mb?: number;
+    threads?: number;
+    processes?: number;
+  }[];
+  events: {
+    total: number;
+    from?: string;
+    to?: string;
+    groups?: {
+      source: string;
+      id: string;
+      label?: string;
+      severity: string;
+      count: number;
+      first?: string;
+      last?: string;
+      sample?: string;
+      says?: string;
+    }[];
+  };
+  quality?: {
+    calls: number;
+    rated_legs: number;
+    poor: number;
+    median_mos?: number;
+    worst_mos?: number;
+    loss_percent?: number;
+    jitter_ms?: number;
+    codecs?: Counted[];
+    endpoints?: Counted[];
+    reasons?: Counted[];
+    worst?: {
+      number?: string;
+      duration?: string;
+      mos?: number;
+      codec?: string;
+      endpoint?: string;
+      agent?: string;
+      address?: string;
+      jitter_ms?: number;
+      loss_percent?: number;
+      reason?: string;
+    }[];
+  };
+  capture?: {
+    packets: number;
+    seconds?: number;
+    from?: string;
+    to?: string;
+    truncated?: boolean;
+    protocols?: Counted[];
+    sip_methods?: Counted[];
+    streams?: {
+      from: string;
+      to: string;
+      ssrc: string;
+      codec?: string;
+      packets: number;
+      lost?: number;
+      loss_percent?: number;
+      jitter_ms?: number;
+      seconds?: number;
+    }[];
+    one_way?: string[];
+  };
+  phones?: { extension?: string; model?: string; firmware?: string; mac?: string; ip?: string }[];
+  changes?: {
+    rows: number;
+    edits?: {
+      at: string;
+      user?: string;
+      ip?: string;
+      object?: string;
+      before?: string;
+      after?: string;
+    }[];
+    signins?: Counted[];
+    addresses?: Counted[];
+    from?: string;
+    to?: string;
+  };
   files_read: string[];
   files_missing?: string[];
 };
 
+/** A thing and how often it was seen. */
+export type Counted = { name: string; count: number };
+
 /** A capture of one phone system at one moment. */
 export type Snapshot = {
   id: string;
-  customer_id: string;
+  /** Absent on a capture nobody has attached to a customer yet. */
+  customer_id?: string;
+  /** The phone system's address, read out of the bundle. */
+  fqdn?: string;
   kind: string;
   filename?: string;
   captured_at?: string;
@@ -548,6 +650,8 @@ export type Snapshot = {
   worst?: string;
   uploaded_by?: string;
   uploaded_at: string;
+  /** When this is deleted. Absent means somebody pinned it. */
+  expires_at?: string;
 };
 
 export const snapshots = {
@@ -564,12 +668,15 @@ export const snapshots = {
    * Not through `request`, because that sets a JSON content type and a
    * multipart body needs the browser to set its own with the boundary in it.
    */
-  upload: async (customerId: string, file: File) => {
+  upload: async (file: File, customerId?: string) => {
     const body = new FormData();
     body.append("bundle", file);
+    // No customer is the ordinary case: the bundle carries the phone system's
+    // own address and Azir matches it against whoever that PBX belongs to.
+    const scope = customerId ? `?customer_id=${customerId}` : "";
     let res: Response;
     try {
-      res = await fetch(`/api/snapshots?customer_id=${customerId}`, { method: "POST", body });
+      res = await fetch(`/api/snapshots${scope}`, { method: "POST", body });
     } catch {
       throw new Unreachable();
     }
@@ -583,6 +690,27 @@ export const snapshots = {
     }
     return (await res.json()) as { snapshot: Snapshot; report: SnapshotReport };
   },
+
+  /** Collects a capture from a customer's phone system, without a zip. */
+  pull: (customerId: string, days = 7) =>
+    request<{ snapshot?: Snapshot; report?: SnapshotReport; empty?: boolean; note?: string }>(
+      `/api/snapshots/pull?customer_id=${customerId}&days=${days}`,
+      { method: "POST" },
+    ),
+
+  /** Links a capture to a customer, or unlinks it when given nothing. */
+  attach: (id: string, customerId: string) =>
+    request<void>(`/api/snapshots/${id}/attach`, {
+      method: "POST",
+      body: JSON.stringify({ customer_id: customerId }),
+    }),
+
+  /** Pins a capture past its expiry, or hands it back to the sweep. */
+  keep: (id: string, keep: boolean) =>
+    request<void>(`/api/snapshots/${id}/keep`, {
+      method: "POST",
+      body: JSON.stringify({ keep }),
+    }),
 };
 
 export const work = {
