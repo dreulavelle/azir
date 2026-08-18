@@ -38,7 +38,7 @@ export function Settings({
     plugins: () => <Plugins actor={actor} />,
     assistant: () => <AssistantSettings />,
     users: () => <Users actor={actor} />,
-    roles: () => <Roles />,
+    roles: () => <Roles actor={actor} />,
     auth: () => <SignOn />,
     branding: () => <BrandingSettings />,
     data: () => <DataSettings />,

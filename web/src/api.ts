@@ -126,6 +126,7 @@ export const Perm = {
   pluginConfigure: "plugin.configure",
   pluginApprove: "plugin.approve",
   userManage: "user.manage",
+  roleManage: "role.manage",
   customerManage: "customer.manage",
   auditRead: "audit.read",
   dataManage: "data.manage",
@@ -940,6 +941,23 @@ export const api = {
     }),
 
   roles: () => request<{ roles: Role[]; all_permissions: string[] }>("/api/roles"),
+
+  createRole: (name: string, description: string, permissions: string[]) =>
+    request<Role>("/api/roles", {
+      method: "POST",
+      body: JSON.stringify({ name, description, permissions }),
+    }),
+
+  updateRole: (name: string, description: string, permissions: string[]) =>
+    request<Role>(`/api/roles/${encodeURIComponent(name)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ description, permissions }),
+    }),
+
+  deleteRole: (name: string) =>
+    request<{ removed: string }>(`/api/roles/${encodeURIComponent(name)}`, {
+      method: "DELETE",
+    }),
 
   audit: () => request<AuditEvent[]>("/api/audit"),
 };

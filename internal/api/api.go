@@ -127,7 +127,14 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("PATCH /api/users/{id}", s.require(identity.PermUserManage, s.updateUser))
 	mux.HandleFunc("POST /api/users/{id}/password", s.require(identity.PermUserManage, s.setPassword))
 	mux.HandleFunc("DELETE /api/users/{id}", s.require(identity.PermUserManage, s.deleteUser))
+	// Reading the roles comes with managing accounts: you cannot sensibly
+	// choose somebody's role without seeing what each one means. Changing them
+	// is its own permission — deciding who works here and deciding what a
+	// technician is trusted with are different decisions.
 	mux.HandleFunc("GET /api/roles", s.require(identity.PermUserManage, ignoreActor(s.listRoles)))
+	mux.HandleFunc("POST /api/roles", s.require(identity.PermRoleManage, s.createRole))
+	mux.HandleFunc("PATCH /api/roles/{name}", s.require(identity.PermRoleManage, s.updateRole))
+	mux.HandleFunc("DELETE /api/roles/{name}", s.require(identity.PermRoleManage, s.deleteRole))
 
 	mux.HandleFunc("GET /api/audit", s.require(identity.PermAuditRead, ignoreActor(s.listAudit)))
 

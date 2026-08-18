@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, type Role } from "./api";
+import { api, Perm, type Actor, type Role } from "./api";
 import { Tooltip } from "./components";
-import { PanelHead, Problem, roleLabel } from "./ui";
+import { useToast } from "./Toast";
+import { Button, Icon, PanelHead, Problem, TextInput, roleLabel } from "./ui";
 
 /**
  * What each role may do.
@@ -12,9 +13,13 @@ import { PanelHead, Problem, roleLabel } from "./ui";
  * and then argues about. Keeping them together meant the second was read as a
  * footnote to the first.
  *
- * Read-only for now. Roles are rows in a table and adding one is an INSERT,
- * but a half-built editor that can produce a role holding nothing useful is
- * worse than a clear view of the ones that exist.
+ * Edited in the grid rather than in a form beside it. The useful question is
+ * which roles hold a given ability, and that reads down a column — so the
+ * column is the thing to change, and a separate editor would only repeat what
+ * is already on screen.
+ *
+ * Admin is not editable, here or on the server. It is the way back into a
+ * deployment where something else has gone wrong.
  */
 
 const PERMISSIONS: Record<string, { label: string; group: string; note?: string }> = {
@@ -66,10 +71,15 @@ function permission(name: string) {
 
 const GROUPS = ["Everyday work", "Administration", "Setup", "Other"];
 
-export function Roles() {
+export function Roles({ actor }: { actor: Actor }) {
   const [roles, setRoles] = useState<Role[]>([]);
   const [permissions, setPermissions] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [busy, setBusy] = useState("");
+  const toast = useToast();
+
+  const mayEdit = actor.permissions.includes(Perm.roleManage);
 
   const load = useCallback(async () => {
     try {
@@ -81,6 +91,38 @@ export function Roles() {
       setError(e instanceof Error ? e.message : "could not load roles");
     }
   }, []);
+
+  // Saved as it is clicked, the way a role changes on the Users screen. The
+  // whole set goes each time, so a request that lands out of order settles on
+  // what the grid last showed rather than on half of it.
+  async function toggle(role: Role, permission: string, on: boolean) {
+    const next = on
+      ? [...role.permissions, permission]
+      : role.permissions.filter((p) => p !== permission);
+    setRoles((all) => all.map((r) => (r.name === role.name ? { ...r, permissions: next } : r)));
+    setBusy(role.name);
+    try {
+      await api.updateRole(role.name, role.description, next);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Could not save", { tone: "bad" });
+      await load();
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function remove(role: Role) {
+    setBusy(role.name);
+    try {
+      await api.deleteRole(role.name);
+      await load();
+      toast(`Removed ${roleLabel(role.name)}`);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Could not remove", { tone: "bad" });
+    } finally {
+      setBusy("");
+    }
+  }
 
   useEffect(() => {
     void load();
@@ -103,8 +145,24 @@ export function Roles() {
                 <tr>
                   <th>Can they…</th>
                   {roles.map((r) => (
-                    <th key={r.name} className="w-[112px] text-center">
-                      {roleLabel(r.name)}
+                    <th key={r.name} className="w-[120px] text-center align-bottom">
+                      <span className="block">{roleLabel(r.name)}</span>
+                      {mayEdit && r.name !== "admin" && (
+                        <button
+                          className="mt-0.5 text-2xs font-normal normal-case tracking-normal text-ink-faint transition-colors hover:text-critical disabled:opacity-40"
+                          disabled={busy === r.name}
+                          onClick={() => void remove(r)}
+                        >
+                          Remove
+                        </button>
+                      )}
+                      {mayEdit && r.name === "admin" && (
+                        <Tooltip content="Admin is how you get back in if something else goes wrong.">
+                          <span className="mt-0.5 block text-2xs font-normal normal-case tracking-normal text-ink-faint">
+                            Fixed
+                          </span>
+                        </Tooltip>
+                      )}
                     </th>
                   ))}
                 </tr>
@@ -134,11 +192,20 @@ export function Roles() {
                           </td>
                           {roles.map((r) => (
                             <td key={r.name} className="text-center">
-                              {/* Allowed reads as a status light; not allowed
-                                  reads as an absence rather than as a second
-                                  kind of mark, so a column scans as "how much
-                                  can this role do" without being counted. */}
-                              {r.permissions.includes(p) ? (
+                              {mayEdit && r.name !== "admin" ? (
+                                <input
+                                  type="checkbox"
+                                  className="size-3.5 cursor-pointer align-middle accent-azir disabled:cursor-wait disabled:opacity-50"
+                                  checked={r.permissions.includes(p)}
+                                  disabled={busy === r.name}
+                                  aria-label={`${label} — ${roleLabel(r.name)}`}
+                                  onChange={(e) => void toggle(r, p, e.target.checked)}
+                                />
+                              ) : /* Allowed reads as a status light; not allowed
+                                    reads as an absence rather than as a second
+                                    kind of mark, so a column scans as "how much
+                                    can this role do" without being counted. */
+                              r.permissions.includes(p) ? (
                                 <span
                                   className="inline-block size-2 rounded-full bg-steady align-middle"
                                   title={`${roleLabel(r.name)} can`}
@@ -158,7 +225,98 @@ export function Roles() {
               </tbody>
             </table>
           </div>
+
+          {mayEdit && <NewRole open={adding} setOpen={setAdding} onMade={load} />}
         </div>
       </section>
+  );
+}
+
+/** Adds a role. Name and what it is for; the abilities are ticked in the grid. */
+function NewRole({
+  open,
+  setOpen,
+  onMade,
+}: {
+  open: boolean;
+  setOpen: (open: boolean) => void;
+  onMade: () => Promise<void>;
+}) {
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const toast = useToast();
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!name.trim()) return;
+    setBusy(true);
+    setProblem(null);
+    try {
+      // Nothing ticked to begin with. A role that could do everything the
+      // moment it was named would be granted before it was thought about.
+      const made = await api.createRole(name.trim(), description.trim(), []);
+      setName("");
+      setDescription("");
+      setOpen(false);
+      await onMade();
+      toast(`Added ${roleLabel(made.name)}`, { detail: "Tick what it can do above." });
+    } catch (err) {
+      setProblem(err instanceof Error ? err.message : "Could not add the role");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!open) {
+    return (
+      <button
+        className="mt-4 flex h-7 items-center gap-1.5 rounded-md border border-edge bg-panel px-2.5 text-xs font-medium transition-colors hover:bg-sunken"
+        onClick={() => setOpen(true)}
+      >
+        <Icon.plus />
+        Add a role
+      </button>
+    );
+  }
+
+  return (
+    <form className="mt-4 flex flex-wrap items-end gap-2 border-t border-edge pt-4" onSubmit={submit}>
+      <div className="flex min-w-[160px] flex-col gap-1.5">
+        <label htmlFor="role-name" className="text-xs text-ink-dim">
+          Name
+        </label>
+        <TextInput
+          id="role-name"
+          value={name}
+          autoFocus
+          placeholder="Senior tech"
+          onChange={(e) => setName(e.target.value)}
+        />
+      </div>
+      <div className="flex min-w-[240px] flex-1 flex-col gap-1.5">
+        <label htmlFor="role-what" className="text-xs text-ink-dim">
+          What it is for
+        </label>
+        <TextInput
+          id="role-what"
+          value={description}
+          placeholder="Everyday work, plus phones"
+          onChange={(e) => setDescription(e.target.value)}
+        />
+      </div>
+      <Button weight="primary" disabled={busy || !name.trim()}>
+        {busy ? "Adding…" : "Add"}
+      </Button>
+      <Button type="button" onClick={() => setOpen(false)} disabled={busy}>
+        Cancel
+      </Button>
+      {problem && (
+        <div className="w-full">
+          <Problem>{problem}</Problem>
+        </div>
+      )}
+    </form>
   );
 }
