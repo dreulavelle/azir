@@ -808,12 +808,16 @@ export type SignIn = {
   sso_only: string[] | null;
 };
 
+/** How long the two things that expire are kept, in days. */
+export type Retention = { capture_days: number; cache_days: number };
+
 export type DataUsage = {
   stored: Stored[];
   /** The whole database on disk, which is larger than the parts add up to. */
   total: number;
   /** Read before resetting, because resetting removes single sign-on. */
   sign_in: SignIn;
+  retention: Retention;
 };
 
 export type Removed = { name: string; rows: number };
@@ -865,6 +869,12 @@ export const api = {
     request<{ removed: Removed[] }>("/api/data/clear", {
       method: "POST",
       body: JSON.stringify({ confirm: "clear" }),
+    }),
+
+  saveRetention: (keeping: Retention) =>
+    request<Retention>("/api/data/retention", {
+      method: "PUT",
+      body: JSON.stringify(keeping),
     }),
 
   resetData: () =>

@@ -161,7 +161,12 @@ func (c *ToolCache) refreshInBackground(
 
 // Prune removes long-unused entries until ctx is cancelled. One-off questions
 // nobody repeats would otherwise accumulate forever.
-func (c *ToolCache) Prune(ctx context.Context, every, olderThan time.Duration) {
+// Prune drops cached results older than the configured retention.
+//
+// The setting is read on each pass rather than once at start-up: it is one
+// query an hour, and the alternative is somebody changing the number and
+// nothing acting on it until the next restart.
+func (c *ToolCache) Prune(ctx context.Context, every time.Duration) {
 	t := time.NewTicker(every)
 	defer t.Stop()
 	for {
@@ -169,6 +174,10 @@ func (c *ToolCache) Prune(ctx context.Context, every, olderThan time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			olderThan := 7 * 24 * time.Hour
+			if r, err := c.db.GetRetention(ctx); err == nil && r.CacheDays > 0 {
+				olderThan = time.Duration(r.CacheDays) * 24 * time.Hour
+			}
 			removed, err := c.db.PruneCache(ctx, olderThan)
 			if err != nil {
 				c.log.Warn("cache prune failed", "error", err)

@@ -50,12 +50,14 @@ type Snapshot struct {
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
 
-// SnapshotLife is how long a capture is kept unless somebody pins it.
+// SnapshotLife is how long a capture is kept unless somebody pins it, when
+// nothing has said otherwise.
 //
 // A fortnight covers the ticket that prompted it and the follow-up, and is
 // short enough that a customer's extension numbers, MAC addresses and
 // administrators' names are not sitting in the database a year later to answer
-// a question nobody is still asking.
+// a question nobody is still asking. It is the default rather than the rule:
+// see CaptureLife, which is what the sweep and the two writes below use.
 const SnapshotLife = 14 * 24 * time.Hour
 
 // AddSnapshot stores one parsed capture.
@@ -65,7 +67,7 @@ func (db *DB) AddSnapshot(ctx context.Context, s Snapshot) (Snapshot, error) {
 		s.Kind = "3cx-support-info"
 	}
 	if s.ExpiresAt == nil {
-		expires := time.Now().Add(SnapshotLife)
+		expires := time.Now().Add(db.CaptureLife(ctx))
 		s.ExpiresAt = &expires
 	}
 	err := db.pool.QueryRow(ctx, `
@@ -264,7 +266,7 @@ than a default, because the default has to be that diagnostic data goes away.
 func (db *DB) KeepSnapshot(ctx context.Context, id uuid.UUID, keep bool) error {
 	var expires *time.Time
 	if !keep {
-		when := time.Now().Add(SnapshotLife)
+		when := time.Now().Add(db.CaptureLife(ctx))
 		expires = &when
 	}
 	tag, err := db.pool.Exec(ctx,

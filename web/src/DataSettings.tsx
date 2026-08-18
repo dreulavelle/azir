@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, type DataUsage, type Stored } from "./api";
+import { api, type DataUsage, type Retention, type Stored } from "./api";
 import { Dialog } from "./components";
 import { useToast } from "./Toast";
 import { Button, Chip, Label, Loading, Panel, PanelHead, Problem, TextInput } from "./ui";
@@ -83,6 +83,8 @@ export function DataSettings() {
         </PanelHead>
         <Kinds of={setup} />
       </Panel>
+
+      <Keeping now={usage.retention} onSaved={load} />
 
       <Panel>
         <PanelHead>
@@ -211,6 +213,96 @@ function Kinds({ of }: { of: Stored[] }) {
         </li>
       ))}
     </ul>
+  );
+}
+
+/**
+ * How long the two things that expire are kept.
+ *
+ * Both were fixed in the binary while the rows above displayed them as a
+ * promise. Somebody who has agreed to hold a customer's diagnostic data for
+ * thirty days, or for seven, can now keep that promise here.
+ */
+function Keeping({ now, onSaved }: { now: Retention; onSaved: () => Promise<void> }) {
+  const [captures, setCaptures] = useState(String(now.capture_days));
+  const [cached, setCached] = useState(String(now.cache_days));
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const toast = useToast();
+
+  const changed =
+    Number(captures) !== now.capture_days || Number(cached) !== now.cache_days;
+
+  async function save() {
+    setBusy(true);
+    setProblem(null);
+    try {
+      await api.saveRetention({
+        capture_days: Number(captures),
+        cache_days: Number(cached),
+      });
+      await onSaved();
+      toast("Saved");
+    } catch (e) {
+      setProblem(e instanceof Error ? e.message : "Could not save");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Panel>
+      <PanelHead>
+        <h2 className="text-sm font-medium">How long things are kept</h2>
+      </PanelHead>
+      <div className="flex flex-wrap items-end gap-4 px-4 py-4">
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor="keep-captures" className="text-xs text-ink-dim">
+            Diagnostic captures
+          </label>
+          <div className="flex items-center gap-2">
+            <TextInput
+              id="keep-captures"
+              className="w-20"
+              type="number"
+              min={1}
+              max={365}
+              value={captures}
+              onChange={(e) => setCaptures(e.target.value)}
+            />
+            <span className="text-sm text-ink-dim">days, unless pinned</span>
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor="keep-cached" className="text-xs text-ink-dim">
+            Cached answers
+          </label>
+          <div className="flex items-center gap-2">
+            <TextInput
+              id="keep-cached"
+              className="w-20"
+              type="number"
+              min={1}
+              max={90}
+              value={cached}
+              onChange={(e) => setCached(e.target.value)}
+            />
+            <span className="text-sm text-ink-dim">days</span>
+          </div>
+        </div>
+
+        <Button weight="primary" onClick={() => void save()} disabled={!changed || busy}>
+          {busy ? "Saving…" : "Save"}
+        </Button>
+
+        {problem && (
+          <div className="w-full">
+            <Problem>{problem}</Problem>
+          </div>
+        )}
+      </div>
+    </Panel>
   );
 }
 

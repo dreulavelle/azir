@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -34,11 +35,41 @@ func (s *Server) getDataUsage(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err, "could not read what is stored")
 		return
 	}
+	keeping, err := s.DB.GetRetention(r.Context())
+	if err != nil {
+		s.fail(w, err, "could not read what is stored")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"stored":  kinds,
-		"total":   total,
-		"sign_in": routes,
+		"stored":    kinds,
+		"total":     total,
+		"sign_in":   routes,
+		"retention": keeping,
 	})
+}
+
+// putRetention changes how long the two things that expire are kept.
+func (s *Server) putRetention(w http.ResponseWriter, r *http.Request, actor identity.Actor) {
+	var body store.Retention
+	if err := decode(r, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, errBody("invalid json body"))
+		return
+	}
+	if err := s.DB.SetRetention(r.Context(), body); err != nil {
+		// The bounds are the only way this fails, and the message says which.
+		writeJSON(w, http.StatusBadRequest, errBody(
+			strings.TrimPrefix(err.Error(), "store: ")))
+		return
+	}
+
+	s.Audit.Record(r.Context(), audit.Event{
+		ActorUserID: actor.Email,
+		Action:      "data.retention",
+		Outcome:     audit.OutcomeOK,
+		Detail: fmt.Sprintf("captures %d days, cached answers %d days",
+			body.CaptureDays, body.CacheDays),
+	})
+	writeJSON(w, http.StatusOK, body)
 }
 
 /*

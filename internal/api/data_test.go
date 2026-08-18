@@ -281,3 +281,102 @@ func TestResettingIsRefusedWhenNobodyCouldSignInAfter(t *testing.T) {
 	do(t, client, http.MethodPost, srv.URL+"/api/data/reset",
 		map[string]string{"confirm": "reset"}, http.StatusOK)
 }
+
+/*
+The number on the screen is the number that is enforced.
+
+Both retention periods were constants compiled into the binary while the Data
+screen displayed them as a promise about somebody's customers' data — so an MSP
+that had agreed to hold captures for thirty days could keep that promise only
+by rebuilding Azir. What matters is not that the setting saves, but that the
+label moves with it: two places claiming different numbers is worse than one
+that cannot be changed.
+*/
+func TestRetentionIsWhatTheScreenSays(t *testing.T) {
+	srv, client := server(t)
+
+	expiry := func() map[string]string {
+		out := do(t, client, http.MethodGet, srv.URL+"/api/data", nil, http.StatusOK)
+		said := map[string]string{}
+		for _, entry := range out["stored"].([]any) {
+			row := entry.(map[string]any)
+			if words, ok := row["expires"].(string); ok {
+				said[row["name"].(string)] = words
+			}
+		}
+		return said
+	}
+
+	if got := expiry()["Diagnostic captures"]; got != "14 days, unless pinned" {
+		t.Fatalf("shipped default reads %q", got)
+	}
+
+	do(t, client, http.MethodPut, srv.URL+"/api/data/retention",
+		map[string]int{"capture_days": 30, "cache_days": 2}, http.StatusOK)
+
+	said := expiry()
+	if said["Diagnostic captures"] != "30 days, unless pinned" {
+		t.Errorf("captures still read %q after the setting changed", said["Diagnostic captures"])
+	}
+	if said["Cached answers"] != "2 days" {
+		t.Errorf("cached answers still read %q", said["Cached answers"])
+	}
+}
+
+// Out of bounds is refused with a sentence, not a database error — and nothing
+// is saved, so the screen keeps saying what is still true.
+func TestRetentionRefusesNonsense(t *testing.T) {
+	srv, client := server(t)
+
+	for _, bad := range []map[string]int{
+		{"capture_days": 0, "cache_days": 7},
+		{"capture_days": 14, "cache_days": 0},
+		{"capture_days": 4000, "cache_days": 7},
+		{"capture_days": -1, "cache_days": 7},
+	} {
+		do(t, client, http.MethodPut, srv.URL+"/api/data/retention", bad, http.StatusBadRequest)
+	}
+
+	out := do(t, client, http.MethodGet, srv.URL+"/api/data", nil, http.StatusOK)
+	keeping := out["retention"].(map[string]any)
+	if keeping["capture_days"] != float64(14) || keeping["cache_days"] != float64(7) {
+		t.Errorf("a refused change was saved anyway: %v", keeping)
+	}
+}
+
+/*
+A capture stored after the setting changes expires on the new clock.
+
+The label moving is the visible half; this is the half that matters. It was a
+constant read at the moment a capture was written, so changing the setting and
+having it apply only to a restarted process would be the obvious way to get
+this wrong.
+*/
+func TestACaptureExpiresOnTheConfiguredClock(t *testing.T) {
+	srv, client, db := serverWithDB(t)
+	ctx := context.Background()
+
+	do(t, client, http.MethodPut, srv.URL+"/api/data/retention",
+		map[string]int{"capture_days": 30, "cache_days": 7}, http.StatusOK)
+
+	customer, err := db.CreateCustomer(ctx, "Rainwater Plumbing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err := db.AddSnapshot(ctx, store.Snapshot{
+		CustomerID: customer.ID,
+		Filename:   "support.zip",
+		Report:     json.RawMessage(`{"health":"ok"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.ExpiresAt == nil {
+		t.Fatal("a capture with no expiry is a capture that never goes away")
+	}
+
+	days := saved.ExpiresAt.Sub(time.Now()).Hours() / 24
+	if days < 29 || days > 31 {
+		t.Errorf("expires in %.1f days, wanted about 30", days)
+	}
+}

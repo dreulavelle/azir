@@ -53,7 +53,6 @@ var stored = []struct {
 	counted string
 	tables  []string
 	cleared bool
-	expires string
 }{
 	{
 		name:    "Conversations",
@@ -68,7 +67,6 @@ var stored = []struct {
 		counted: "snapshots",
 		tables:  []string{"snapshots"},
 		cleared: true,
-		expires: "14 days, unless pinned",
 	},
 	{
 		name:    "Ticket memory",
@@ -97,7 +95,6 @@ var stored = []struct {
 		counted: "tool_cache",
 		tables:  []string{"tool_cache"},
 		cleared: true,
-		expires: "7 days",
 	},
 	{
 		name:    "Customers",
@@ -119,6 +116,18 @@ var stored = []struct {
 	},
 }
 
+// expiryWords says how a kind goes away on its own, using the numbers actually
+// enforced rather than the ones that were true when this was written.
+func expiryWords(name string, r Retention) string {
+	switch name {
+	case "Diagnostic captures":
+		return fmt.Sprintf("%d days, unless pinned", r.CaptureDays)
+	case "Cached answers":
+		return fmt.Sprintf("%d days", r.CacheDays)
+	}
+	return ""
+}
+
 // DataUsage reports what is stored, and how large the database is altogether.
 // The total is bigger than the parts add up to — indexes, the schema itself
 // and Postgres's own catalogues are all in it — so it is returned separately
@@ -133,6 +142,12 @@ func (db *DB) DataUsage(ctx context.Context) ([]Stored, int64, error) {
 		parts[i] = fmt.Sprintf(
 			`SELECT %d AS ord, (SELECT count(*) FROM %s) AS n, (%s)::bigint AS bytes`,
 			i, k.counted, strings.Join(sizes, " + "))
+	}
+
+	// Read first, so each row can say the number that is actually enforced.
+	keeping, err := db.GetRetention(ctx)
+	if err != nil {
+		keeping = Retention{CaptureDays: 14, CacheDays: 7}
 	}
 
 	rows, err := db.pool.Query(ctx, strings.Join(parts, " UNION ALL ")+" ORDER BY ord")
@@ -155,7 +170,7 @@ func (db *DB) DataUsage(ctx context.Context) ([]Stored, int64, error) {
 			Count:   count,
 			Bytes:   bytes,
 			Cleared: k.cleared,
-			Expires: k.expires,
+			Expires: expiryWords(k.name, keeping),
 		})
 	}
 	if err := rows.Err(); err != nil {

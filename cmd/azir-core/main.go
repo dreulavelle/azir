@@ -183,7 +183,7 @@ func run(log *slog.Logger) error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		toolCache.Prune(ctx, time.Hour, 7*24*time.Hour)
+		toolCache.Prune(ctx, time.Hour)
 	}()
 
 	/*
