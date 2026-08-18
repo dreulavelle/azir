@@ -345,6 +345,21 @@ func main() {
 				Handler:   reviewExtensions,
 			},
 			{
+				Name: "extensions.settings",
+				Description: "Reports what every extension's options are currently set to — recording, whether the " +
+					"PBX delivers audio, remote connection rules, voicemail, hotdesking and the app toggles — in " +
+					"one answer rather than one per extension. Read-only, and it returns only the options that " +
+					"can be set, never a password or anything about who an extension is.",
+				Summary:  "Reports what every extension's options are set to.",
+				Provides: []plugin.Capability{plugin.CapPhoneExtensionSettings},
+				Freshness: &plugin.Freshness{
+					Soft: 2 * time.Minute,
+					Hard: 30 * time.Minute,
+				},
+				Schema:  json.RawMessage(`{"type": "object", "properties": {}}`),
+				Handler: extensionSettings,
+			},
+			{
 				Name: "extensions.options",
 				Description: "Applies the same extension options to many extensions at once — the settings on an " +
 					"extension's page, such as whether the PBX delivers audio, whether remote non-tunnel " +

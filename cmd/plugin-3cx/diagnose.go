@@ -1112,3 +1112,84 @@ func fromEventLog(ctx context.Context, conn pbx, host string, days int) (any, er
 		"source": "events",
 	}, nil
 }
+
+/*
+extensionSettings reads what the editable options are set to right now.
+
+The before half of a before-and-after. Comparing a sheet of forty extensions
+against the system cannot mean forty requests to somebody's PBX, so this asks
+once and pages through, the way the extension list does.
+
+The field list is the same allowlist that governs writing them, which is the
+property worth keeping: this can never return a name that could not have been
+set, and it can never return AuthID, AuthPassword or the phone's web password,
+which sit on the same 3CX user object. Reading is strictly less than the
+writing already allowed here — the assistant can already propose setting these
+— and a proposal made against what is actually configured is a better proposal
+than one made blind.
+*/
+func extensionSettings(ctx context.Context, req plugin.Request) (any, error) {
+	conn, err := connect(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	// Sorted so the request is identical between calls, which keeps it
+	// cacheable and keeps a diff of two runs readable.
+	fields := make([]string, 0, len(editable))
+	for name := range editable {
+		fields = append(fields, name)
+	}
+	sort.Strings(fields)
+	selected := append([]string{"Number", "DisplayName"}, fields...)
+
+	out := make([]map[string]any, 0, pageSize)
+	for skip := 0; skip < maxExtensions; skip += pageSize {
+		q := url.Values{}
+		q.Set("$select", strings.Join(selected, ","))
+		q.Set("$top", fmt.Sprint(pageSize))
+		q.Set("$skip", fmt.Sprint(skip))
+		q.Set("$orderby", "Number")
+
+		var page struct {
+			Value []map[string]any `json:"value"`
+		}
+		if err := conn.get(ctx, "Users", q, &page); err != nil {
+			return nil, err
+		}
+		for _, row := range page.Value {
+			settings := map[string]any{}
+			for _, name := range fields {
+				if value, ok := row[name]; ok && value != nil {
+					settings[name] = value
+				}
+			}
+			out = append(out, map[string]any{
+				"extension": asText(row["Number"]),
+				"name":      asText(row["DisplayName"]),
+				"settings":  settings,
+			})
+		}
+		if len(page.Value) < pageSize {
+			break
+		}
+	}
+
+	return map[string]any{"extensions": out, "count": len(out)}, nil
+}
+
+// asText reads a JSON value as a string without caring which shape it arrived
+// in. 3CX returns extension numbers as strings; being strict about that here
+// would trade correctness for nothing.
+func asText(v any) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	case float64:
+		return fmt.Sprintf("%.0f", t)
+	case nil:
+		return ""
+	default:
+		return fmt.Sprint(t)
+	}
+}

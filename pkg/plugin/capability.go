@@ -76,8 +76,17 @@ const (
 	CapPhoneServices         Capability = "phone_system.services"
 	CapPhoneLogSearch        Capability = "phone_system.log_search"
 	CapPhoneExtensionOptions Capability = "phone_system.extension_options"
-	CapPhoneHandsetAction    Capability = "phone_system.handset_action"
-	CapPhoneReview           Capability = "phone_system.review"
+
+	// CapPhoneExtensionSettings is what those options are set to right now,
+	// for every extension, in one answer.
+	//
+	// Separate from extension_detail, which is one extension at a time and
+	// carries far more. The reason this exists is the before half of a
+	// before-and-after: comparing a sheet of forty extensions against the
+	// system cannot mean forty requests to somebody's PBX.
+	CapPhoneExtensionSettings Capability = "phone_system.extension_settings"
+	CapPhoneHandsetAction     Capability = "phone_system.handset_action"
+	CapPhoneReview            Capability = "phone_system.review"
 	// CapPhoneCapture is a diagnostic capture pulled from a live phone system
 	// rather than uploaded as a file. Distinct from CapPhoneEvents, which is
 	// the last few events for a screen: this is the whole log, paged, for
@@ -119,43 +128,44 @@ const (
 )
 
 var vocabulary = map[Capability]struct{}{
-	CapCustomersList:         {},
-	CapCustomersGet:          {},
-	CapCustomersContacts:     {},
-	CapWorkItemsSearch:       {},
-	CapWorkItemsGet:          {},
-	CapWorkItemsTimeline:     {},
-	CapWorkItemsSchema:       {},
-	CapTimeEntriesList:       {},
-	CapAssetsList:            {},
-	CapWebSearch:             {},
-	CapPhoneStatus:           {},
-	CapPhoneExtensions:       {},
-	CapWorkItemsComment:      {},
-	CapWorkItemsUpdate:       {},
-	CapPhoneExtensionWrite:   {},
-	CapPhoneExtensionCreate:  {},
-	CapPhoneRingGroups:       {},
-	CapPhoneRingGroupWrite:   {},
-	CapPhoneExtensionDelete:  {},
-	CapPhoneRingGroupDelete:  {},
-	CapPhoneEvents:           {},
-	CapPhoneCallHistory:      {},
-	CapPhoneExtensionDetail:  {},
-	CapPhoneDevices:          {},
-	CapPhoneServices:         {},
-	CapPhoneLogSearch:        {},
-	CapPhoneExtensionOptions: {},
-	CapPhoneHandsetAction:    {},
-	CapPhoneReview:           {},
-	CapPhoneCapture:          {},
-	CapCallsList:             {},
-	CapDocsSearch:            {},
-	CapInvoicesList:          {},
-	CapCustomerStanding:      {},
-	CapAccessCheck:           {},
-	CapRecordingsGet:         {},
-	CapDiagnostic:            {},
+	CapCustomersList:          {},
+	CapCustomersGet:           {},
+	CapCustomersContacts:      {},
+	CapWorkItemsSearch:        {},
+	CapWorkItemsGet:           {},
+	CapWorkItemsTimeline:      {},
+	CapWorkItemsSchema:        {},
+	CapTimeEntriesList:        {},
+	CapAssetsList:             {},
+	CapWebSearch:              {},
+	CapPhoneStatus:            {},
+	CapPhoneExtensions:        {},
+	CapWorkItemsComment:       {},
+	CapWorkItemsUpdate:        {},
+	CapPhoneExtensionWrite:    {},
+	CapPhoneExtensionCreate:   {},
+	CapPhoneRingGroups:        {},
+	CapPhoneRingGroupWrite:    {},
+	CapPhoneExtensionDelete:   {},
+	CapPhoneRingGroupDelete:   {},
+	CapPhoneEvents:            {},
+	CapPhoneCallHistory:       {},
+	CapPhoneExtensionDetail:   {},
+	CapPhoneExtensionSettings: {},
+	CapPhoneDevices:           {},
+	CapPhoneServices:          {},
+	CapPhoneLogSearch:         {},
+	CapPhoneExtensionOptions:  {},
+	CapPhoneHandsetAction:     {},
+	CapPhoneReview:            {},
+	CapPhoneCapture:           {},
+	CapCallsList:              {},
+	CapDocsSearch:             {},
+	CapInvoicesList:           {},
+	CapCustomerStanding:       {},
+	CapAccessCheck:            {},
+	CapRecordingsGet:          {},
+	CapDiagnostic:             {},
 }
 
 // Valid reports whether c belongs to Azir's vocabulary.
