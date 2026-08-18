@@ -199,7 +199,6 @@ export function useTicketWatch(
       toast("An SLA has breached", {
         tone: "bad",
         detail: "Your helpdesk reported it. The queue below is refreshing.",
-        holdMs: 0,
       });
     }, [toast]),
   );

@@ -6,10 +6,25 @@ import { createContext, useCallback, useContext, useEffect, useState, type React
  *
  * A message appearing inside the panel someone has just finished with is a
  * message they have already looked away from. These sit in a corner, say what
- * happened in the past tense, and leave on their own — except failures, which
- * stay until dismissed, because a failure that vanishes is a failure nobody
- * knows about.
+ * happened in the past tense, and leave on their own.
+ *
+ * All of them, on the same clock. Failures used to stay until dismissed, on
+ * the reasoning that a failure which vanishes is a failure nobody knows about
+ * — but what it produced in practice was a corner of the screen accumulating
+ * old errors that had already been read and acted on, which is its own way of
+ * being ignored. Every toast is a confirmation of something the person just
+ * did and can do again; none of them is the only record of anything.
  */
+
+/**
+ * How long a toast stays, in milliseconds.
+ *
+ * Long enough to read a sentence and a detail line without hurrying, short
+ * enough that a burst of them clears before it becomes a wall. One number for
+ * every tone, because a toast whose lifetime depends on how it went is a toast
+ * whose behaviour nobody can predict.
+ */
+const HOLD_MS = 7_000;
 
 type Tone = "good" | "bad" | "info";
 
@@ -76,17 +91,13 @@ export function ToastHost({ children }: { children: ReactNode }) {
 
 function Toast({ note, onDismiss }: { note: Note; onDismiss: () => void }) {
   useEffect(() => {
-    // A failure stays until it is acknowledged; anything else is just noise
-    // after a few seconds.
-    if (note.tone === "bad") return;
-    // A notification about somebody else's action stays longer than a
-    // confirmation of your own: you were not watching for it, so four seconds
-    // is long enough to miss entirely.
-    const hold = note.holdMs ?? (note.onOpen ? 12_000 : 4200);
+    const hold = note.holdMs ?? HOLD_MS;
+    // Zero is still honoured, for anything that genuinely must be acknowledged
+    // rather than merely seen. Nothing uses it today.
     if (hold === 0) return;
     const timer = window.setTimeout(onDismiss, hold);
     return () => window.clearTimeout(timer);
-  }, [note.tone, note.holdMs, note.onOpen, onDismiss]);
+  }, [note.holdMs, onDismiss]);
 
   return (
     <div

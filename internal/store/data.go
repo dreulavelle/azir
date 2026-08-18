@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -177,14 +178,19 @@ type Removed struct {
 }
 
 /*
-The order things are deleted in.
+The order things are deleted in, and which reset each step belongs to.
 
-FK-safe, and children go before parents even where a cascade would have taken
-them anyway. Deleting a conversation would silently remove its messages and
-its proposed changes, and the counts reported back would then say zero for
-both — which reads as "there was nothing there" rather than "something else
-deleted it first". Being explicit costs two statements and keeps the number
-honest.
+FK-safe throughout, and children go before parents even where a cascade would
+have taken them anyway. Deleting a conversation would silently remove its
+messages and its proposed changes, and the counts reported back would then say
+zero for both — which reads as "there was nothing there" rather than "something
+else deleted it first". Being explicit costs two statements and keeps the
+number honest.
+
+work marks the steps that Start fresh runs. The rest run only for the deeper
+reset, and they sit between the work steps and the log deliberately: everything
+that points at a customer has to go before the customer does, and the log is
+last in both because it is where the clearing itself gets recorded.
 
 headline marks the row whose count is the one worth reporting under that name.
 */
@@ -192,26 +198,87 @@ var clearing = []struct {
 	name     string
 	table    string
 	headline bool
+	work     bool
 }{
-	{name: "Proposed changes", table: "proposed_changes", headline: true},
-	{name: "Conversations", table: "messages"},
-	{name: "Conversations", table: "conversations", headline: true},
-	{name: "Diagnostic captures", table: "snapshots", headline: true},
-	{name: "Ticket memory", table: "ticket_memory", headline: true},
-	{name: "Ticket memory", table: "recall_progress"},
-	{name: "Cached answers", table: "tool_cache", headline: true},
-	{name: "Activity log", table: "audit_log", headline: true},
+	{name: "Proposed changes", table: "proposed_changes", headline: true, work: true},
+	{name: "Conversations", table: "messages", work: true},
+	{name: "Conversations", table: "conversations", headline: true, work: true},
+	{name: "Diagnostic captures", table: "snapshots", headline: true, work: true},
+	{name: "Ticket memory", table: "ticket_memory", headline: true, work: true},
+	{name: "Ticket memory", table: "recall_progress", work: true},
+	{name: "Cached answers", table: "tool_cache", headline: true, work: true},
+
+	// Deeper only. Everything above already let go of the customers these
+	// point at, so the spine can follow.
+	{name: "Connections", table: "credentials", headline: true},
+	{name: "Connections", table: "plugin_config"},
+	{name: "Connections", table: "capabilities"},
+	{name: "Connections", table: "webhook_endpoints"},
+	{name: "Customers", table: "customer_identities"},
+	{name: "Customers", table: "customers", headline: true},
+	{name: "Assistant settings", table: "assistant_config", headline: true},
+	{name: "Branding", table: "branding", headline: true},
+	{name: "Single sign-on", table: "auth_config", headline: true},
+	{name: "Single sign-on", table: "oidc_states"},
+
+	{name: "Activity log", table: "audit_log", headline: true, work: true},
 }
 
 /*
-ClearWork empties everything Azir has done, and keeps everything it was set up
+SignIn is how the people who already have accounts get in.
+
+Read before the deeper reset, because that reset takes single sign-on with it.
+An account with a password can still get in afterwards; one that has only ever
+arrived through the provider cannot, and there is nothing it can do about it
+from a sign-in page. Whether that is acceptable is a judgement for whoever is
+about to press the button, so they are told rather than found out.
+*/
+type SignIn struct {
+	// WithPassword can sign in whatever happens to the provider.
+	WithPassword []string `json:"with_password"`
+	// SSOOnly would have no way in once the provider is gone.
+	SSOOnly []string `json:"sso_only"`
+}
+
+// SignInRoutes reports how each enabled account currently gets in.
+func (db *DB) SignInRoutes(ctx context.Context) (SignIn, error) {
+	rows, err := db.pool.Query(ctx,
+		`SELECT email, password_hash IS NOT NULL AND password_hash <> ''
+		   FROM users WHERE NOT disabled ORDER BY email`)
+	if err != nil {
+		return SignIn{}, fmt.Errorf("store: sign-in routes: %w", err)
+	}
+	defer rows.Close()
+
+	var out SignIn
+	for rows.Next() {
+		var email string
+		var hasPassword bool
+		if err := rows.Scan(&email, &hasPassword); err != nil {
+			return SignIn{}, err
+		}
+		if hasPassword {
+			out.WithPassword = append(out.WithPassword, email)
+		} else {
+			out.SSOOnly = append(out.SSOOnly, email)
+		}
+	}
+	return out, rows.Err()
+}
+
+// ErrWouldLockEveryoneOut means the deeper reset was refused because nobody
+// would have been able to sign in afterwards.
+var ErrWouldLockEveryoneOut = errors.New(
+	"store: every account signs in through the provider, and the reset would remove it")
+
+/*
+ClearWork empties everything Azir has done and keeps everything it was set up
 with.
 
 The split is the whole design. Accounts, credentials, plugin settings, tool
 approvals and the customer spine all survive, so somebody who clears is still
 signed in, still connected, and still knows who their customers are — they
-have an empty desk, not a new install. Anything that would have made them set
-Azir up again belongs on the other side of that line and is not touched here.
+have an empty desk, not a new install.
 
 recall_progress goes with ticket_memory rather than being left behind. It
 records how far recall has read; keeping it while removing what it produced
@@ -222,6 +289,35 @@ The audit log is cleared last and the clearing is recorded after this returns,
 so the one entry in an otherwise empty log is the act that emptied it.
 */
 func (db *DB) ClearWork(ctx context.Context) ([]Removed, error) {
+	return db.clear(ctx, false)
+}
+
+/*
+ResetAll takes the setup too, and stops short of the people.
+
+What survives is exactly the ability to sign in and the roles that say what
+each account may do — so the console comes back empty rather than coming back
+asking to be installed. Everything else goes: the customers, the credentials
+for the systems they were reached through, which tools were approved, the
+assistant's key and model, the branding, and single sign-on.
+
+Refused outright if it would leave nobody able to sign in. Removing the
+provider is the point of the reset, but doing it when no account has a password
+turns a reset into a lockout that cannot be undone from a browser, and no
+confirmation dialog makes that a reasonable thing to allow.
+*/
+func (db *DB) ResetAll(ctx context.Context) ([]Removed, error) {
+	routes, err := db.SignInRoutes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(routes.WithPassword) == 0 {
+		return nil, ErrWouldLockEveryoneOut
+	}
+	return db.clear(ctx, true)
+}
+
+func (db *DB) clear(ctx context.Context, deep bool) ([]Removed, error) {
 	tx, err := db.pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("store: clear: %w", err)
@@ -230,6 +326,9 @@ func (db *DB) ClearWork(ctx context.Context) ([]Removed, error) {
 
 	var out []Removed
 	for _, step := range clearing {
+		if !deep && !step.work {
+			continue
+		}
 		// step.table is a constant from this file, never a request value.
 		tag, err := tx.Exec(ctx, fmt.Sprintf(`DELETE FROM %s`, step.table))
 		if err != nil {

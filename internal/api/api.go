@@ -91,6 +91,8 @@ func (s *Server) Routes() http.Handler {
 		s.require(identity.PermDataManage, ignoreActor(s.getDataUsage)))
 	mux.HandleFunc("POST /api/data/clear",
 		s.require(identity.PermDataManage, s.clearWork))
+	mux.HandleFunc("POST /api/data/reset",
+		s.require(identity.PermDataManage, s.resetAll))
 
 	mux.HandleFunc("GET /api/customers", s.require(p, ignoreActor(s.listCustomers)))
 	mux.HandleFunc("GET /api/customers/{id}", s.require(p, ignoreActor(s.getCustomer)))

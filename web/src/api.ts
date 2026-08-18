@@ -799,10 +799,20 @@ export type Stored = {
   expires?: string;
 };
 
+/** How the people with accounts currently get in. */
+export type SignIn = {
+  /** Can sign in whatever happens to the identity provider. */
+  with_password: string[] | null;
+  /** Would have no way in once the provider is gone. */
+  sso_only: string[] | null;
+};
+
 export type DataUsage = {
   stored: Stored[];
   /** The whole database on disk, which is larger than the parts add up to. */
   total: number;
+  /** Read before resetting, because resetting removes single sign-on. */
+  sign_in: SignIn;
 };
 
 export type Removed = { name: string; rows: number };
@@ -840,6 +850,12 @@ export const api = {
     request<{ removed: Removed[] }>("/api/data/clear", {
       method: "POST",
       body: JSON.stringify({ confirm: "clear" }),
+    }),
+
+  resetData: () =>
+    request<{ removed: Removed[] }>("/api/data/reset", {
+      method: "POST",
+      body: JSON.stringify({ confirm: "reset" }),
     }),
 
   registry: () => request<Registry>("/api/registry"),
