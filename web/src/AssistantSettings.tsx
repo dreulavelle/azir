@@ -18,11 +18,20 @@ const PROVIDERS = [
   { value: "gateway", label: "A gateway or self-hosted service" },
 ];
 
-/** Suggestions, not a closed list — a gateway can offer anything. */
+/**
+ * Suggestions, not a closed list — a gateway can offer anything, and this box
+ * accepts a typed model name whatever is in here.
+ *
+ * Ordered by what the job actually asks for rather than by capability. Azir's
+ * assistant runs a tool loop: it picks a tool, reads what comes back, and goes
+ * again, several times, before it writes a short reply. Choosing the right
+ * tool and filling its arguments correctly is where a model succeeds or fails
+ * here — not reasoning depth — so the balanced model leads.
+ */
 const ANTHROPIC_MODELS = [
-  { value: "claude-sonnet-4-5", label: "Claude Sonnet 4.5 — balanced" },
-  { value: "claude-opus-4-1", label: "Claude Opus 4.1 — most capable" },
-  { value: "claude-haiku-4-5", label: "Claude Haiku 4.5 — fastest" },
+  { value: "claude-sonnet-5", label: "Claude Sonnet 5 — balanced, and the one to start with" },
+  { value: "claude-opus-5", label: "Claude Opus 5 — most capable" },
+  { value: "claude-haiku-4-5", label: "Claude Haiku 4.5 — fastest and cheapest" },
 ];
 
 /** Capability names are not for reading aloud. */

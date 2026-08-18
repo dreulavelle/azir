@@ -110,3 +110,38 @@ func (db *DB) ApprovedTools(ctx context.Context) (map[string]struct{}, error) {
 	}
 	return out, rows.Err()
 }
+
+// RetiredAfter is how long a tool must go undiscovered before Azir forgets it
+// ever decided anything about it. Generous on purpose: a plugin that is merely
+// switched off for a while has to keep its approvals, or every restart would
+// hand an administrator forty decisions to make again.
+const RetiredAfter = 30 * 24 * time.Hour
+
+/*
+SweepCapabilities forgets tools that discovery stopped seeing a long time ago.
+
+A decision is keyed on the plugin's name, and a name can be handed to something
+else: plugins/ is a drop-in folder, so retiring a plugin and later dropping in
+a different binary under the name it used to have would give the newcomer
+whatever the old one had been granted. Approval is the whole of what makes a
+discovered tool safe to call, and it must not be inheritable.
+
+Rejections are kept. Forgetting one points the wrong way — a tool an
+administrator refused would come back merely undecided — and a tombstone costs
+one row.
+
+Only ever call this while discovery is actually working. A deployment whose
+NATS connection is broken sees no plugins at all, which is indistinguishable
+from every plugin having been retired, and this would happily delete the lot.
+*/
+func (db *DB) SweepCapabilities(ctx context.Context, olderThan time.Duration) (int64, error) {
+	tag, err := db.pool.Exec(ctx, `
+		DELETE FROM capabilities
+		WHERE status <> 'rejected'
+		  AND last_seen_at < now() - $1::interval`,
+		olderThan)
+	if err != nil {
+		return 0, fmt.Errorf("store: sweep capabilities: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}

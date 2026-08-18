@@ -244,6 +244,43 @@ func run(log *slog.Logger) error {
 		}
 	}()
 
+	/*
+		Decisions about tools that no longer exist.
+
+		A capability record is keyed on the plugin's name, and plugins/ hands
+		that name out to whatever binary is dropped in under it. Left alone, a
+		retired plugin's approvals sit there waiting to be inherited by the
+		next thing to claim its name — so a name that has gone quiet for a
+		month is forgotten, and anything arriving under it later starts
+		pending like any other newcomer.
+
+		Guarded on discovery actually working. Seeing no plugins is what a
+		broken NATS connection looks like as well as an empty deployment, and
+		the two are worth telling apart before deleting anything.
+	*/
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		t := time.NewTicker(6 * time.Hour)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if len(reg.Snapshot().Plugins) == 0 {
+					continue
+				}
+				n, err := db.SweepCapabilities(ctx, store.RetiredAfter)
+				if err != nil {
+					log.Warn("could not forget retired tools", "error", err)
+				} else if n > 0 {
+					log.Info("forgot tools nothing has offered in a month", "count", n)
+				}
+			}
+		}
+	}()
+
 	server := &api.Server{
 		NC:    nc,
 		Reg:   reg,

@@ -10,10 +10,18 @@ already knowing all of it.
 
 ## Status
 
-**Phase 1.** No business logic yet — no Syncro, no 3CX, no model. What exists
-is the foundation everything else needs: a credential vault, the customer
-spine, the capability approval gate, an audit trail, and redaction that is
-tested rather than asserted.
+Working, on real tickets. Two integrations — Syncro and 3CX — and an assistant
+that reads across both: a ticket and its history, the customer and who to
+actually call, extensions and handsets, call quality, and a 3CX support bundle
+read without anyone unzipping it. Writes exist, and every one of them stays
+behind a person — either a technician acts, or the model proposes and a
+technician approves.
+
+The foundation is still the point, because everything above it depends on the
+foundation being true: a credential vault, the customer spine, the capability
+approval gate, an audit trail, and redaction that is tested rather than
+asserted. No credential reaches a model. That is a property of where
+credentials live, not of how the prompt is worded.
 
 ## Two containers
 
