@@ -43,6 +43,47 @@ const ACTIONS: Record<string, { verb: string; note?: string }> = {
     verb: "Stopped the assistant making a change",
     note: "The assistant is never given anything that writes. This is the second check that says so.",
   },
+  "assistant.proposed": { verb: "Suggested a change" },
+  "assistant.discarded": { verb: "Turned down a suggested change" },
+
+  "user.role": { verb: "Changed someone's role" },
+  "user.password": { verb: "Set someone's password" },
+  "user.remove": { verb: "Removed a person" },
+  "user.enabled": { verb: "Let someone back in" },
+  "user.disabled": { verb: "Locked someone out" },
+  "session.end": { verb: "Signed someone out" },
+  "role.create": { verb: "Added a role" },
+  "role.update": { verb: "Changed what a role can do" },
+  "role.delete": { verb: "Removed a role" },
+
+  "customer.create": { verb: "Added a customer" },
+  "branding.change": { verb: "Changed the branding" },
+  "branding.logo": { verb: "Changed the logo" },
+  "webhook.rotate": { verb: "Changed a webhook address" },
+  "webhook.received": {
+    verb: "A connected system reported a change",
+    note: "Azir refetched with its own credentials. Nothing a webhook says is stored or shown.",
+  },
+  "credential.rotate": {
+    verb: "Re-encrypted the stored passwords",
+    note: "Sealed again under a new key. The values are never shown or logged.",
+  },
+
+  "snapshot.upload": { verb: "Uploaded a support bundle" },
+  "snapshot.pull": { verb: "Fetched a support bundle from a phone system" },
+  "snapshot.attach": { verb: "Attached a capture to a ticket" },
+  "snapshot.keep": { verb: "Changed how long a capture is kept" },
+  "snapshot.delete": { verb: "Removed a capture" },
+
+  "data.retention": { verb: "Changed how long things are kept" },
+  "data.clear": {
+    verb: "Started fresh",
+    note: "Cleared the conversations, captures, ticket memory and this log. Accounts and connections were kept.",
+  },
+  "data.reset": {
+    verb: "Reset everything",
+    note: "Cleared the work and the setup, including customers and stored passwords. Accounts and roles were kept.",
+  },
 };
 
 function describe(action: string) {

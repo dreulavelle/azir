@@ -127,12 +127,16 @@ func (s *Server) updateUser(w http.ResponseWriter, r *http.Request, actor identi
 			s.fail(w, err, "could not change that account")
 			return
 		}
-		outcome := "enabled"
+		// Written out rather than built from a variable. An action name that
+		// only exists at runtime cannot be checked against the words the
+		// console shows for it, and these two had gone unnamed for exactly
+		// that reason.
+		action := "user.enabled"
 		if *body.Disabled {
-			outcome = "disabled"
+			action = "user.disabled"
 		}
 		s.Audit.Record(r.Context(), audit.Event{
-			ActorUserID: actor.Email, Action: "user." + outcome,
+			ActorUserID: actor.Email, Action: action,
 			Outcome: audit.OutcomeOK, Detail: target.Email,
 		})
 	}
