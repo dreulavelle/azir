@@ -155,7 +155,7 @@ func (s *Server) setSessionCookie(w http.ResponseWriter, r *http.Request, token 
 		// Secure is set when the request arrived over TLS. A self-hosted
 		// deployment on plain HTTP inside a LAN would otherwise be unable to
 		// log in at all, which is worse than the cookie lacking the flag there.
-		Secure: r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https",
+		Secure: overTLS(r),
 	})
 }
 

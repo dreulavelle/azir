@@ -213,7 +213,7 @@ func (s *Server) Routes() http.Handler {
 		mux.Handle("/", SPA(s.Web))
 	}
 
-	return mux
+	return secured(mux)
 }
 
 // ignoreActor adapts a handler that does not need to know who is calling.

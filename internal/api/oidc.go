@@ -87,7 +87,7 @@ func (s *Server) redirectURL(r *http.Request, cfg store.AuthConfig) string {
 		return cfg.RedirectURL
 	}
 	scheme := "http"
-	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+	if overTLS(r) {
 		scheme = "https"
 	}
 	host := r.Header.Get("X-Forwarded-Host")
