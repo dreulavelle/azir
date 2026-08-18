@@ -105,8 +105,8 @@ export function Plugins({ actor }: { actor: Actor }) {
   return (
     <>
       <p className="mb-5 max-w-[70ch] text-sm text-ink-dim">
-        Each plugin connects Azir to one of your systems and carries its own
-        settings. Nothing a plugin offers is used until you allow it.
+        Each plugin connects Azir to one of your systems. Nothing a plugin
+        offers is used until you allow it.
       </p>
 
       {working.length === 0 && (
@@ -312,9 +312,8 @@ function Connection({
           <div className="mb-2 flex items-center gap-1.5">
             <Label>Information it can read</Label>
             <Explain side="right">
-              Azir asks for the kind of information it needs, never for a named
-              system. Anything that provides the same kind can stand in for this
-              one, so replacing a system later does not mean rebuilding anything.
+              Azir asks for a kind of information, not a named system — so
+              swapping systems later doesn't break anything.
             </Explain>
           </div>
 
@@ -410,8 +409,8 @@ function Connection({
         description={
           <>
             This lets your team change things in {plugin.name} from inside Azir.
-            Every change is recorded against the person who made it, and the
-            assistant is never able to do it on its own.
+            Every change is recorded against whoever made it. The assistant
+            can never do it alone.
           </>
         }
         footer={

@@ -66,9 +66,7 @@ export function DataSettings() {
         <PanelHead>
           <div>
             <h2 className="text-sm font-medium">What Azir has done</h2>
-            <p className="mt-0.5 text-xs text-ink-dim">
-              Everything below is produced by using Azir, and starting fresh removes all of it.
-            </p>
+            <p className="mt-0.5 text-xs text-ink-dim">Cleared when you start fresh.</p>
           </div>
           <span className="font-mono text-xs text-ink-faint">{bytes(sum(work))}</span>
         </PanelHead>
@@ -79,9 +77,7 @@ export function DataSettings() {
         <PanelHead>
           <div>
             <h2 className="text-sm font-medium">What Azir was set up with</h2>
-            <p className="mt-0.5 text-xs text-ink-dim">
-              Kept when you start fresh, so you stay signed in and still connected.
-            </p>
+            <p className="mt-0.5 text-xs text-ink-dim">Kept when you start fresh.</p>
           </div>
           <span className="font-mono text-xs text-ink-faint">{bytes(sum(setup))}</span>
         </PanelHead>
@@ -97,10 +93,8 @@ export function DataSettings() {
         </PanelHead>
         <div className="flex flex-wrap items-center justify-between gap-4 px-4 py-4">
           <p className="max-w-[62ch] text-sm text-ink-dim">
-            Clears every conversation, diagnostic capture, remembered ticket, proposed change and
-            the activity log — {rows.toLocaleString()}{" "}
-            {rows === 1 ? "record" : "records"} in all. Your account, your connections and your
-            customer list stay exactly as they are. This cannot be undone.
+            Clears {rows.toLocaleString()} {rows === 1 ? "record" : "records"}. Your account,
+            connections and customers are kept. Cannot be undone.
           </p>
           <Button weight="primary" onClick={() => setAsking(true)} disabled={rows === 0}>
             {rows === 0 ? "Nothing to clear" : "Start fresh"}
@@ -120,13 +114,12 @@ export function DataSettings() {
         </div>
         <div className="px-4 py-4">
           <p className="max-w-[62ch] text-sm text-ink-dim">
-            Everything above, and the setup with it: your customers, the stored passwords for the
-            systems they were reached through, which tools were approved, the assistant's key and
-            model, your branding, and single sign-on. Azir comes back the way it arrived.
+            Clears {all.toLocaleString()} {all === 1 ? "record" : "records"} — everything above,
+            plus customers, connections, tool approvals, the assistant's key, branding and single
+            sign-on.
           </p>
           <p className="mt-2 max-w-[62ch] text-sm text-ink-dim">
-            Accounts and roles are kept, so you stay signed in and set it up again from an empty
-            console rather than installing it again.
+            Accounts and roles are kept, so you stay signed in. Cannot be undone.
           </p>
 
           {/* Said before the button, not after it. Removing single sign-on
@@ -135,14 +128,13 @@ export function DataSettings() {
           {stranded.length > 0 && (
             <div className="mt-3 rounded-md border border-attention/30 bg-attention/10 px-3 py-2.5">
               <p className="text-xs text-attention">
-                {stranded.length === 1 ? "This account signs in" : "These accounts sign in"} with
-                your identity provider and {stranded.length === 1 ? "has" : "have"} no password, so{" "}
-                {stranded.length === 1 ? "it" : "they"} will not be able to sign in afterwards:
+                {stranded.length === 1 ? "This account has" : "These accounts have"} no password
+                and will be locked out:
               </p>
               <p className="mt-1 font-mono text-xs text-attention">{stranded.join(", ")}</p>
               {canPassword.length === 0 && (
                 <p className="mt-2 text-xs text-attention">
-                  Nobody has a password, so this is refused until at least one administrator does.
+                  Give an admin a password first — otherwise nobody could sign back in.
                 </p>
               )}
             </div>
@@ -164,9 +156,9 @@ export function DataSettings() {
         <Confirm
           word="clear"
           title="Start fresh"
-          description={`This removes ${rows.toLocaleString()} ${
+          description={`Removes ${rows.toLocaleString()} ${
             rows === 1 ? "record" : "records"
-          } and cannot be undone. Your account, your connections and your customer list are not touched.`}
+          }. Your account, connections and customers are kept.`}
           run={api.clearData}
           onClose={() => setAsking(false)}
           onDone={async (removed) => {
@@ -181,9 +173,9 @@ export function DataSettings() {
         <Confirm
           word="reset"
           title="Reset everything"
-          description={`This removes ${all.toLocaleString()} ${
+          description={`Removes ${all.toLocaleString()} ${
             all === 1 ? "record" : "records"
-          } — every customer, every stored password, every approval, your branding and single sign-on. Accounts and roles are kept. It cannot be undone.`}
+          }, including customers, connections and single sign-on. Accounts and roles are kept.`}
           run={api.resetData}
           onClose={() => setResetting(false)}
           onDone={async (removed) => {

@@ -116,9 +116,8 @@ export function Audit() {
         <div className="flex items-center gap-2">
           <h2>Activity</h2>
           <Explain>
-            Everything Azir did and who asked for it. Identifiers and outcomes
-            only — the contents of a ticket or a password are never recorded
-            here.
+            What Azir did and who asked for it. Never ticket contents or
+            passwords.
           </Explain>
         </div>
         {events && (

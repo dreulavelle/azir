@@ -357,11 +357,8 @@ export function AssistantSettings() {
             <label htmlFor="assistant-answer" className="flex items-center gap-2">
               Longest answer
               <Explain>
-                Roughly how much the assistant may write in one reply. The
-                default suits a full ticket analysis with a drafted response.
-                Some services reserve this whole amount up front and refuse a
-                request that asks for more than the account can currently
-                afford, so lower it if you hit billing limits.
+                How much the assistant may write in one reply. Lower it if
+                you hit billing limits.
               </Explain>
             </label>
             <input

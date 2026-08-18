@@ -95,12 +95,6 @@ export function Roles() {
           <h2>Roles</h2>
         </PanelHead>
         <div className="p-4">
-          <p className="mb-3 max-w-[68ch] text-xs text-ink-dim">
-            Every check asks what someone is allowed to do, never what their
-            role is called — so a new role with its own mix of these is a
-            setting, not a rebuild.
-          </p>
-
           {/* A grid rather than a list per role: the useful question is which
               roles hold a given ability, and that reads down a column. */}
           <div className="overflow-x-auto">

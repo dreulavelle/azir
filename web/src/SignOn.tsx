@@ -120,9 +120,8 @@ export function SignOn() {
 
       <div className="p-4">
       <p className="max-w-[70ch] text-xs text-ink-faint">
-        The provider says who someone is. Azir still decides what they may do —
-        a role is set here, not read from a directory group, so a change over
-        there cannot quietly turn a technician into an administrator here.
+        Your provider says who someone is. Azir decides what they can do —
+        roles are set here, not read from directory groups.
       </p>
 
       <div className="flex flex-col gap-2">
@@ -164,9 +163,8 @@ export function SignOn() {
               between a five minute setup and an afternoon. */}
           {looksLocal && (
             <p className="mt-3 rounded-md border border-attention/30 bg-attention/10 px-2.5 py-2 text-xs text-attention">
-              That address is where you opened this page, not necessarily where
-              your team reaches Azir. Register the public one, and set it below
-              so this stops depending on how the console was opened.
+              That's where you opened this page, not necessarily where your
+              team reaches Azir. Register the public address and set it below.
             </p>
           )}
         </div>
@@ -174,10 +172,8 @@ export function SignOn() {
         <div className="flex flex-col gap-1.5">
           <label htmlFor="sso-redirect">Public address of this deployment</label>
           <p className="max-w-[70ch] text-xs text-ink-faint">
-            Optional. Leave it empty and the redirect URI is worked out from
-            each request, which is right until something sits in front of Azir
-            and it can no longer see its own address. Set it and that guessing
-            stops.
+            Optional. Set this if Azir sits behind a proxy or tunnel and
+            can't see its own address.
           </p>
           <TextInput
             id="sso-redirect"
@@ -190,9 +186,8 @@ export function SignOn() {
         <div className="flex flex-col gap-1.5">
           <label htmlFor="sso-tenant">Directory (tenant) ID</label>
           <p className="max-w-[70ch] text-xs text-ink-faint">
-            From the app registration's Overview page. Naming the tenant is what
-            keeps sign-in to your directory instead of to every Microsoft account
-            there is.
+            From the app registration's Overview page. Keeps sign-in to your
+            directory only.
           </p>
           <TextInput
             id="sso-tenant"
@@ -261,8 +256,8 @@ export function SignOn() {
         <div className="flex flex-col gap-1.5">
           <label htmlFor="sso-provision">Create accounts on first sign-in</label>
           <p className="max-w-[70ch] text-xs text-ink-faint">
-            Off means someone must already have an account here. On means anyone
-            the provider authenticates — within the domains above — gets one.
+            Off: they need an account here already. On: anyone in the domains
+            above gets one automatically.
           </p>
           <input
             id="sso-provision"
