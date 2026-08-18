@@ -236,3 +236,103 @@ func TestColumnsAreGuessedFromTheirHeaders(t *testing.T) {
 		t.Errorf("guessed at columns it should not have: %+v", m)
 	}
 }
+
+/*
+Creating is off unless it was asked for, and that default is the safety.
+
+A sheet uploaded against the wrong customer matches nothing. With creating off
+that is a screen full of harmless "no such extension" rows; with it on it is
+twenty extensions on somebody else's phone system. The same sheet, the same
+click, and the difference is one setting made while deciding what the sheet
+means.
+*/
+func TestNothingIsCreatedUnlessItWasAskedFor(t *testing.T) {
+	s := sheet(t, "Extension,Name\n101,Alice\n900,New Person\n")
+	now := Current{"101": {Name: "Alice"}}
+
+	off, err := Build(s, Mapping{Extension: 0, Fields: map[Field]int{FieldName: 1}}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if off.Creating != 0 || off.Skipped != 1 {
+		t.Fatalf("created something with creating off: %+v", off)
+	}
+
+	on, err := Build(s, Mapping{Extension: 0, Fields: map[Field]int{FieldName: 1}, Create: true}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if on.Creating != 1 || on.Skipped != 0 {
+		t.Fatalf("%+v", on)
+	}
+	for _, r := range on.Rows {
+		if r.Creates() && (r.Extension != "900" || r.Wanted != "New Person") {
+			t.Errorf("a number the sheet asked for was not the number given: %+v", r)
+		}
+	}
+}
+
+/*
+A row with no number gets the next one after the highest, never a gap.
+
+A gap is usually an extension somebody deleted, and its number can still carry
+the DID routing and voicemail that went with it — so reusing it means a caller
+dialling the old number reaches a new person.
+*/
+func TestANewExtensionStartsAfterTheHighest(t *testing.T) {
+	// 102 is missing, and must stay missing.
+	s := sheet(t, "Extension,Name\n,First Hire\n,Second Hire\n")
+	now := Current{"100": {Name: "A"}, "101": {Name: "B"}, "103": {Name: "C"}}
+
+	plan, err := Build(s, Mapping{Extension: 0, Fields: map[Field]int{FieldName: 1}, Create: true}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Creating != 2 {
+		t.Fatalf("%+v", plan)
+	}
+
+	var given []string
+	for _, r := range plan.Rows {
+		if r.Creates() {
+			given = append(given, r.Extension)
+		}
+	}
+	if len(given) != 2 || given[0] != "104" || given[1] != "105" {
+		t.Errorf("assigned %v, wanted 104 and 105 — 102 is a gap and must stay one", given)
+	}
+}
+
+// A new extension with no name is refused rather than created as a number
+// nobody can identify.
+func TestANewExtensionNeedsAName(t *testing.T) {
+	s := sheet(t, "Extension,Name\n900,\n")
+	plan, err := Build(s, Mapping{Extension: 0, Fields: map[Field]int{FieldName: 1}, Create: true}, Current{"100": {Name: "A"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Creating != 0 || plan.Skipped != 1 {
+		t.Errorf("created a nameless extension: %+v", plan.Rows)
+	}
+}
+
+// Edits and creations are counted apart and sorted apart, because a plan that
+// buries twenty new extensions among unchanged rows is a plan nobody reads.
+func TestEditsAndCreationsAreShownApart(t *testing.T) {
+	s := sheet(t, "Extension,Name\n100,Renamed\n101,Same\n900,Brand New\n")
+	now := Current{"100": {Name: "Old"}, "101": {Name: "Same"}}
+
+	plan, err := Build(s, Mapping{Extension: 0, Fields: map[Field]int{FieldName: 1}, Create: true}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Changing != 1 || plan.Creating != 1 || plan.Unchanged != 1 {
+		t.Fatalf("changing %d, creating %d, unchanged %d", plan.Changing, plan.Creating, plan.Unchanged)
+	}
+	if !plan.Rows[0].Changed() {
+		t.Error("edits do not come first")
+	}
+	if !plan.Rows[1].Creates() {
+		t.Error("creations do not follow the edits")
+	}
+}

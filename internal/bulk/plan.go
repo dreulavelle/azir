@@ -45,6 +45,16 @@ var Editable = []struct {
 type Mapping struct {
 	Extension int           `json:"extension"`
 	Fields    map[Field]int `json:"fields"`
+	// Create turns rows the phone system does not have into new extensions
+	// rather than skipping them.
+	//
+	// Off unless asked for, and that default is the whole safety of this
+	// feature. A sheet uploaded against the wrong customer matches nothing —
+	// with this off that is twenty harmless "no such extension" rows, and with
+	// it on it is twenty extensions on somebody else's phone system. Turning
+	// it on is a decision about what the sheet means, made while setting up
+	// the comparison, not another dialog in front of the same button.
+	Create bool `json:"create"`
 }
 
 // Current is what the phone system says today, keyed by extension number.
@@ -69,19 +79,27 @@ type Row struct {
 	Extension string   `json:"extension"`
 	Name      string   `json:"name"`
 	Changes   []Change `json:"changes,omitempty"`
+	// New marks a row that does not exist yet and would be created.
+	New bool `json:"new,omitempty"`
+	// Wanted is what a new extension would be called.
+	Wanted string `json:"wanted,omitempty"`
 	// Problem explains why a row will be skipped: no such extension, an
 	// unreadable value, a duplicate. Rows with one are never applied.
 	Problem string `json:"problem,omitempty"`
 }
 
-// Changed reports whether this row would do anything.
-func (r Row) Changed() bool { return r.Problem == "" && len(r.Changes) > 0 }
+// Changed reports whether this row would alter an extension that exists.
+func (r Row) Changed() bool { return r.Problem == "" && !r.New && len(r.Changes) > 0 }
+
+// Creates reports whether this row would make a new extension.
+func (r Row) Creates() bool { return r.Problem == "" && r.New }
 
 // Plan is the whole before-and-after, as reviewed and as applied.
 type Plan struct {
 	Rows []Row `json:"rows"`
 	// Counts, so the screen and the confirmation agree without recounting.
 	Changing  int `json:"changing"`
+	Creating  int `json:"creating"`
 	Unchanged int `json:"unchanged"`
 	Skipped   int `json:"skipped"`
 }
@@ -112,6 +130,13 @@ func Build(sheet Sheet, mapping Mapping, now Current) (Plan, error) {
 		label[e.Field] = e.Label
 	}
 
+	// Where a new extension's number comes from when the sheet does not give
+	// one: after the highest that exists, never filling a gap. A gap is
+	// usually an extension somebody deleted, and its number can still carry
+	// the DID routing and voicemail that went with it — so reusing it means a
+	// caller dialling the old number reaches a new person.
+	next := highest(now)
+
 	var plan Plan
 	seen := map[string]int{}
 
@@ -120,35 +145,56 @@ func Build(sheet Sheet, mapping Mapping, now Current) (Plan, error) {
 		row := Row{Extension: extension}
 
 		switch {
-		case extension == "":
+		case extension == "" && !mapping.Create:
 			row.Problem = "no extension number in this row"
-		case seen[extension] > 0:
+		case extension != "" && seen[extension] > 0:
 			// Two rows for one extension is a sheet somebody edited by hand,
 			// and guessing which of them was meant is not this package's
 			// business.
+			//
+			// Only for rows that name a number. Several rows with the column
+			// left blank are not duplicates of each other — they are several
+			// new extensions, and each gets its own number below.
 			row.Problem = fmt.Sprintf("this extension is also on row %d", seen[extension])
-		default:
+		case extension != "":
 			seen[extension] = i + 1
 		}
 
 		state, known := now[extension]
-		if row.Problem == "" && !known {
-			row.Problem = "the phone system has no such extension"
-		}
-		row.Name = state.Name
 
-		if row.Problem == "" {
+		switch {
+		case row.Problem != "":
+			// Already ruled out above.
+		case known:
+			row.Name = state.Name
 			changes, err := compare(sheet, i, mapping, state, label)
 			if err != nil {
 				row.Problem = err.Error()
 			} else {
 				row.Changes = changes
 			}
+		case !mapping.Create:
+			row.Problem = "the phone system has no such extension"
+		default:
+			// A number the sheet asked for and nothing is using is the number
+			// it gets; a row with no number at all gets the next one.
+			row.New = true
+			if extension == "" {
+				next++
+				row.Extension = fmt.Sprint(next)
+			}
+			row.Wanted = wantedName(sheet, i, mapping)
+			if row.Wanted == "" {
+				row.Problem = "a new extension needs a name"
+				row.New = false
+			}
 		}
 
 		switch {
 		case row.Problem != "":
 			plan.Skipped++
+		case row.New:
+			plan.Creating++
 		case len(row.Changes) > 0:
 			plan.Changing++
 		default:
@@ -165,15 +211,41 @@ func Build(sheet Sheet, mapping Mapping, now Current) (Plan, error) {
 
 // order puts the rows that do something first, then the problems, then the
 // rows that change nothing — which is the order somebody reviews them in.
+// New extensions sit together after the edits: they are the part of a plan
+// most worth reading twice, and scattered among unchanged rows they are not
+// read at all.
 func order(r Row) int {
 	switch {
 	case r.Changed():
 		return 0
-	case r.Problem != "":
+	case r.Creates():
 		return 1
-	default:
+	case r.Problem != "":
 		return 2
+	default:
+		return 3
 	}
+}
+
+// highest is the largest numeric extension the system has, so a new one can
+// start after it.
+func highest(now Current) int {
+	top := 0
+	for extension := range now {
+		if n, err := strconv.Atoi(extension); err == nil && n > top {
+			top = n
+		}
+	}
+	return top
+}
+
+// wantedName reads what a new extension should be called.
+func wantedName(sheet Sheet, i int, mapping Mapping) string {
+	col, ok := mapping.Fields[FieldName]
+	if !ok {
+		return ""
+	}
+	return sheet.Cell(i, col)
 }
 
 // compare works out what one row would change.

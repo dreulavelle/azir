@@ -831,6 +831,10 @@ export type BulkRow = {
   extension: string;
   name: string;
   changes?: BulkChange[];
+  /** This extension does not exist and would be created. */
+  new?: boolean;
+  /** What a new extension would be called. */
+  wanted?: string;
   /** Why this row will be skipped. Rows with one are never applied. */
   problem?: string;
 };
@@ -838,6 +842,7 @@ export type BulkRow = {
 export type BulkPlan = {
   rows: BulkRow[];
   changing: number;
+  creating: number;
   unchanged: number;
   skipped: number;
 };
@@ -858,7 +863,12 @@ export type BulkEdit = {
 };
 
 /** Which column carries which thing. -1 means not chosen. */
-export type BulkMapping = { extension: number; fields: Record<string, number> };
+export type BulkMapping = {
+  extension: number;
+  fields: Record<string, number>;
+  /** Turns rows the phone system does not have into new extensions. */
+  create?: boolean;
+};
 
 export type BulkField = { Field: string; Label: string };
 
@@ -946,8 +956,14 @@ export const api = {
       body: JSON.stringify(mapping),
     }),
 
+  revertSheet: (id: string) =>
+    request<{ edit: BulkEdit; plan: BulkPlan; created: number }>(
+      `/api/bulk/${encodeURIComponent(id)}/revert`,
+      { method: "POST" },
+    ),
+
   applySheet: (id: string) =>
-    request<{ edit: BulkEdit; changed: number; failed: number }>(
+    request<{ edit: BulkEdit; changed: number; created: number; failed: number }>(
       `/api/bulk/${encodeURIComponent(id)}/apply`,
       { method: "POST", body: JSON.stringify({ confirm: "apply" }) },
     ),

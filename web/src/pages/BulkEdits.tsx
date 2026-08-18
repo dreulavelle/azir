@@ -131,6 +131,26 @@ export function BulkEdits({ actor }: { actor: Actor }) {
     }
   }
 
+  async function revert() {
+    if (!edit) return;
+    setBusy(true);
+    setProblem(null);
+    try {
+      const got = await api.revertSheet(edit.id);
+      setEdit(got.edit);
+      setPlan(got.plan);
+      if (got.created > 0) {
+        toast(`${got.created} created ${got.created === 1 ? "extension is" : "extensions are"} not removed`, {
+          detail: "Putting a sheet back does not delete what it made.",
+        });
+      }
+    } catch (e) {
+      setProblem(e instanceof Error ? e.message : "Could not build the undo");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function apply() {
     if (!edit) return;
     setBusy(true);
@@ -138,12 +158,12 @@ export function BulkEdits({ actor }: { actor: Actor }) {
       const got = await api.applySheet(edit.id);
       setAsking(false);
       setEdit(got.edit);
-      toast(
-        got.failed > 0
-          ? `Changed ${got.changed}, ${got.failed} failed`
-          : `Changed ${got.changed} ${got.changed === 1 ? "extension" : "extensions"}`,
-        { tone: got.failed > 0 ? "bad" : "good" },
-      );
+      const said = [
+        got.changed > 0 ? `changed ${got.changed}` : "",
+        got.created > 0 ? `created ${got.created}` : "",
+        got.failed > 0 ? `${got.failed} failed` : "",
+      ].filter(Boolean);
+      toast(said.join(", ") || "Nothing to do", { tone: got.failed > 0 ? "bad" : "good" });
     } catch (e) {
       setAsking(false);
       setProblem(e instanceof Error ? e.message : "Could not apply");
@@ -260,6 +280,7 @@ export function BulkEdits({ actor }: { actor: Actor }) {
           onApply={() => setAsking(true)}
           onBack={() => setPlan(null)}
           onDone={reset}
+          onRevert={() => void revert()}
         />
       )}
 
@@ -270,9 +291,13 @@ export function BulkEdits({ actor }: { actor: Actor }) {
             if (!next && !busy) setAsking(false);
           }}
           title="Apply these changes"
-          description={`This changes ${plan.changing} ${
-            plan.changing === 1 ? "extension" : "extensions"
-          } on the phone system. It cannot be undone from here.`}
+          description={
+            plan.creating > 0
+              ? `This changes ${plan.changing} and creates ${plan.creating} on the phone system.`
+              : `This changes ${plan.changing} ${
+                  plan.changing === 1 ? "extension" : "extensions"
+                } on the phone system.`
+          }
           footer={
             <>
               <Button onClick={() => setAsking(false)} disabled={busy}>
@@ -365,6 +390,24 @@ function Mapper({
         ))}
       </div>
 
+      <div className="border-t border-edge px-4 py-3">
+        <label className="flex max-w-[70ch] cursor-pointer items-start gap-2.5">
+          <input
+            type="checkbox"
+            className="mt-0.5 size-3.5 accent-azir"
+            checked={mapping.create ?? false}
+            onChange={(e) => setMapping({ ...mapping, create: e.target.checked })}
+          />
+          <span className="text-sm">
+            Create extensions this sheet has and the phone system does not
+            <span className="mt-0.5 block text-xs text-ink-faint">
+              Off, a sheet for the wrong customer matches nothing and does nothing. On, it would
+              create every row on it. Rows with no number get the next one after the highest.
+            </span>
+          </span>
+        </label>
+      </div>
+
       <div className="flex items-center justify-between border-t border-edge px-4 py-3">
         <p className="text-xs text-ink-faint">Blank cells leave a field as it is.</p>
         <div className="flex gap-2">
@@ -388,6 +431,7 @@ function Diff({
   onApply,
   onBack,
   onDone,
+  onRevert,
 }: {
   edit: BulkEdit;
   plan: BulkPlan;
@@ -395,6 +439,7 @@ function Diff({
   onApply: () => void;
   onBack: () => void;
   onDone: () => void;
+  onRevert: () => void;
 }) {
   const applied = edit.status === "applied";
   const outcome = new Map((edit.outcome ?? []).map((o) => [o.extension, o]));
@@ -405,7 +450,9 @@ function Diff({
         <div>
           <h2 className="text-sm font-medium">{edit.filename}</h2>
           <p className="mt-0.5 text-xs text-ink-dim">
-            {plan.changing} changing · {plan.unchanged} already match · {plan.skipped} skipped
+            {plan.changing} changing
+            {plan.creating > 0 && <> · {plan.creating} new</>} · {plan.unchanged} already match ·{" "}
+            {plan.skipped} skipped
           </p>
         </div>
         {applied && <Chip tone="good">applied</Chip>}
@@ -437,14 +484,27 @@ function Diff({
         </p>
         <div className="flex gap-2">
           {applied ? (
-            <Button onClick={onDone}>Done</Button>
+            <>
+              <Button onClick={onRevert} disabled={busy}>
+                {busy ? "Working…" : "Put it back"}
+              </Button>
+              <Button onClick={onDone}>Done</Button>
+            </>
           ) : (
             <>
               <Button onClick={onBack} disabled={busy}>
                 Back
               </Button>
-              <Button weight="primary" onClick={onApply} disabled={busy || plan.changing === 0}>
-                {plan.changing === 0 ? "Nothing to change" : `Apply ${plan.changing}`}
+              <Button
+                weight="primary"
+                onClick={onApply}
+                disabled={busy || plan.changing + plan.creating === 0}
+              >
+                {plan.changing + plan.creating === 0
+                  ? "Nothing to change"
+                  : plan.creating > 0
+                    ? `Change ${plan.changing}, create ${plan.creating}`
+                    : `Apply ${plan.changing}`}
               </Button>
             </>
           )}
@@ -462,6 +522,23 @@ function Rows({ row, said }: { row: BulkRow; said?: { ok: boolean; problem?: str
         <td className="font-mono text-xs">{row.extension || "—"}</td>
         <td colSpan={4} className="text-xs">
           {row.problem}
+        </td>
+      </tr>
+    );
+  }
+
+  if (row.new) {
+    return (
+      <tr>
+        <td className="font-mono text-xs">{row.extension}</td>
+        <td>
+          <Chip tone="accent">new</Chip>
+        </td>
+        <td className="text-ink-faint italic">does not exist</td>
+        <td className="font-medium">{row.wanted}</td>
+        <td className="text-right text-xs">
+          {said && !said.ok && <span className="text-critical">{said.problem}</span>}
+          {said && said.ok && <span className="text-steady">created</span>}
         </td>
       </tr>
     );

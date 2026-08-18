@@ -185,6 +185,7 @@ func (s *Server) listBulk(w http.ResponseWriter, r *http.Request) {
 type applied struct {
 	Extension string `json:"extension"`
 	OK        bool   `json:"ok"`
+	New       bool   `json:"new,omitempty"`
 	Problem   string `json:"problem,omitempty"`
 }
 
@@ -229,19 +230,27 @@ func (s *Server) applyBulk(w http.ResponseWriter, r *http.Request, actor identit
 		return
 	}
 
-	results := make([]applied, 0, plan.Changing)
-	var done, failed int
+	results := make([]applied, 0, plan.Changing+plan.Creating)
+	var done, made, failed int
 	for _, row := range plan.Rows {
-		if !row.Changed() {
-			continue
+		switch {
+		case row.Changed():
+			if err := s.applyRow(r.Context(), actor, edit.CustomerID, row); err != nil {
+				results = append(results, applied{Extension: row.Extension, Problem: err.Error()})
+				failed++
+				continue
+			}
+			results = append(results, applied{Extension: row.Extension, OK: true})
+			done++
+		case row.Creates():
+			if err := s.createRow(r.Context(), actor, edit.CustomerID, row); err != nil {
+				results = append(results, applied{Extension: row.Extension, New: true, Problem: err.Error()})
+				failed++
+				continue
+			}
+			results = append(results, applied{Extension: row.Extension, New: true, OK: true})
+			made++
 		}
-		if err := s.applyRow(r.Context(), actor, edit.CustomerID, row); err != nil {
-			results = append(results, applied{Extension: row.Extension, Problem: err.Error()})
-			failed++
-			continue
-		}
-		results = append(results, applied{Extension: row.Extension, OK: true})
-		done++
 	}
 
 	encoded, _ := json.Marshal(results)
@@ -265,11 +274,13 @@ func (s *Server) applyBulk(w http.ResponseWriter, r *http.Request, actor identit
 		Action:      "bulk.apply",
 		Outcome:     audit.OutcomeOK,
 		CustomerID:  &customerID,
-		Detail:      fmt.Sprintf("%s: %d changed, %d failed", edit.Filename, done, failed),
+		Detail: fmt.Sprintf("%s: %d changed, %d created, %d failed",
+			edit.Filename, done, made, failed),
 	})
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"edit": saved, "results": results, "changed": done, "failed": failed,
+		"edit": saved, "results": results,
+		"changed": done, "created": made, "failed": failed,
 	})
 }
 
@@ -404,4 +415,156 @@ func (s *Server) approvedTool(ctx context.Context, capability plugin.Capability,
 		}
 	}
 	return registry.Tool{}, fmt.Errorf("no approved tool provides %s", capability)
+}
+
+/*
+createRow makes one new extension.
+
+Named one at a time rather than handed to the plugin's own run-of-extensions
+mode, because a sheet's new rows are not a run: they are whichever numbers were
+free, each with its own name. Reporting them one by one is also what lets a
+half-finished batch say exactly which numbers exist now.
+*/
+func (s *Server) createRow(ctx context.Context, actor identity.Actor, customer uuid.UUID, row bulk.Row) error {
+	tool, err := s.approvedTool(ctx, plugin.CapPhoneExtensionCreate, true)
+	if err != nil {
+		return err
+	}
+
+	first, last, _ := strings.Cut(strings.TrimSpace(row.Wanted), " ")
+	encoded, err := json.Marshal(map[string]any{
+		"extensions": []map[string]any{{
+			"number":     row.Extension,
+			"first_name": first,
+			"last_name":  strings.TrimSpace(last),
+		}},
+	})
+	if err != nil {
+		return err
+	}
+	if _, err := s.performTool(ctx, actor, tool, encoded, &customer); err != nil {
+		return err
+	}
+	return nil
+}
+
+/*
+revertBulk turns an applied sheet back into a sheet that undoes it.
+
+The before values are already recorded — they are what somebody approved — so
+undoing is a sheet whose after is the old before. What matters is that it goes
+back through the same comparison rather than being applied straight: if a
+technician has changed one of those extensions since, the revert shows that as
+a change it would make, and they can decline that row instead of quietly
+overwriting somebody's work.
+
+Only the rows that actually went through. A row that failed changed nothing and
+has nothing to put back.
+
+Extensions this created are not removed. Deleting is a different power to the
+one that made them, and taking it on the way past — inside an undo, on rows
+somebody may already have configured — is not a decision to make quietly. They
+are listed as created so nobody assumes otherwise.
+*/
+func (s *Server) revertBulk(w http.ResponseWriter, r *http.Request, actor identity.Actor) {
+	edit, ok := s.bulkEdit(w, r)
+	if !ok {
+		return
+	}
+	if edit.Status != "applied" {
+		writeJSON(w, http.StatusConflict, errBody("only a sheet that was applied can be put back"))
+		return
+	}
+
+	var plan bulk.Plan
+	if err := json.Unmarshal(edit.Plan, &plan); err != nil {
+		s.fail(w, err, "that plan could not be read back")
+		return
+	}
+	var outcome []applied
+	_ = json.Unmarshal(edit.Outcome, &outcome)
+	went := map[string]bool{}
+	for _, o := range outcome {
+		if o.OK && !o.New {
+			went[o.Extension] = true
+		}
+	}
+
+	// The undo, as a sheet: the values these extensions had before.
+	undo := bulk.Sheet{Columns: []string{"Extension", "Display name", "Enabled"}}
+	for _, row := range plan.Rows {
+		if !row.Changed() || !went[row.Extension] {
+			continue
+		}
+		name, enabled := "", ""
+		for _, change := range row.Changes {
+			switch change.Field {
+			case bulk.FieldName:
+				name = change.Before
+			case bulk.FieldEnabled:
+				enabled = change.Before
+			}
+		}
+		undo.Rows = append(undo.Rows, []string{row.Extension, name, enabled})
+	}
+	if len(undo.Rows) == 0 {
+		writeJSON(w, http.StatusBadRequest, errBody("nothing in that sheet changed an extension, so there is nothing to put back"))
+		return
+	}
+
+	encoded, err := json.Marshal(undo)
+	if err != nil {
+		s.fail(w, err, "could not build the undo")
+		return
+	}
+	saved, err := s.DB.AddBulkEdit(r.Context(), store.BulkEdit{
+		CustomerID: edit.CustomerID,
+		Filename:   "undo of " + edit.Filename,
+		UploadedBy: actor.Email,
+		Sheet:      encoded,
+	})
+	if err != nil {
+		s.fail(w, err, "could not store the undo")
+		return
+	}
+
+	// Compared straight away, because an undo nobody has looked at is not
+	// something to hand somebody an Apply button for.
+	now, err := s.currentExtensions(r.Context(), actor, edit.CustomerID)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, errBody(
+			"could not read the phone system, so there is nothing to compare against: "+err.Error()))
+		return
+	}
+	mapping := bulk.Mapping{Extension: 0, Fields: map[bulk.Field]int{bulk.FieldName: 1, bulk.FieldEnabled: 2}}
+	undoPlan, err := bulk.Build(undo, mapping, now)
+	if err != nil {
+		s.fail(w, err, "could not work out the undo")
+		return
+	}
+
+	encodedMapping, _ := json.Marshal(mapping)
+	encodedPlan, err := json.Marshal(undoPlan)
+	if err != nil {
+		s.fail(w, err, "could not store the undo")
+		return
+	}
+	planned, err := s.DB.SaveBulkPlan(r.Context(), saved.ID, encodedMapping, encodedPlan)
+	if err != nil {
+		s.fail(w, err, "could not store the undo")
+		return
+	}
+
+	customerID := edit.CustomerID
+	s.Audit.Record(r.Context(), audit.Event{
+		ActorUserID: actor.Email,
+		Action:      "bulk.revert",
+		Outcome:     audit.OutcomeOK,
+		CustomerID:  &customerID,
+		Detail:      fmt.Sprintf("%s: %d to put back", edit.Filename, undoPlan.Changing),
+	})
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"edit": planned, "plan": undoPlan, "created": plan.Creating,
+	})
 }

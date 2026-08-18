@@ -207,6 +207,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/bulk/{id}/plan", s.require(identity.PermPhoneManage, s.planBulk))
 	mux.HandleFunc("POST /api/bulk/{id}/apply", s.require(identity.PermPhoneManage, s.applyBulk))
 	mux.HandleFunc("POST /api/bulk/{id}/cancel", s.require(identity.PermPhoneManage, s.cancelBulk))
+	mux.HandleFunc("POST /api/bulk/{id}/revert", s.require(identity.PermPhoneManage, s.revertBulk))
 
 	// Diagnostic snapshots: a phone system's support bundle, read.
 	mux.HandleFunc("GET /api/snapshots", s.require(p, ignoreActor(s.listSnapshots)))
