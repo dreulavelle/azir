@@ -131,6 +131,7 @@ export const Perm = {
   auditRead: "audit.read",
   dataManage: "data.manage",
   toolRead: "tool.read",
+  phoneManage: "phone.manage",
 } as const;
 
 /**
@@ -822,6 +823,45 @@ export type DataUsage = {
 
 export type Removed = { name: string; rows: number };
 
+/** One field on one extension, before and after. */
+export type BulkChange = { field: string; label: string; before: string; after: string };
+
+/** One extension's worth of a bulk edit. */
+export type BulkRow = {
+  extension: string;
+  name: string;
+  changes?: BulkChange[];
+  /** Why this row will be skipped. Rows with one are never applied. */
+  problem?: string;
+};
+
+export type BulkPlan = {
+  rows: BulkRow[];
+  changing: number;
+  unchanged: number;
+  skipped: number;
+};
+
+export type BulkEdit = {
+  id: string;
+  customer_id: string;
+  filename: string;
+  uploaded_by: string;
+  sheet: { columns: string[]; rows: string[][] };
+  mapping?: BulkMapping;
+  plan?: BulkPlan;
+  outcome?: { extension: string; ok: boolean; problem?: string }[];
+  status: "draft" | "planned" | "applied" | "cancelled";
+  created_at: string;
+  decided_at?: string;
+  decided_by?: string;
+};
+
+/** Which column carries which thing. -1 means not chosen. */
+export type BulkMapping = { extension: number; fields: Record<string, number> };
+
+export type BulkField = { Field: string; Label: string };
+
 /** One open sign-in. */
 export type Session = {
   /** The token's hash. Safe to show; useless to steal. */
@@ -882,6 +922,38 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ confirm: "reset" }),
     }),
+
+  bulkEdits: (customerID: string) =>
+    request<{ edits: BulkEdit[] }>(`/api/bulk?customer_id=${encodeURIComponent(customerID)}`),
+
+  bulkEdit: (id: string) =>
+    request<{ edit: BulkEdit; editable: BulkField[] }>(`/api/bulk/${encodeURIComponent(id)}`),
+
+  uploadSheet: (customerID: string, file: File) => {
+    const body = new FormData();
+    body.append("sheet", file);
+    return request<{
+      edit: BulkEdit;
+      columns: string[];
+      suggests: BulkMapping;
+      editable: BulkField[];
+    }>(`/api/bulk?customer_id=${encodeURIComponent(customerID)}`, { method: "POST", body });
+  },
+
+  planSheet: (id: string, mapping: BulkMapping) =>
+    request<{ edit: BulkEdit; plan: BulkPlan }>(`/api/bulk/${encodeURIComponent(id)}/plan`, {
+      method: "POST",
+      body: JSON.stringify(mapping),
+    }),
+
+  applySheet: (id: string) =>
+    request<{ edit: BulkEdit; changed: number; failed: number }>(
+      `/api/bulk/${encodeURIComponent(id)}/apply`,
+      { method: "POST", body: JSON.stringify({ confirm: "apply" }) },
+    ),
+
+  cancelSheet: (id: string) =>
+    request<{ edit: BulkEdit }>(`/api/bulk/${encodeURIComponent(id)}/cancel`, { method: "POST" }),
 
   registry: () => request<Registry>("/api/registry"),
 

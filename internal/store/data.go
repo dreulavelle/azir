@@ -76,6 +76,13 @@ var stored = []struct {
 		cleared: true,
 	},
 	{
+		name:    "Bulk edits",
+		detail:  "Uploaded sheets, and the changes they describe.",
+		counted: "bulk_edits",
+		tables:  []string{"bulk_edits"},
+		cleared: true,
+	},
+	{
 		name:    "Proposed changes",
 		detail:  "Suggested changes waiting for approval.",
 		counted: "proposed_changes",
@@ -124,6 +131,8 @@ func expiryWords(name string, r Retention) string {
 		return fmt.Sprintf("%d days, unless pinned", r.CaptureDays)
 	case "Cached answers":
 		return fmt.Sprintf("%d days", r.CacheDays)
+	case "Bulk edits":
+		return fmt.Sprintf("%d days", r.CaptureDays)
 	}
 	return ""
 }
@@ -215,6 +224,7 @@ var clearing = []struct {
 	headline bool
 	work     bool
 }{
+	{name: "Bulk edits", table: "bulk_edits", headline: true, work: true},
 	{name: "Proposed changes", table: "proposed_changes", headline: true, work: true},
 	{name: "Conversations", table: "messages", work: true},
 	{name: "Conversations", table: "conversations", headline: true, work: true},

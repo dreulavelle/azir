@@ -253,6 +253,14 @@ func run(log *slog.Logger) error {
 			} else if n > 0 {
 				log.Info("expired diagnostic captures", "count", n)
 			}
+			// Uploaded sheets go the same way and for the same reason: they
+			// hold a customer's extension numbers and the names on them, and
+			// the point of one was the change it described.
+			if n, err := db.SweepBulkEdits(ctx); err != nil {
+				log.Warn("could not expire bulk edits", "error", err)
+			} else if n > 0 {
+				log.Info("expired bulk edits", "count", n)
+			}
 		}
 		sweep()
 		t := time.NewTicker(time.Hour)

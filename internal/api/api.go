@@ -196,6 +196,18 @@ func (s *Server) Routes() http.Handler {
 	// proposals go through.
 	mux.HandleFunc("POST /api/change/{capability}", s.require(p, s.applyChange))
 
+	// Bulk edits from a sheet. Under phone.manage rather than a read
+	// permission, including the reading: somebody who cannot change one
+	// extension has no business staging forty of them.
+	mux.HandleFunc("GET /api/bulk",
+		s.require(identity.PermPhoneManage, ignoreActor(s.listBulk)))
+	mux.HandleFunc("GET /api/bulk/{id}",
+		s.require(identity.PermPhoneManage, ignoreActor(s.getBulk)))
+	mux.HandleFunc("POST /api/bulk", s.require(identity.PermPhoneManage, s.uploadBulk))
+	mux.HandleFunc("POST /api/bulk/{id}/plan", s.require(identity.PermPhoneManage, s.planBulk))
+	mux.HandleFunc("POST /api/bulk/{id}/apply", s.require(identity.PermPhoneManage, s.applyBulk))
+	mux.HandleFunc("POST /api/bulk/{id}/cancel", s.require(identity.PermPhoneManage, s.cancelBulk))
+
 	// Diagnostic snapshots: a phone system's support bundle, read.
 	mux.HandleFunc("GET /api/snapshots", s.require(p, ignoreActor(s.listSnapshots)))
 	mux.HandleFunc("GET /api/snapshots/{id}", s.require(p, ignoreActor(s.getSnapshot)))

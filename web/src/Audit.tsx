@@ -75,6 +75,12 @@ const ACTIONS: Record<string, { verb: string; note?: string }> = {
   "snapshot.keep": { verb: "Changed how long a capture is kept" },
   "snapshot.delete": { verb: "Removed a capture" },
 
+  "bulk.upload": { verb: "Uploaded a sheet of changes" },
+  "bulk.apply": {
+    verb: "Applied a sheet of changes",
+    note: "Only the rows that differed from the phone system were changed, and only after somebody approved the before and after.",
+  },
+
   "data.retention": { verb: "Changed how long things are kept" },
   "data.clear": {
     verb: "Started fresh",

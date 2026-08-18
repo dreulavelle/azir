@@ -2,6 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import {
   api,
   onSessionExpired,
+  Perm,
   Unauthorized,
   work,
   type Actor,
@@ -34,6 +35,7 @@ import { settingsTabsFor } from "./pages/settingsTabs";
  * carry through a shift in the queue.
  */
 const Settings = lazy(() => import("./pages/Settings").then((m) => ({ default: m.Settings })));
+const BulkEdits = lazy(() => import("./pages/BulkEdits").then((m) => ({ default: m.BulkEdits })));
 
 /**
  * The assistant, fetched the first time somebody opens it.
@@ -239,6 +241,14 @@ function Console() {
           active={route.name === "diagnostics" || route.name === "snapshot"}
           onClick={() => go({ name: "diagnostics" })}
         />
+        {actor.permissions.includes(Perm.phoneManage) && (
+          <NavItem
+            icon={<Icon.people />}
+            label="Bulk edits"
+            active={route.name === "bulk"}
+            onClick={() => go({ name: "bulk" })}
+          />
+        )}
 
         <NavGroup label="Assistant" />
         <NavItem
@@ -378,6 +388,11 @@ function Console() {
         {route.name === "customers" && <Customers query={route.query} go={go} />}
         {route.name === "customer" && <CustomerDetail id={route.id} go={go} actor={actor} />}
         {route.name === "chats" && <Chats go={go} />}
+        {route.name === "bulk" && (
+          <Suspense fallback={<div className="mx-auto max-w-[1180px] px-6 py-6"><div className="h-40 animate-pulse rounded-lg bg-sunken" /></div>}>
+            <BulkEdits actor={actor} />
+          </Suspense>
+        )}
         {(route.name === "diagnostics" || route.name === "snapshot") && (
           <Diagnostics openId={route.name === "snapshot" ? route.id : undefined} go={go} actor={actor} />
         )}
