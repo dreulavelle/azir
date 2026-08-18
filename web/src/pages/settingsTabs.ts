@@ -31,6 +31,7 @@ export const SETTINGS_TABS: SettingsTab[] = [
   { id: "people", label: "People", needs: Perm.userManage },
   { id: "customers", label: "Customer list", needs: Perm.toolRead },
   { id: "branding", label: "Branding", needs: Perm.pluginConfigure },
+  { id: "data", label: "Data", needs: Perm.dataManage },
   { id: "audit", label: "Activity log", needs: Perm.auditRead },
 ];
 

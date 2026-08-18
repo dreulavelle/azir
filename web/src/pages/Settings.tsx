@@ -7,6 +7,7 @@ import { Plugins } from "../Plugins";
 import { Users } from "../Users";
 import { Audit } from "../Audit";
 import { BrandingSettings } from "../BrandingSettings";
+import { DataSettings } from "../DataSettings";
 import { Customers as CustomerSpine } from "../Customers";
 
 /**
@@ -38,6 +39,7 @@ export function Settings({
     people: () => <Users actor={actor} />,
     customers: () => <CustomerSpine actor={actor} />,
     branding: () => <BrandingSettings />,
+    data: () => <DataSettings />,
     audit: () => <Audit />,
   };
 

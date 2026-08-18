@@ -37,6 +37,7 @@ const (
 	PermCustomerManage   = "customer.manage"
 	PermCredentialManage = "credential.manage"
 	PermAuditRead        = "audit.read"
+	PermDataManage       = "data.manage"
 	PermToolRead         = "tool.read"
 	PermToolWrite        = "tool.write"
 	PermTicketComment    = "ticket.comment"
@@ -65,7 +66,7 @@ const RoleAdmin = "admin"
 // to render and for validation when a custom role is created.
 var AllPermissions = []string{
 	PermPluginConfigure, PermPluginApprove, PermUserManage, PermRoleManage,
-	PermCustomerManage, PermCredentialManage, PermAuditRead,
+	PermCustomerManage, PermCredentialManage, PermAuditRead, PermDataManage,
 	PermToolRead, PermToolWrite,
 	PermTicketComment, PermTicketStatus, PermTicketAssign,
 	PermPhoneManage,

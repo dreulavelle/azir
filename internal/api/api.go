@@ -87,6 +87,11 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/capabilities/{plugin}/{tool}/decide",
 		s.require(identity.PermPluginApprove, s.decideCapability))
 
+	mux.HandleFunc("GET /api/data",
+		s.require(identity.PermDataManage, ignoreActor(s.getDataUsage)))
+	mux.HandleFunc("POST /api/data/clear",
+		s.require(identity.PermDataManage, s.clearWork))
+
 	mux.HandleFunc("GET /api/customers", s.require(p, ignoreActor(s.listCustomers)))
 	mux.HandleFunc("GET /api/customers/{id}", s.require(p, ignoreActor(s.getCustomer)))
 	mux.HandleFunc("POST /api/customers",

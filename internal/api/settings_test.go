@@ -42,6 +42,13 @@ func TestMain(m *testing.M) {
 // meaningless without a registry that knows which is which, so the test runs
 // the same discovery core does rather than a stand-in for it.
 func server(t *testing.T) (*httptest.Server, *http.Client) {
+	srv, client, _ := serverWithDB(t)
+	return srv, client
+}
+
+// serverWithDB is the same harness, handing back the database as well, for the
+// tests whose subject is what is stored rather than what an endpoint answers.
+func serverWithDB(t *testing.T) (*httptest.Server, *http.Client, *store.DB) {
 	t.Helper()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -138,7 +145,7 @@ func server(t *testing.T) (*httptest.Server, *http.Client) {
 		"email": "admin@test.local", "display_name": "Admin", "password": "test-password-1234",
 	}, http.StatusOK)
 
-	return srv, client
+	return srv, client, db
 }
 
 func do(t *testing.T, c *http.Client, method, url string, body any, wantStatus int) map[string]any {

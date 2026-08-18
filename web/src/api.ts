@@ -128,6 +128,7 @@ export const Perm = {
   userManage: "user.manage",
   customerManage: "customer.manage",
   auditRead: "audit.read",
+  dataManage: "data.manage",
   toolRead: "tool.read",
 } as const;
 
@@ -786,6 +787,26 @@ export const work = {
   docs: (query: string) => perform<Paged<Doc>>(Cap.docs, { query }),
 };
 
+/** One kind of thing Azir is holding, as the Data screen shows it. */
+export type Stored = {
+  name: string;
+  detail: string;
+  count: number;
+  bytes: number;
+  /** Whether starting fresh removes this. */
+  cleared: boolean;
+  /** How it goes away on its own, in words. Absent means it stays. */
+  expires?: string;
+};
+
+export type DataUsage = {
+  stored: Stored[];
+  /** The whole database on disk, which is larger than the parts add up to. */
+  total: number;
+};
+
+export type Removed = { name: string; rows: number };
+
 export const api = {
   authState: () => request<AuthState>("/api/setup"),
 
@@ -812,6 +833,14 @@ export const api = {
   logout: () => request<void>("/api/logout", { method: "POST" }),
 
   me: () => request<Actor>("/api/me"),
+
+  data: () => request<DataUsage>("/api/data"),
+
+  clearData: () =>
+    request<{ removed: Removed[] }>("/api/data/clear", {
+      method: "POST",
+      body: JSON.stringify({ confirm: "clear" }),
+    }),
 
   registry: () => request<Registry>("/api/registry"),
 
