@@ -60,6 +60,8 @@ init: ## Generate any missing secrets in .env (never rewrites one that exists)
 	  "# Every stored credential is sealed with this. Lose it and the vault cannot be read."; \
 	add SEARXNG_SECRET "$$(openssl rand -hex 32)" \
 	  "# Signs SearXNG's own sessions. It never sees a customer credential."; \
+	add AZIR_BIND "127.0.0.1" \
+	  "# Which address Azir is published on. Loopback keeps it off the LAN and\n# off every container bridge. A tunnel or proxy on another machine needs a\n# reachable address here — name the one interface, never 0.0.0.0."; \
 	add AZIR_SMOKE_EMAIL "smoke@azir.local" \
 	  "# Used only by scripts/smoke.sh against a development stack."; \
 	add AZIR_SMOKE_PASSWORD "$$(openssl rand -base64 18)" ""; \

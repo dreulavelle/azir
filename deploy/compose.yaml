@@ -27,7 +27,20 @@ services:
       # Set NATS_URL to point at an external cluster instead of the embedded
       # server. Everything else is unchanged when you do.
     ports:
-      - "${AZIR_PORT:-8080}:8080"
+      # Bound to one address rather than all of them.
+      #
+      # Docker's default publishes on every interface the host has: the LAN
+      # address, every container bridge, and IPv6. On a machine running other
+      # containers that means any of them can reach this API directly — and
+      # this API is the front door to a credential vault. It was fourteen
+      # addresses on the host this was noticed on.
+      #
+      # Loopback is the default because it is right for anything that
+      # terminates TLS on this machine. A tunnel or proxy running elsewhere on
+      # the network needs a reachable address instead: set AZIR_BIND to the one
+      # interface it comes in on, never back to 0.0.0.0, and firewall that port
+      # to the proxy's address.
+      - "${AZIR_BIND:-127.0.0.1}:${AZIR_PORT:-8080}:8080"
     volumes:
       # JetStream's store. Postgres holds everything else.
       - azir-data:/var/lib/azir
