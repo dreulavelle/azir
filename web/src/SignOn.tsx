@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, type AuthSettings, type Role } from "./api";
-import { Button, CopyButton, Label, PanelHead, Problem, TextInput } from "./ui";
+import { Button, CopyButton, Label, PanelHead, Problem, TextInput, roleLabel } from "./ui";
 
 /**
  * Single sign-on settings.
@@ -21,8 +21,11 @@ function domainList(text: string): string[] {
     .filter(Boolean);
 }
 
-export function SignOn({ roles }: { roles: Role[] }) {
+export function SignOn() {
   const [settings, setSettings] = useState<AuthSettings | null>(null);
+  // Loaded here rather than handed in. This screen is reached on its own now,
+  // and the only thing it wants roles for is naming the one new accounts get.
+  const [roles, setRoles] = useState<Role[]>([]);
   const [draft, setDraft] = useState<Partial<AuthSettings> & { client_secret?: string }>({});
   // The domains field holds what was typed, not what it parses to.
   //
@@ -53,6 +56,14 @@ export function SignOn({ roles }: { roles: Role[] }) {
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "could not load sign-on settings");
+    }
+    // Separately, and deliberately not fatal: without the role list the picker
+    // falls back to naming what is already saved, which is worse than a
+    // populated dropdown but far better than refusing to show the page.
+    try {
+      setRoles((await api.roles()).roles);
+    } catch {
+      setRoles([]);
     }
   }, []);
 
@@ -271,9 +282,12 @@ export function SignOn({ roles }: { roles: Role[] }) {
               value={draft.default_role ?? "viewer"}
               onChange={(e) => set({ default_role: e.target.value })}
             >
-              {roles.map((r) => (
-                <option key={r.name} value={r.name}>
-                  {r.name}
+              {(roles.length > 0
+                ? roles.map((r) => r.name)
+                : [draft.default_role ?? "viewer"]
+              ).map((name) => (
+                <option key={name} value={name}>
+                  {roleLabel(name)}
                 </option>
               ))}
             </select>

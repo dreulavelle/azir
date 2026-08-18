@@ -28,8 +28,17 @@ export type SettingsTab = {
 export const SETTINGS_TABS: SettingsTab[] = [
   { id: "plugins", label: "Plugins", needs: Perm.toolRead },
   { id: "assistant", label: "Assistant", needs: Perm.pluginConfigure },
-  { id: "people", label: "People", needs: Perm.userManage },
-  { id: "customers", label: "Customer list", needs: Perm.toolRead },
+  { id: "users", label: "Users", needs: Perm.userManage },
+  // Beside Users rather than inside it: who works here is a weekly question,
+  // and what a technician is trusted with is one somebody decides once. The
+  // second was being read as a footnote to the first.
+  { id: "roles", label: "Roles", needs: Perm.userManage },
+  // Its own room rather than a panel at the bottom of Users. The two answer
+  // different questions — Users is who exists and what they may do, this is
+  // how anyone gets in at all — and they are not even guarded by the same
+  // permission, so living together meant an administrator who could configure
+  // sign-on but not manage accounts could never reach it.
+  { id: "auth", label: "Authentication", needs: Perm.pluginConfigure },
   { id: "branding", label: "Branding", needs: Perm.pluginConfigure },
   { id: "data", label: "Data", needs: Perm.dataManage },
   { id: "audit", label: "Activity log", needs: Perm.auditRead },

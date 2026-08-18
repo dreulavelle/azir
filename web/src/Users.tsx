@@ -1,69 +1,19 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, Perm, type Actor, type Role, type User } from "./api";
-import { Tooltip } from "./components";
-import { SignOn } from "./SignOn";
-import { Button, Chip, Empty, Icon, PanelHead, Picker, Problem, TextInput, absolute, ago, initials } from "./ui";
+import { api, type Actor, type Role, type User } from "./api";
+import { Button, Chip, Empty, Icon, PanelHead, Picker, Problem, TextInput, absolute, ago, initials, roleLabel } from "./ui";
 import { useToast } from "./Toast";
 import { cn } from "@/lib/cn";
 
 /**
- * What each permission actually lets someone do.
+ * The accounts that can sign in, and nothing else.
  *
- * The names are how the code checks them and are meant to be unambiguous, not
- * readable. An administrator deciding who gets what is answering a question in
- * their own terms — "can this person reply to customers" — so that is the
- * question the grid should be asking.
- */
-const PERMISSIONS: Record<string, { label: string; group: string; note?: string }> = {
-  "tool.read": {
-    label: "Use Azir at all",
-    group: "Everyday work",
-    note: "Without this, someone can sign in and see nothing.",
-  },
-  "ticket.comment": { label: "Reply to tickets", group: "Everyday work" },
-  "ticket.status": { label: "Change a ticket's status", group: "Everyday work" },
-  "ticket.assign": { label: "Assign tickets to people", group: "Everyday work" },
-  "tool.write": {
-    label: "Make changes in connected systems",
-    group: "Everyday work",
-    note: "Still refused unless an administrator has allowed changes for that connection.",
-  },
-
-  "customer.manage": { label: "Add and edit customer records", group: "Administration" },
-  "user.manage": {
-    label: "Add and manage people",
-    group: "Administration",
-    note: "This is how someone could give themselves more access, so grant it carefully.",
-  },
-  "role.manage": { label: "Change what roles can do", group: "Administration" },
-  "audit.read": { label: "See the activity log", group: "Administration" },
-
-  "plugin.configure": {
-    label: "Set up connections and sign-in",
-    group: "Setup",
-    note: "Includes storing the passwords Azir uses to reach your systems.",
-  },
-  "plugin.approve": { label: "Choose what Azir is allowed to do", group: "Setup" },
-  "credential.manage": { label: "Manage stored passwords", group: "Setup" },
-};
-
-function permission(name: string) {
-  return PERMISSIONS[name] ?? { label: name.replace(/[._]/g, " "), group: "Other" };
-}
-
-const GROUPS = ["Everyday work", "Administration", "Setup", "Other"];
-
-/**
- * Accounts, and what each role may do.
- *
- * The role editor is deliberately read-only for now: roles are rows in a table
- * and adding one is an INSERT, but a half-built editor that can produce a role
- * holding nothing useful is worse than a clear view of the three that exist.
+ * What a role may do lives on its own screen. This one answers who works here
+ * and which role each of them holds — the question somebody comes back to
+ * every time a technician joins or leaves.
  */
 export function Users({ actor }: { actor: Actor }) {
   const [users, setUsers] = useState<User[] | null>(null);
   const [roles, setRoles] = useState<Role[]>([]);
-  const [permissions, setPermissions] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -71,7 +21,6 @@ export function Users({ actor }: { actor: Actor }) {
       const [list, roleDoc] = await Promise.all([api.users(), api.roles()]);
       setUsers(list);
       setRoles(roleDoc.roles);
-      setPermissions(roleDoc.all_permissions);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "could not load users");
@@ -86,121 +35,40 @@ export function Users({ actor }: { actor: Actor }) {
   if (!users) return <div className="h-50 animate-pulse rounded-lg bg-sunken" />;
 
   return (
-    <>
-      <section className="mb-4 rounded-lg border border-edge bg-panel shadow-e1">
-        <PanelHead>
-          <h2>People</h2>
-          <span className="text-xs text-ink-faint">
-            {users.length} account{users.length === 1 ? "" : "s"}
-          </span>
-        </PanelHead>
-        <div className="p-4 pt-0">
-          <table className="w-full border-collapse text-sm">
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th className="w-[170px]">Role</th>
-                <th className="w-[130px]">Last seen</th>
-                <th className="w-[210px]" />
-              </tr>
-            </thead>
-            <tbody>
-              {users.map((u) => (
-                <Person
-                  key={u.id}
-                  user={u}
-                  actor={actor}
-                  roles={roles}
-                  onChanged={(next) => setUsers(next)}
-                  onGone={() => void load()}
-                />
-              ))}
-            </tbody>
-          </table>
+    <section className="rounded-lg border border-edge bg-panel shadow-e1">
+      <PanelHead>
+        <h2>Users</h2>
+        <span className="text-xs text-ink-faint">
+          {users.length} account{users.length === 1 ? "" : "s"}
+        </span>
+      </PanelHead>
+      <div className="p-4 pt-0">
+        <table className="w-full border-collapse text-sm">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th className="w-[170px]">Role</th>
+              <th className="w-[130px]">Last seen</th>
+              <th className="w-[210px]" />
+            </tr>
+          </thead>
+          <tbody>
+            {users.map((u) => (
+              <Person
+                key={u.id}
+                user={u}
+                actor={actor}
+                roles={roles}
+                onChanged={(next) => setUsers(next)}
+                onGone={() => void load()}
+              />
+            ))}
+          </tbody>
+        </table>
 
-          <NewUser roles={roles} onCreated={() => void load()} />
-        </div>
-      </section>
-
-      <section className="mb-4 rounded-lg border border-edge bg-panel shadow-e1">
-        <PanelHead>
-          <h2>Roles</h2>
-        </PanelHead>
-        <div className="p-4">
-          <p className="mb-3 max-w-[68ch] text-xs text-ink-dim">
-            Every check asks what someone is allowed to do, never what their
-            role is called — so a new role with its own mix of these is a
-            setting, not a rebuild.
-          </p>
-
-          {/* A grid rather than a list per role: the useful question is which
-              roles hold a given ability, and that reads down a column. */}
-          <div className="overflow-x-auto">
-            <table className="w-full border-collapse text-sm">
-              <thead>
-                <tr>
-                  <th>Can they…</th>
-                  {roles.map((r) => (
-                    <th key={r.name} className="w-[112px] text-center">
-                      {r.name}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {GROUPS.flatMap((group) => {
-                  const inGroup = permissions.filter((p) => permission(p).group === group);
-                  if (inGroup.length === 0) return [];
-                  return [
-                    <tr key={`group-${group}`} className="bg-sunken/50">
-                      <td colSpan={roles.length + 1} className="font-mono text-2xs font-medium uppercase tracking-[0.09em] text-ink-faint">
-                        {group}
-                      </td>
-                    </tr>,
-                    ...inGroup.map((p) => {
-                      const { label, note } = permission(p);
-                      return (
-                        <tr key={p} className="cursor-default">
-                          <td>
-                            {note ? (
-                              <Tooltip content={note}>
-                                <span className="font-medium">{label}</span>
-                              </Tooltip>
-                            ) : (
-                              label
-                            )}
-                          </td>
-                          {roles.map((r) => (
-                            <td key={r.name} className="text-center">
-                              {/* Allowed reads as a status light; not allowed
-                                  reads as an absence rather than as a second
-                                  kind of mark, so a column scans as "how much
-                                  can this role do" without being counted. */}
-                              {r.permissions.includes(p) ? (
-                                <span
-                                  className="inline-block size-2 rounded-full bg-steady align-middle"
-                                  title={`${r.name} can`}
-                                />
-                              ) : (
-                                <span className="text-ink-faint/40" aria-label="cannot">
-                                  —
-                                </span>
-                              )}
-                            </td>
-                          ))}
-                        </tr>
-                      );
-                    }),
-                  ];
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </section>
-
-      {actor.permissions.includes(Perm.pluginConfigure) && <SignOn roles={roles} />}
-    </>
+        <NewUser roles={roles} onCreated={() => void load()} />
+      </div>
+    </section>
   );
 }
 
@@ -314,11 +182,11 @@ function Person({
               value={user.role}
               disabled={busy}
               aria-label={`Role for ${user.email}`}
-              onChange={(e) => void patch({ role: e.target.value }, `Now a ${e.target.value}`)}
+              onChange={(e) => void patch({ role: e.target.value }, `Now a ${roleLabel(e.target.value)}`)}
             >
               {roles.map((r) => (
                 <option key={r.name} value={r.name}>
-                  {r.name}
+                  {roleLabel(r.name)}
                 </option>
               ))}
             </Picker>
@@ -511,7 +379,7 @@ function NewUser({ roles, onCreated }: { roles: Role[]; onCreated: () => void })
         >
           {roles.map((r) => (
             <option key={r.name} value={r.name}>
-              {r.name}
+              {roleLabel(r.name)}
             </option>
           ))}
         </select>

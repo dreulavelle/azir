@@ -548,3 +548,22 @@ export function initials(name: string): string {
   if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
+
+/**
+ * A role's name, as a person reads it.
+ *
+ * The stored name is an identifier — it is a foreign key, it travels in the
+ * API, and lowercasing it is what keeps "Admin" and "admin" from becoming two
+ * roles. So the capital letter is put on at the last moment, here, rather than
+ * in the database where it would have to be got right forever.
+ *
+ * Hyphens and underscores become spaces so a role somebody adds later reads as
+ * words rather than as a slug.
+ */
+export function roleLabel(name: string): string {
+  return name
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}

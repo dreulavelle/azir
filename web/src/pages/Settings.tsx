@@ -5,10 +5,11 @@ import type { Route } from "../router";
 import { AssistantSettings } from "../AssistantSettings";
 import { Plugins } from "../Plugins";
 import { Users } from "../Users";
+import { Roles } from "../Roles";
 import { Audit } from "../Audit";
 import { BrandingSettings } from "../BrandingSettings";
 import { DataSettings } from "../DataSettings";
-import { Customers as CustomerSpine } from "../Customers";
+import { SignOn } from "../SignOn";
 
 /**
  * Administration, out of the way.
@@ -36,8 +37,9 @@ export function Settings({
   const render: Record<string, () => React.ReactNode> = {
     plugins: () => <Plugins actor={actor} />,
     assistant: () => <AssistantSettings />,
-    people: () => <Users actor={actor} />,
-    customers: () => <CustomerSpine actor={actor} />,
+    users: () => <Users actor={actor} />,
+    roles: () => <Roles />,
+    auth: () => <SignOn />,
     branding: () => <BrandingSettings />,
     data: () => <DataSettings />,
     audit: () => <Audit />,

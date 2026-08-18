@@ -17,7 +17,7 @@ import { useFallbackPoll, useLiveChanges } from "./live";
 import { useTicketWatch } from "./watch";
 import { cn } from "@/lib/cn";
 import { BrandingProvider, Mark, useBranding } from "./branding";
-import { Icon, initials, statusTone, type Signal } from "./ui";
+import { Icon, initials, roleLabel, statusTone, type Signal } from "./ui";
 import { Triage } from "./pages/Triage";
 import { Tickets } from "./pages/Tickets";
 import { TicketDetail } from "./pages/TicketDetail";
@@ -270,7 +270,7 @@ function Console() {
               <span className="truncate text-xs font-medium">
                 {actor.display_name || actor.email}
               </span>
-              <span className="text-2xs text-ink-faint">{actor.role}</span>
+              <span className="text-2xs text-ink-faint">{roleLabel(actor.role)}</span>
             </span>
             <button
               className="shrink-0 rounded-md p-1 text-ink-faint transition-colors hover:bg-panel hover:text-ink"
