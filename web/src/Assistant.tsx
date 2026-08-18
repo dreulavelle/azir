@@ -642,8 +642,7 @@ export function AssistantPanel({
           <div className="flex flex-col gap-1.5 py-6"><div className="flex flex-col gap-1.5">
             <p className="text-sm font-semibold">The assistant is not set up yet</p>
             <p className="text-xs text-ink-dim">
-              An administrator can switch it on in Settings and add a key for
-              your chosen model provider.
+              An admin can switch it on in Settings and add a provider key.
             </p>
           </div></div>
         ) : messages.length === 0 ? (
@@ -658,8 +657,8 @@ export function AssistantPanel({
               {looking ? `Ask about ${looking}` : "Ask about a ticket or a customer"}
             </p>
             <p className="text-xs text-ink-dim">
-              It reads your tickets, customers, equipment and documentation to
-              answer. It can draft a reply, but it cannot send one.
+              Reads your tickets, customers and equipment to answer. Can draft
+              a reply, never send one.
             </p>
             <div className={cn("mt-2 gap-1.5", expanded ? "grid grid-cols-2" : "flex flex-col")}>
               {(looking

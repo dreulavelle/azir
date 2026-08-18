@@ -399,8 +399,8 @@ export function Triage({ actor, go }: { actor: Actor; go: (to: Route) => void })
               legend={{ points: "arrived", against: "finished" }}
             />
             <p className="mt-2 text-2xs text-ink-faint">
-              Finished is counted from when a ticket was last touched — the helpdesk keeps no
-              record of when one was resolved.
+              Finished counts from when a ticket was last touched. Your helpdesk
+              doesn't record resolution times.
             </p>
           </Panel>
 

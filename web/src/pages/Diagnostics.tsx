@@ -100,10 +100,9 @@ export function Diagnostics({
           <h1 className="text-2xl font-semibold tracking-tight">Diagnostics</h1>
           <p className="mt-1 max-w-[62ch] text-sm text-ink-dim">
             Upload a 3CX support bundle, or collect one from a customer's phone
-            system. Azir reads the parts that explain a fault — silent calls,
-            packet loss on the wire, a trunk that keeps dropping, what somebody
-            changed last week — instead of you unzipping forty megabytes to find
-            them.
+            system. Azir reads it for what explains the fault — silent calls,
+            packet loss, a trunk that keeps dropping — so you don't have to
+            unzip forty megabytes.
           </p>
         </div>
       </div>
@@ -115,8 +114,8 @@ export function Diagnostics({
 
       {list && list.length === 0 && (
         <Empty headline="No captures yet">
-          Collect one from a customer's PBX above, or in 3CX go to Admin →
-          Support → collect support info and upload the zip.
+          Collect one above, or in 3CX go to Admin → Support → collect support
+          info and upload the zip.
         </Empty>
       )}
 
@@ -325,8 +324,8 @@ function Collect({ onDone }: { onDone: () => void }) {
       )}
 
       <span className="w-full text-xs text-ink-faint sm:w-auto">
-        The bundle is read and discarded either way. Findings are kept for 14
-        days unless you keep one.
+        The bundle is read and discarded either way. Findings expire on their
+        own unless you keep one.
       </span>
     </Panel>
   );

@@ -98,8 +98,8 @@ export function GettingStarted({ actor, go }: { actor: Actor; go: (to: Route) =>
       <div className="rounded-lg border border-edge bg-panel p-5 shadow-e1">
         <h2 className="text-base font-semibold">Azir is not set up yet</h2>
         <p className="mt-1.5 max-w-[60ch] text-sm text-ink-dim">
-          An administrator needs to connect your helpdesk before there is
-          anything here. Nothing you do will be lost in the meantime.
+          An admin needs to connect your helpdesk first. Nothing is lost in
+          the meantime.
         </p>
       </div>
     );

@@ -351,7 +351,7 @@ function Thread({ entries }: { entries: TimelineEntry[] }) {
   if (entries.length === 0) {
     return (
       <Empty headline="Nothing else has happened yet">
-        Nobody has replied, and no time has been logged against it.
+        No replies, and no time logged.
       </Empty>
     );
   }
@@ -605,7 +605,7 @@ function WhoToCall({
         <Person contact={reporter} lead />
       ) : (
         <p className="mb-3 text-xs text-ink-faint">
-          This ticket does not name anyone, so it is the company below.
+          This ticket names no contact, so it is the company below.
         </p>
       )}
 
