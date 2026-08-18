@@ -107,3 +107,40 @@ func TestDeliveryRateLimit(t *testing.T) {
 		t.Error("one endpoint's limit blocked a different endpoint")
 	}
 }
+
+/*
+One refresh at a time, and nothing lost.
+
+A technician working through a ticket produces a burst of deliveries, and each
+one used to start its own full refresh of the recent page against the same
+helpdesk. They all ask the same question. What must not happen is the opposite
+mistake — a delivery that lands while a refresh is running being dropped, so
+whatever it was about is never read.
+*/
+func TestBurstsOfDeliveriesCoalesceIntoOneRefresh(t *testing.T) {
+	var c coalescer
+
+	if !c.start() {
+		t.Fatal("the first caller should run")
+	}
+	// Everything arriving while it runs is declined, not queued up.
+	for range 10 {
+		if c.start() {
+			t.Fatal("a second refresh started while one was already running")
+		}
+	}
+	// But it is remembered, so the running one goes round again once.
+	if !c.done() {
+		t.Fatal("deliveries arrived during the run and were forgotten")
+	}
+	if c.done() {
+		t.Fatal("went round again with nothing waiting")
+	}
+	// And it is released afterwards.
+	if !c.start() {
+		t.Fatal("the next delivery could not start a refresh")
+	}
+	if c.done() {
+		t.Fatal("went round again with nothing waiting")
+	}
+}

@@ -48,6 +48,51 @@ const maxWebhookBody = 64 << 10
 // volume and far below anything that would matter.
 const deliveryLimit = 120
 
+/*
+reindexing keeps one refresh running at a time.
+
+Every delivery used to start its own goroutine, so a burst — which is what a
+technician working through a ticket produces — put several full refreshes
+against the same helpdesk in flight at once, each of them re-reading the same
+page. They are all asking the same question, so one answer will do.
+
+A delivery that arrives while a refresh is running is not dropped: it sets the
+flag that makes the running one go round again, so whatever changed during it
+is still picked up on the next pass.
+*/
+type coalescer struct {
+	mu      sync.Mutex
+	running bool
+	again   bool
+}
+
+// start reports whether the caller should run. When one is already going, it
+// records that another was wanted and declines.
+func (c *coalescer) start() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.running {
+		c.again = true
+		return false
+	}
+	c.running = true
+	return true
+}
+
+// done reports whether to go round again, and releases if not.
+func (c *coalescer) done() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.again {
+		c.again = false
+		return true
+	}
+	c.running = false
+	return false
+}
+
+var reindexing coalescer
+
 type rateWindow struct {
 	mu     sync.Mutex
 	counts map[string]int
@@ -279,7 +324,7 @@ func (s *Server) receiveWebhook(w http.ResponseWriter, r *http.Request) {
 	// its body is never believed — so this refetches the queue and reindexes
 	// what changed, the same way every other reaction to a webhook works.
 	if subject == "ticket" {
-		go s.reindexRecent(context.WithoutCancel(r.Context()))
+		go s.reindexSoon(context.WithoutCancel(r.Context()))
 	}
 
 	// The event name is logged; the body is not. Knowing that
@@ -321,4 +366,17 @@ func (s *Server) rotateWebhook(w http.ResponseWriter, r *http.Request, actor ide
 		Plugin: name, Outcome: audit.OutcomeOK,
 	})
 	writeJSON(w, http.StatusOK, map[string]any{"path": "/api/hooks/" + endpoint.Secret})
+}
+
+// reindexSoon runs a refresh, coalescing with any already in flight.
+func (s *Server) reindexSoon(ctx context.Context) {
+	if !reindexing.start() {
+		return
+	}
+	for {
+		s.reindexRecent(ctx)
+		if !reindexing.done() {
+			return
+		}
+	}
 }

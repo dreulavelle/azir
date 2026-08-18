@@ -41,6 +41,42 @@ type Remembered struct {
 	Score float64 `json:"-"`
 }
 
+/*
+LastSeen reports when each of these tickets was last recorded as having moved.
+
+Used to answer "which of these actually changed" without asking the connected
+system about any of them. The ids come from a ticket list Azir fetched with its
+own credentials, so this compares one thing Azir knows against another — no
+part of it believes anything a webhook said.
+
+Tickets that have never been indexed are simply absent from the result, which
+is the same answer as "changed" for the caller's purposes.
+*/
+func (db *DB) LastSeen(ctx context.Context, source string, ids []string) (map[string]time.Time, error) {
+	seen := make(map[string]time.Time, len(ids))
+	if len(ids) == 0 {
+		return seen, nil
+	}
+	rows, err := db.pool.Query(ctx,
+		`SELECT external_id, closed_at FROM ticket_memory
+		  WHERE source = $1 AND external_id = ANY($2) AND closed_at IS NOT NULL`,
+		source, ids)
+	if err != nil {
+		return nil, fmt.Errorf("store: last seen: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id string
+		var at time.Time
+		if err := rows.Scan(&id, &at); err != nil {
+			return nil, err
+		}
+		seen[id] = at
+	}
+	return seen, rows.Err()
+}
+
 // RememberTicket adds or updates one finished ticket in the index.
 func (db *DB) RememberTicket(ctx context.Context, t Remembered) error {
 	if t.Source == "" || t.ExternalID == "" {

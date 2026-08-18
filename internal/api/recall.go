@@ -416,6 +416,21 @@ webhook in this system follows.
 Only the first page. A helpdesk sorts by recency, so the tickets that could have
 changed are at the front; walking further would be doing the backfill's job on
 every customer reply.
+
+And only the tickets on it that actually moved. Indexing one ticket means
+reading its whole thread, so re-indexing the page cost twenty-six requests
+against a customer's helpdesk every time a single ticket changed — with the
+caches for exactly those requests having just been dropped by the webhook that
+triggered it, so not one of them could be served from memory. Syncro sends a
+delivery for every comment and status change, and the rate limiter allows a
+hundred and twenty a minute, so the ceiling was a few thousand requests a minute
+against somebody else's API to re-read tickets that had not changed.
+
+The page itself says when each ticket last moved, and the index already records
+what it saw. Comparing the two costs nothing and is not a matter of trusting
+anybody: both halves are things Azir read for itself. What is left is one
+request for the page, plus one per ticket that genuinely changed — normally
+one.
 */
 func (s *Server) reindexRecent(ctx context.Context) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
@@ -426,11 +441,36 @@ func (s *Server) reindexRecent(ctx context.Context) {
 		s.Log.Warn("could not reindex after a webhook", "error", err)
 		return
 	}
+
+	ids := make([]string, 0, len(tickets))
 	for _, t := range tickets {
-		if err := s.indexOne(ctx, t); err != nil {
-			s.Log.Warn("could not index a ticket", "error", err)
+		if id := asString(t["id"]); id != "" {
+			ids = append(ids, id)
 		}
 	}
+	seen, err := s.DB.LastSeen(ctx, recallSource, ids)
+	if err != nil {
+		// Not fatal: without the comparison this does what it used to, which
+		// is correct and merely expensive.
+		s.Log.Warn("could not read what was already indexed", "error", err)
+		seen = nil
+	}
+
+	var indexed, skipped int
+	for _, t := range tickets {
+		id := asString(t["id"])
+		moved := asTime(t["updated_at"])
+		if was, ok := seen[id]; ok && moved != nil && was.Equal(*moved) {
+			skipped++
+			continue
+		}
+		if err := s.indexOne(ctx, t); err != nil {
+			s.Log.Warn("could not index a ticket", "error", err)
+			continue
+		}
+		indexed++
+	}
+	s.Log.Info("reindexed after a webhook", "read", indexed, "unchanged", skipped)
 }
 
 /*
