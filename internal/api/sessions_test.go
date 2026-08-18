@@ -11,13 +11,20 @@ import (
 // end that is not the one asking.
 func signIn(t *testing.T, url string) *http.Client {
 	t.Helper()
+	return signInAs(t, url, "admin@test.local", "test-password-1234")
+}
+
+// signInAs opens a session as anybody, for the tests whose subject is what a
+// different account is allowed to do.
+func signInAs(t *testing.T, url, email, password string) *http.Client {
+	t.Helper()
 	jar, err := cookiejar.New(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	client := &http.Client{Jar: jar, Timeout: 15 * time.Second}
 	do(t, client, http.MethodPost, url+"/api/login", map[string]string{
-		"email": "admin@test.local", "password": "test-password-1234",
+		"email": email, "password": password,
 	}, http.StatusOK)
 	return client
 }

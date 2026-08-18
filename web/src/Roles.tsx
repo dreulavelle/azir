@@ -48,7 +48,11 @@ const PERMISSIONS: Record<string, { label: string; group: string; note?: string 
     group: "Administration",
     note: "This is how someone could give themselves more access, so grant it carefully.",
   },
-  "role.manage": { label: "Change what roles can do", group: "Administration" },
+  "role.manage": {
+    label: "Change what roles can do",
+    group: "Administration",
+    note: "Close to full access: it can widen any role but admin and their own. Grant it carefully.",
+  },
   "audit.read": { label: "See the activity log", group: "Administration" },
   "data.manage": {
     label: "See what is stored, and clear it",

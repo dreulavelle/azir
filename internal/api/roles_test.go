@@ -157,3 +157,48 @@ func TestTheOtherBuiltInRolesCanBeChanged(t *testing.T) {
 		t.Errorf("viewer holds %v", held)
 	}
 }
+
+/*
+role.manage is not a way to become an administrator on your own.
+
+Hold it, add credential.manage to the role you are already in, and the vault
+opens on the next request — which is what an audit of this found it doing. It
+is inherent to letting anybody edit roles at all; what is not inherent is
+letting somebody do it to their own without another person involved.
+
+Somebody else with the permission can still change this role, and an
+administrator always can. Only the loop back to yourself is closed.
+*/
+func TestARoleCannotWidenItself(t *testing.T) {
+	srv, client := server(t)
+
+	do(t, client, http.MethodPost, srv.URL+"/api/roles", map[string]any{
+		"name":        "role-keeper",
+		"permissions": []string{"tool.read", "role.manage"},
+	}, http.StatusOK)
+	do(t, client, http.MethodPost, srv.URL+"/api/users", map[string]any{
+		"email":    "keeper@azir.local",
+		"role":     "role-keeper",
+		"password": "a-long-enough-password",
+	}, http.StatusCreated)
+
+	keeper := signInAs(t, srv.URL, "keeper@azir.local", "a-long-enough-password")
+
+	// Their own is refused...
+	do(t, keeper, http.MethodPatch, srv.URL+"/api/roles/role-keeper", map[string]any{
+		"permissions": []string{"tool.read", "role.manage", "credential.manage"},
+	}, http.StatusForbidden)
+
+	// ...and refusing it is what keeps the vault shut.
+	do(t, keeper, http.MethodGet, srv.URL+"/api/credentials", nil, http.StatusForbidden)
+
+	// Another role is still theirs to change, which is the permission working.
+	do(t, keeper, http.MethodPatch, srv.URL+"/api/roles/viewer", map[string]any{
+		"permissions": []string{"tool.read", "audit.read"},
+	}, http.StatusOK)
+
+	// And the administrator who granted it can still change it.
+	do(t, client, http.MethodPatch, srv.URL+"/api/roles/role-keeper", map[string]any{
+		"permissions": []string{"tool.read"},
+	}, http.StatusOK)
+}

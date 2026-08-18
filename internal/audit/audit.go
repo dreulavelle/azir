@@ -93,6 +93,9 @@ func (r *Recorder) Record(ctx context.Context, e Event) {
 	if e.Outcome == "" {
 		e.Outcome = OutcomeOK
 	}
+	// Much of what reaches here is somebody else's error message repeated
+	// verbatim. See scrub.go.
+	e.Detail = scrub(e.Detail)
 
 	body, err := json.Marshal(e)
 	if err != nil {

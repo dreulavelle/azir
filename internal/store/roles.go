@@ -7,8 +7,6 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/dreulavelle/azir/internal/identity"
 )
 
@@ -173,19 +171,4 @@ func (db *DB) DeleteRole(ctx context.Context, name string) error {
 		return ErrNotFound
 	}
 	return nil
-}
-
-// RoleByName reads one role.
-func (db *DB) RoleByName(ctx context.Context, name string) (Role, error) {
-	var r Role
-	err := db.pool.QueryRow(ctx,
-		`SELECT name, description, permissions, builtin FROM roles WHERE name = $1`, name).
-		Scan(&r.Name, &r.Description, &r.Permissions, &r.Builtin)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return Role{}, ErrNotFound
-	}
-	if err != nil {
-		return Role{}, fmt.Errorf("store: role: %w", err)
-	}
-	return r, nil
 }

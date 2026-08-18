@@ -118,6 +118,20 @@ func (s *Server) updateRole(w http.ResponseWriter, r *http.Request, actor identi
 	}
 
 	name := r.PathValue("name")
+
+	// Not your own.
+	//
+	// role.manage is otherwise a way to become an administrator in one
+	// request: hold it, add credential.manage to the role you are already in,
+	// and the vault opens on the next call. Somebody else with the permission
+	// can still change this role, and an administrator always can — what is
+	// refused is widening your own reach without anybody else involved.
+	if name == actor.Role {
+		writeJSON(w, http.StatusForbidden, errBody(
+			"You cannot change your own role. Ask another administrator."))
+		return
+	}
+
 	role, err := s.DB.UpdateRole(r.Context(), name, body.Description, body.Permissions)
 	if errors.Is(err, store.ErrRoleProtected) {
 		writeJSON(w, http.StatusForbidden, errBody(
