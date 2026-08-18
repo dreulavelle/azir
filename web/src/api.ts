@@ -818,6 +818,20 @@ export type DataUsage = {
 
 export type Removed = { name: string; rows: number };
 
+/** One open sign-in. */
+export type Session = {
+  /** The token's hash. Safe to show; useless to steal. */
+  id: string;
+  user_id: string;
+  email: string;
+  started_at: string;
+  expires_at: string;
+  device?: string;
+  ip?: string;
+  /** The one making this request. */
+  current: boolean;
+};
+
 export const api = {
   authState: () => request<AuthState>("/api/setup"),
 
@@ -941,6 +955,13 @@ export const api = {
     }),
 
   roles: () => request<{ roles: Role[]; all_permissions: string[] }>("/api/roles"),
+
+  sessions: () => request<{ sessions: Session[] }>("/api/sessions"),
+
+  endSession: (id: string) =>
+    request<{ ended: boolean }>(`/api/sessions/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
 
   createRole: (name: string, description: string, permissions: string[]) =>
     request<Role>("/api/roles", {

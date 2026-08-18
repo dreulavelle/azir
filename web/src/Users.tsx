@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { Sessions } from "./Sessions";
 import { api, type Actor, type Role, type User } from "./api";
 import { Button, Chip, Empty, Icon, PanelHead, Picker, Problem, TextInput, absolute, ago, initials, roleLabel } from "./ui";
 import { useToast } from "./Toast";
@@ -35,40 +36,44 @@ export function Users({ actor }: { actor: Actor }) {
   if (!users) return <div className="h-50 animate-pulse rounded-lg bg-sunken" />;
 
   return (
-    <section className="rounded-lg border border-edge bg-panel shadow-e1">
-      <PanelHead>
-        <h2>Users</h2>
-        <span className="text-xs text-ink-faint">
-          {users.length} account{users.length === 1 ? "" : "s"}
-        </span>
-      </PanelHead>
-      <div className="p-4 pt-0">
-        <table className="w-full border-collapse text-sm">
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th className="w-[170px]">Role</th>
-              <th className="w-[130px]">Last seen</th>
-              <th className="w-[210px]" />
-            </tr>
-          </thead>
-          <tbody>
-            {users.map((u) => (
-              <Person
-                key={u.id}
-                user={u}
-                actor={actor}
-                roles={roles}
-                onChanged={(next) => setUsers(next)}
-                onGone={() => void load()}
-              />
-            ))}
-          </tbody>
-        </table>
+    <>
+      <section className="rounded-lg border border-edge bg-panel shadow-e1">
+        <PanelHead>
+          <h2>Users</h2>
+          <span className="text-xs text-ink-faint">
+            {users.length} account{users.length === 1 ? "" : "s"}
+          </span>
+        </PanelHead>
+        <div className="p-4 pt-0">
+          <table className="w-full border-collapse text-sm">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th className="w-[170px]">Role</th>
+                <th className="w-[130px]">Last seen</th>
+                <th className="w-[210px]" />
+              </tr>
+            </thead>
+            <tbody>
+              {users.map((u) => (
+                <Person
+                  key={u.id}
+                  user={u}
+                  actor={actor}
+                  roles={roles}
+                  onChanged={(next) => setUsers(next)}
+                  onGone={() => void load()}
+                />
+              ))}
+            </tbody>
+          </table>
 
-        <NewUser roles={roles} onCreated={() => void load()} />
-      </div>
-    </section>
+            <NewUser roles={roles} onCreated={() => void load()} />
+          </div>
+      </section>
+
+      <Sessions />
+    </>
   );
 }
 

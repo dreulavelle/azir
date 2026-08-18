@@ -186,11 +186,33 @@ func run(log *slog.Logger) error {
 		toolCache.Prune(ctx, time.Hour, 7*24*time.Hour)
 	}()
 
-	// Abandoned sign-in attempts. Each is already unusable once it expires, so
-	// this only keeps the table from growing; it is not what makes them safe.
+	/*
+		Sign-ins that are over.
+
+		Both halves are already unusable by the time this reaches them — an
+		expired session is refused by the query that resolves it, and an
+		abandoned sign-in attempt by the one that redeems it — so this keeps
+		the tables from growing rather than being what makes either safe.
+
+		PruneSessions had been written and never called, so expired rows had
+		been accumulating since the table was made: fifty-three of them against
+		two live ones on the deployment where this was noticed. Nothing was
+		unsafe, but the count on the Data screen was mostly rows that no longer
+		meant anything.
+	*/
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		sweep := func() {
+			if n, err := db.PruneSessions(ctx); err != nil {
+				log.Warn("could not prune expired sessions", "error", err)
+			} else if n > 0 {
+				log.Info("pruned expired sessions", "count", n)
+			}
+		}
+		// Once at startup as well, so a deployment that has been off for a
+		// fortnight does not wait a quarter of an hour to tidy up.
+		sweep()
 		t := time.NewTicker(15 * time.Minute)
 		defer t.Stop()
 		for {
@@ -198,6 +220,7 @@ func run(log *slog.Logger) error {
 			case <-ctx.Done():
 				return
 			case <-t.C:
+				sweep()
 				if n, err := db.PurgeExpiredOIDCStates(ctx); err != nil {
 					log.Warn("could not purge abandoned sign-ins", "error", err)
 				} else if n > 0 {

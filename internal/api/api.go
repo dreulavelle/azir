@@ -132,6 +132,8 @@ func (s *Server) Routes() http.Handler {
 	// is its own permission — deciding who works here and deciding what a
 	// technician is trusted with are different decisions.
 	mux.HandleFunc("GET /api/roles", s.require(identity.PermUserManage, ignoreActor(s.listRoles)))
+	mux.HandleFunc("GET /api/sessions", s.require(identity.PermUserManage, ignoreActor(s.listSessions)))
+	mux.HandleFunc("DELETE /api/sessions/{id}", s.require(identity.PermUserManage, s.endSession))
 	mux.HandleFunc("POST /api/roles", s.require(identity.PermRoleManage, s.createRole))
 	mux.HandleFunc("PATCH /api/roles/{name}", s.require(identity.PermRoleManage, s.updateRole))
 	mux.HandleFunc("DELETE /api/roles/{name}", s.require(identity.PermRoleManage, s.deleteRole))
