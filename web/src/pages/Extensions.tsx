@@ -3,6 +3,8 @@ import {
   api,
   type Actor,
   type BulkPlan,
+  type BlfKey,
+  type BlfKind,
   type BulkSpec,
   type Customer,
   type ExtensionRow,
@@ -49,6 +51,7 @@ export function Extensions({ actor, go }: { actor: Actor; go?: (path: string) =>
   const [complete, setComplete] = useState(true);
   const [offset, setOffset] = useState(0);
   const [specs, setSpecs] = useState<BulkSpec[]>([]);
+  const [kinds, setKinds] = useState<BlfKind[]>([]);
   const [find, setFind] = useState("");
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [opening, setOpening] = useState(false);
@@ -154,6 +157,7 @@ export function Extensions({ actor, go }: { actor: Actor; go?: (path: string) =>
         return;
       }
       setSpecs(got.fields);
+      setKinds(got.kinds ?? []);
       setMode(
         got.extensions.length === 1
           ? { kind: "one", extension: got.extensions[0] }
@@ -237,6 +241,37 @@ export function Extensions({ actor, go }: { actor: Actor; go?: (path: string) =>
       await load(customerID, find.trim(), offset);
     } catch (e) {
       setProblem(e instanceof Error ? e.message : "Could not apply");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /**
+   * Saves a phone's buttons.
+   *
+   * On its own, not with the fields: the phone system keeps a key layout as
+   * one value and writes it whole, so it is one request with its own approval
+   * rather than another entry in a bag of changes.
+   */
+  async function saveKeys(numbers: string[], layout: { keys?: BlfKey[]; from?: string }) {
+    setBusy(true);
+    setEditorProblem(null);
+    try {
+      const got = await api.setExtensionKeys(customerID, numbers, layout);
+      const failed = Object.entries(got.problems ?? {});
+      if (failed.length > 0) {
+        setEditorProblem(
+          failed.map(([number, why]) => `${number}: ${why}`).join("; "),
+        );
+      } else {
+        toast(`Buttons set on ${got.changed} ${got.changed === 1 ? "phone" : "phones"}`, {
+          tone: "good",
+        });
+        setMode(null);
+      }
+      await load(customerID, find.trim(), offset);
+    } catch (e) {
+      setEditorProblem(e instanceof Error ? e.message : "Could not set the buttons");
     } finally {
       setBusy(false);
     }
@@ -440,6 +475,7 @@ export function Extensions({ actor, go }: { actor: Actor; go?: (path: string) =>
         <Editor
           mode={mode}
           specs={specs}
+          kinds={kinds}
           customer={customer?.display_name ?? "this customer"}
           busy={busy}
           problem={editorProblem}
@@ -448,6 +484,16 @@ export function Extensions({ actor, go }: { actor: Actor; go?: (path: string) =>
             setMode(null);
             setEditorProblem(null);
           }}
+          onSaveKeys={(layout) =>
+            void saveKeys(
+              mode.kind === "one"
+                ? [mode.extension.extension]
+                : mode.kind === "together"
+                  ? mode.extensions.map((e) => e.extension)
+                  : [],
+              layout,
+            )
+          }
           onSave={(draft, number) => {
             if (mode.kind === "one") void saveOne(mode.extension.extension, draft);
             else if (mode.kind === "together")

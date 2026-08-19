@@ -867,6 +867,29 @@ export type BulkSpec = {
 };
 
 /**
+ * One button on a desk phone.
+ *
+ * `no` is the phone system's own numbering, not an index: a layout can start
+ * at button two, because a key left at its default is not stored at all.
+ */
+export type BlfKey = {
+  no: number;
+  kind: string;
+  /** What it points at. Its meaning depends on the kind. */
+  id: string;
+  value: string;
+};
+
+/** A kind of button the phone system offers, and what it takes. */
+export type BlfKind = {
+  kind: string;
+  label: string;
+  /** What the value means, or empty when the key carries nothing. */
+  takes?: string;
+  note?: string;
+};
+
+/**
  * One row of the extensions table.
  *
  * Deliberately small. A thousand-extension deployment is megabytes of JSON if
@@ -891,6 +914,8 @@ export type BulkExtension = {
   enabled: boolean;
   /** Every editable field, as text. Booleans read "yes" or "no". */
   values: Record<string, string>;
+  /** The buttons on the desk phone, in the order they sit on it. */
+  keys?: BlfKey[];
 };
 
 export type BulkEdit = {
@@ -1060,9 +1085,30 @@ export const api = {
 
   /** Everything about the extensions named, for the editor. */
   extensionValues: (customerID: string, extensions: string[]) =>
-    request<{ extensions: BulkExtension[]; fields: BulkSpec[]; missing: string[] }>(
+    request<{
+      extensions: BulkExtension[];
+      fields: BulkSpec[];
+      missing: string[];
+      kinds: BlfKind[];
+    }>(
       `/api/extensions/values?customer_id=${encodeURIComponent(customerID)}` +
         `&extensions=${encodeURIComponent(extensions.join(","))}`,
+    ),
+
+  /**
+   * Sets the buttons on one or more phones, or copies a layout between them.
+   *
+   * The whole layout goes every time: the phone system keeps it as one value,
+   * so there is no changing a single button.
+   */
+  setExtensionKeys: (
+    customerID: string,
+    extensions: string[],
+    layout: { keys?: BlfKey[]; from?: string },
+  ) =>
+    request<{ changed: number; problems: Record<string, string> }>(
+      `/api/extensions/keys?customer_id=${encodeURIComponent(customerID)}`,
+      { method: "POST", body: JSON.stringify({ extensions, ...layout }) },
     ),
 
   /** Applies a form's changes to one extension. */

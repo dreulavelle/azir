@@ -1,8 +1,9 @@
 import { useMemo, useState } from "react";
-import type { BulkExtension, BulkSpec } from "../../api";
+import type { BlfKey, BlfKind, BulkExtension, BulkSpec } from "../../api";
 import { Sheet, Tabs } from "../../components";
 import { Button, Chip, Problem, TextInput } from "../../ui";
 import { Field, LEAVE, MIXED } from "./Fields";
+import { Keys } from "./Keys";
 
 /**
  * The extension editor: one form, three jobs.
@@ -56,21 +57,26 @@ export type Mode =
 export function Editor({
   mode,
   specs,
+  kinds,
   customer,
   busy,
   problem,
   nextNumber,
   onSave,
+  onSaveKeys,
   onClose,
 }: {
   mode: Mode;
   specs: BulkSpec[];
+  kinds: BlfKind[];
   customer: string;
   busy: boolean;
   problem: string | null;
   /** The number a new extension would get. */
   nextNumber: string;
   onSave: (draft: Record<string, string>, number: string) => void;
+  /** The buttons, saved on their own: the phone system writes them whole. */
+  onSaveKeys: (layout: { keys?: BlfKey[]; from?: string }) => void;
   onClose: () => void;
 }) {
   const together = mode.kind === "together";
@@ -94,6 +100,15 @@ export function Editor({
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [number, setNumber] = useState(nextNumber);
   const [tab, setTab] = useState("General");
+
+  // The buttons are their own thing, kept and saved apart from the fields.
+  // The phone system holds a layout as one value and writes it whole, so it
+  // does not belong in a bag of field changes that go out one at a time.
+  const startingKeys = mode.kind === "one" ? (mode.extension.keys ?? []) : [];
+  const [keys, setKeys] = useState<BlfKey[]>(startingKeys);
+  const [copyFrom, setCopyFrom] = useState("");
+  const keysMoved =
+    copyFrom.trim() !== "" || JSON.stringify(keys) !== JSON.stringify(startingKeys);
 
   const valueOf = (spec: BulkSpec) => {
     if (draft[spec.field] !== undefined) return draft[spec.field];
@@ -227,7 +242,37 @@ export function Editor({
         }))}
       />
 
-      {shown.length > 0 ? (
+      {tab === "BLF" && !making ? (
+        <div className="flex flex-col gap-4">
+          <Keys
+            keys={keys}
+            kinds={kinds}
+            onChange={setKeys}
+            copyFrom={copyFrom}
+            onCopyFrom={setCopyFrom}
+            together={together}
+            disabled={busy}
+          />
+          {keysMoved && (
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-edge bg-sunken/60 px-3 py-2.5">
+              <span className="text-xs text-ink-dim">
+                {copyFrom.trim()
+                  ? `Every button replaced with extension ${copyFrom.trim()}'s.`
+                  : "The buttons have changed."}
+              </span>
+              <Button
+                weight="primary"
+                disabled={busy}
+                onClick={() =>
+                  onSaveKeys(copyFrom.trim() ? { from: copyFrom.trim() } : { keys })
+                }
+              >
+                {busy ? "Saving…" : "Save the buttons"}
+              </Button>
+            </div>
+          )}
+        </div>
+      ) : shown.length > 0 ? (
         <div className="divide-y divide-edge/60">
           {shown.map((spec) => (
             <Field
