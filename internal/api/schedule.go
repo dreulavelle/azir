@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -35,7 +36,16 @@ func (s *Server) getSchedule(w http.ResponseWriter, r *http.Request, actor ident
 		writeJSON(w, http.StatusBadGateway, errBody(err.Error()))
 		return
 	}
-	raw, err := s.readTool(r.Context(), actor, tool, json.RawMessage(`{}`), &customerID)
+	// Which department. Hours and holidays belong to one, not to the company,
+	// so the screen asks for one and the plugin answers for it.
+	asked, err := json.Marshal(map[string]string{
+		"department": strings.TrimSpace(r.URL.Query().Get("department")),
+	})
+	if err != nil {
+		s.fail(w, err, "could not ask for that department")
+		return
+	}
+	raw, err := s.readTool(r.Context(), actor, tool, asked, &customerID)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, errBody(
 			"could not read the schedule: "+err.Error()))
@@ -100,6 +110,65 @@ func (s *Server) addSchedule(w http.ResponseWriter, r *http.Request, actor ident
 		Outcome:     audit.OutcomeOK,
 		CustomerID:  &customerID,
 		Detail:      strings.TrimSpace(body.Name) + ", from " + strings.TrimSpace(body.Starts),
+	})
+
+	w.Header().Set("Content-Type", "application/json")
+	if _, err := w.Write(raw); err != nil {
+		return
+	}
+}
+
+/*
+setHours writes a department's weekly office hours.
+
+Its own endpoint because it is its own thing. The hours are the week a
+department keeps; the closures are the dated exceptions to it. Changing the
+week is a different act from saying that one Friday is not normal, and folding
+them together would turn "close early this Friday" into a change somebody has
+to remember to undo.
+*/
+func (s *Server) setHours(w http.ResponseWriter, r *http.Request, actor identity.Actor) {
+	customerID, ok := s.customerOf(w, r)
+	if !ok {
+		return
+	}
+
+	var body struct {
+		Department string `json:"department"`
+		Days       []struct {
+			Day  string `json:"day"`
+			From string `json:"from"`
+			To   string `json:"to"`
+		} `json:"days"`
+	}
+	if err := decode(r, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, errBody("invalid json body"))
+		return
+	}
+
+	tool, err := s.approvedTool(r.Context(), plugin.CapPhoneHoursSet, true)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, errBody(err.Error()))
+		return
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		s.fail(w, err, "could not prepare those hours")
+		return
+	}
+	raw, err := s.performTool(r.Context(), actor, tool, encoded, &customerID, byHand)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, errBody(err.Error()))
+		return
+	}
+
+	s.Audit.Record(r.Context(), audit.Event{
+		ActorUserID: actor.Email,
+		Action:      "schedule.hours",
+		Outcome:     audit.OutcomeOK,
+		CustomerID:  &customerID,
+		Detail: fmt.Sprintf("%s: %d open day(s)",
+			strings.TrimSpace(body.Department), len(body.Days)),
 	})
 
 	w.Header().Set("Content-Type", "application/json")

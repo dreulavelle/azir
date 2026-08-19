@@ -235,6 +235,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/schedule", s.require(identity.PermPhoneManage, s.getSchedule))
 	mux.HandleFunc("POST /api/schedule", s.require(identity.PermPhoneManage, s.addSchedule))
 	mux.HandleFunc("DELETE /api/schedule/{id}", s.require(identity.PermPhoneManage, s.removeSchedule))
+	mux.HandleFunc("PUT /api/schedule/hours", s.require(identity.PermPhoneManage, s.setHours))
 
 	// Diagnostic snapshots: a phone system's support bundle, read.
 	mux.HandleFunc("GET /api/snapshots", s.require(p, ignoreActor(s.listSnapshots)))
