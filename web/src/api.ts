@@ -1274,6 +1274,15 @@ export const api = {
       `/api/customers?q=${encodeURIComponent(q)}&limit=${encodeURIComponent(String(limit))}`,
     ),
 
+  /**
+   * The customers you last changed something on, most recent first.
+   *
+   * What a picker shows before anything is typed. Short and personal, which is
+   * what the first screenful of customers by name was not.
+   */
+  recentCustomers: (limit = 5) =>
+    request<Customer[]>(`/api/customers/recent?limit=${encodeURIComponent(String(limit))}`),
+
   /** One customer, for putting a name to an id somebody arrived holding. */
   customer: (id: string) => request<Customer>(`/api/customers/${encodeURIComponent(id)}`),
 

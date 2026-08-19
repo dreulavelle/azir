@@ -236,3 +236,57 @@ func (db *DB) identitiesFor(ctx context.Context, customerID uuid.UUID) ([]Identi
 	}
 	return out, rows.Err()
 }
+
+/*
+RecentlyChanged is the customers this person has changed something on, most
+recent first.
+
+For the moment somebody opens a picker having typed nothing. The old answer was
+the first twenty customers by name, which is ordered by nothing anybody is
+thinking about — on a deployment with three hundred it is a wall. A technician
+works on a handful at a time, and those are the handful.
+
+Changed, not looked at. Reads outnumber writes by a wide margin and a customer
+whose ticket somebody skimmed is not one they are working on. It also keeps the
+list short on its own, without needing a window of time to bound it.
+
+Per person, deliberately. This is "where was I", not "what is the team doing" —
+and a list that reshuffles because somebody else is busy is a list that has
+stopped being a shortcut.
+*/
+func (db *DB) RecentlyChanged(ctx context.Context, actor string, limit int) ([]Customer, error) {
+	if limit <= 0 || limit > 20 {
+		limit = 5
+	}
+	rows, err := db.pool.Query(ctx, `
+		SELECT c.id, c.display_name, c.created_at
+		FROM customers c
+		JOIN (
+			SELECT customer_id, max(occurred_at) AS last_touched
+			FROM audit_log
+			WHERE actor_user_id = $1
+			  AND customer_id IS NOT NULL
+			  AND outcome = 'ok'
+			  -- The write actions. tool.write is every change made through a
+			  -- plugin; the rest are the ones core records in its own words.
+			  AND (action LIKE 'extension.%' OR action LIKE 'bulk.%'
+			       OR action LIKE 'ringgroup.%' OR action = 'tool.write')
+			GROUP BY customer_id
+		) touched ON touched.customer_id = c.id
+		ORDER BY touched.last_touched DESC
+		LIMIT $2`, actor, limit)
+	if err != nil {
+		return nil, fmt.Errorf("store: recently changed: %w", err)
+	}
+	defer rows.Close()
+
+	out := []Customer{}
+	for rows.Next() {
+		c := Customer{Identities: []Identity{}}
+		if err := rows.Scan(&c.ID, &c.DisplayName, &c.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}

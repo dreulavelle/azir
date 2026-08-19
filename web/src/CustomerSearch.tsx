@@ -12,12 +12,15 @@ import { api, type Customer } from "./api";
  * than over whatever happened to be loaded, so it does not need the whole
  * customer table in the browser to work.
  *
- * Nothing appears until something is typed. Focusing the field used to open a
- * list of whatever the search returned for the empty string, which is a
- * dropdown by another name: on a deployment with three hundred customers it is
- * twenty arbitrary ones, ordered by nothing, in front of somebody who already
- * knows which one they want. It also cost a query every time the field was
- * clicked. Type two letters and the matches are there.
+ * Focusing the field used to open a list of whatever the search returned for
+ * the empty string, which is a dropdown by another name: on a deployment with
+ * three hundred customers it is twenty arbitrary ones, ordered by nothing, in
+ * front of somebody who already knows which one they want.
+ *
+ * What replaces it is the handful this person last changed something on. A
+ * technician works on a few customers at a time and comes back to them, so
+ * before anything is typed that is a far better guess than the alphabet — and
+ * it stays short whatever the deployment looks like.
  *
  * Debounced, because the search is a real query and a request per keystroke
  * would ask the database for answers nobody reads. Two hundred milliseconds is
@@ -61,6 +64,9 @@ export function CustomerSearch({
   const [focused, setFocused] = useState(false);
   const [cursor, setCursor] = useState(0);
   const [searching, setSearching] = useState(false);
+  // Where somebody was last. Fetched once when the field is first opened,
+  // because it does not change while they are looking at it.
+  const [recent, setRecent] = useState<Customer[] | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   // Which request is the current one. Anything older is thrown away.
   const latest = useRef(0);
@@ -110,8 +116,9 @@ export function CustomerSearch({
   }, []);
 
   const asked = term.trim();
-  // The list exists only as the answer to something typed.
-  const open = focused && asked !== "";
+  // Typed, or the handful they were last working on. Not the alphabet.
+  const showing = asked !== "" ? hits : (recent ?? []);
+  const open = focused && (asked !== "" || showing.length > 0);
 
   useEffect(() => {
     if (!focused || asked === "") {
@@ -122,7 +129,21 @@ export function CustomerSearch({
     return () => clearTimeout(timer);
   }, [asked, focused, search]);
 
-  useEffect(() => setCursor(0), [hits]);
+  // Once, on first focus. A list of five that somebody is about to click does
+  // not need refetching every time they tab through the field.
+  useEffect(() => {
+    if (!focused || recent !== null) return;
+    void (async () => {
+      try {
+        setRecent(await api.recentCustomers(5));
+      } catch {
+        // Only a shortcut. Typing still finds everything.
+        setRecent([]);
+      }
+    })();
+  }, [focused, recent]);
+
+  useEffect(() => setCursor(0), [hits, recent]);
 
   // Follows the input, because the list is drawn outside the panel that would
   // otherwise clip it and so cannot be positioned by the layout.
@@ -152,7 +173,7 @@ export function CustomerSearch({
       window.removeEventListener("scroll", place, true);
       window.removeEventListener("resize", place);
     };
-  }, [open, hits.length]);
+  }, [open, showing.length]);
 
   function pick(customer: Customer) {
     setChosen(customer);
@@ -182,13 +203,13 @@ export function CustomerSearch({
     if (!open) return;
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      setCursor((c) => Math.min(c + 1, hits.length - 1));
+      setCursor((c) => Math.min(c + 1, showing.length - 1));
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       setCursor((c) => Math.max(c - 1, 0));
     } else if (e.key === "Enter") {
       e.preventDefault();
-      const active = hits[cursor];
+      const active = showing[cursor];
       if (active) pick(active);
     }
   }
@@ -209,7 +230,7 @@ export function CustomerSearch({
           aria-expanded={open}
           aria-controls={listID}
           aria-autocomplete="list"
-          aria-activedescendant={open && hits[cursor] ? `${listID}-${hits[cursor].id}` : undefined}
+          aria-activedescendant={open && showing[cursor] ? `${listID}-${showing[cursor].id}` : undefined}
           aria-label={ariaLabel}
           autoComplete="off"
           autoFocus={autoFocus}
@@ -251,7 +272,12 @@ export function CustomerSearch({
               : { top: at.top }),
           }}
         >
-          {hits.map((customer, i) => (
+          {asked === "" && showing.length > 0 && (
+            <li className="px-2.5 pb-1 pt-1.5 text-2xs uppercase tracking-wide text-ink-faint">
+              Where you were last
+            </li>
+          )}
+          {showing.map((customer, i) => (
             <li
               key={customer.id}
               id={`${listID}-${customer.id}`}
@@ -272,7 +298,7 @@ export function CustomerSearch({
             </li>
           ))}
 
-          {hits.length === 0 && (
+          {showing.length === 0 && (
             <li className="px-2.5 py-2 text-xs text-ink-faint">
               {searching ? "Searching…" : `Nothing matches "${asked}"`}
             </li>
