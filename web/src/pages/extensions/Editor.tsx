@@ -306,7 +306,7 @@ export function Editor({
               value={valueOf(spec)}
               was={together || making ? undefined : (now[spec.field] ?? "")}
               together={together}
-              disabled={busy || (together && spec.kind === "secret")}
+              disabled={busy}
               onChange={(next) => set(spec.field, next)}
             />
           ))}

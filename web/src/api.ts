@@ -1195,8 +1195,15 @@ export const api = {
       method: "POST",
     }),
 
-  /** `skip` is the extensions unticked in the before-and-after. */
-  applySheet: (id: string, skip: string[] = []) =>
+  /**
+   * `skip` is the extensions unticked in the before-and-after.
+   *
+   * `secrets` are the write-only fields — a voicemail PIN — sent now rather
+   * than staged. A plan is stored, drawn, logged and kept as an undo, which is
+   * four places a credential would then be at rest for a value nothing ever
+   * reads back. So it is held in the form until this moment and sent once.
+   */
+  applySheet: (id: string, skip: string[] = [], secrets: Record<string, string> = {}) =>
     request<{
       edit: BulkEdit;
       changed: number;
@@ -1206,7 +1213,7 @@ export const api = {
       failed: number;
     }>(`/api/bulk/${encodeURIComponent(id)}/apply`, {
       method: "POST",
-      body: JSON.stringify({ confirm: "apply", skip }),
+      body: JSON.stringify({ confirm: "apply", skip, secrets }),
     }),
 
   cancelSheet: (id: string) =>

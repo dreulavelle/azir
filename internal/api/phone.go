@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -638,4 +639,53 @@ func (s *Server) revertBulk(w http.ResponseWriter, r *http.Request, actor identi
 	writeJSON(w, http.StatusOK, map[string]any{
 		"edit": planned, "plan": undoPlan,
 	})
+}
+
+/*
+secretsFor checks the write-only values a bulk edit is carrying, and turns them
+into what the phone system takes.
+
+Checked by kind rather than by name: only a field the plugin published as a
+secret may arrive this way. Without that, this would be a second route into
+setOptions that skips the comparison, the diff and the approval the ordinary
+one goes through — anything at all could be sent through it by calling it a
+secret.
+
+The values themselves are not examined, normalised or logged. There is nothing
+to normalise a PIN against and nowhere it should be written down.
+*/
+func secretsFor(want map[string]string, byField map[bulk.Field]bulk.Spec) (map[string]any, error) {
+	settings := make(map[string]any, len(want))
+	for field, value := range want {
+		spec, known := byField[bulk.Field(field)]
+		if !known {
+			return nil, fmt.Errorf("this phone system has no setting called %q", field)
+		}
+		if spec.Kind != bulk.KindSecret {
+			return nil, fmt.Errorf(
+				"%s is not a write-only setting, so it goes through the before-and-after like everything else",
+				spec.Label)
+		}
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		settings[field] = value
+	}
+	return settings, nil
+}
+
+// alsoSet names the write-only fields a bulk edit carried, and never their
+// values. The activity log is kept for weeks; one of these is a voicemail PIN.
+func alsoSet(secrets map[string]string) string {
+	names := make([]string, 0, len(secrets))
+	for field, value := range secrets {
+		if strings.TrimSpace(value) != "" {
+			names = append(names, field)
+		}
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	sort.Strings(names)
+	return ", and set " + strings.Join(names, ", ")
 }

@@ -227,6 +227,20 @@ func (s *Server) applyBulk(w http.ResponseWriter, r *http.Request, actor identit
 		// A plan is what was compared; this is what they chose to do about
 		// it, which is not always all of it.
 		Skip []string `json:"skip"`
+		/*
+			Secrets are the write-only fields, sent now rather than staged.
+
+			A voicemail PIN cannot go in a plan. A plan is written to the
+			database, drawn on a screen, kept in the activity log and handed
+			back as an undo — four places a credential would then be at rest,
+			for a value nothing ever reads back and nothing can compare
+			against. So it is not compared: it travels from the form to the
+			phone system at the moment somebody confirms, and is held nowhere
+			in between.
+
+			Which is why it arrives here and not in the plan this is applying.
+		*/
+		Secrets map[string]string `json:"secrets"`
 	}
 	if err := decode(r, &body); err != nil {
 		writeJSON(w, http.StatusBadRequest, errBody("invalid json body"))
@@ -337,6 +351,56 @@ func (s *Server) applyBulk(w http.ResponseWriter, r *http.Request, actor identit
 		}
 	}
 
+	/*
+		The write-only fields, applied to everything somebody chose.
+
+		Not only to the rows that would change: there is nothing to compare a
+		PIN against, so "these five extensions differ" has no meaning for one
+		and every extension in the batch is meant. A row that was skipped for a
+		real problem is left alone, and so is one being removed — setting a
+		voicemail PIN on an extension about to be deleted is work nobody wants
+		done.
+	*/
+	if len(body.Secrets) > 0 {
+		settings, err := secretsFor(body.Secrets, byField)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, errBody(err.Error()))
+			return
+		}
+		var on []string
+		for _, row := range plan.Rows {
+			if left[row.Extension] || row.Problem != "" || row.Removes() || row.Creates() {
+				continue
+			}
+			on = append(on, row.Extension)
+		}
+		if len(on) > 0 {
+			said, err := s.setOptions(r.Context(), actor, edit.CustomerID, on, settings)
+			if err != nil {
+				writeJSON(w, http.StatusBadGateway, errBody(err.Error()))
+				return
+			}
+			// Reported per extension like everything else. Without this a
+			// batch that only sets a PIN answered "0 changed, 0 failed" with
+			// an empty list — the write had happened, and the screen said
+			// nothing at all had.
+			for _, extension := range on {
+				at := outcome[extension]
+				if at == nil {
+					at = note(bulk.Row{Extension: extension}, applied{Extension: extension})
+				}
+				if why := said[extension]; why != "" {
+					at.OK = false
+					at.Problem = why
+					continue
+				}
+				if at.Problem == "" {
+					at.OK = true
+				}
+			}
+		}
+	}
+
 	for _, key := range batchOrder {
 		group := batches[key]
 		said, err := s.setOptions(r.Context(), actor, edit.CustomerID, group.extensions, group.settings)
@@ -397,8 +461,8 @@ func (s *Server) applyBulk(w http.ResponseWriter, r *http.Request, actor identit
 		Action:      "bulk.apply",
 		Outcome:     audit.OutcomeOK,
 		CustomerID:  &customerID,
-		Detail: fmt.Sprintf("%s: %d changed, %d created, %d removed, %d left alone, %d failed",
-			edit.Filename, done, made, gone, gaveUp, failed),
+		Detail: fmt.Sprintf("%s: %d changed, %d created, %d removed, %d left alone, %d failed%s",
+			edit.Filename, done, made, gone, gaveUp, failed, alsoSet(body.Secrets)),
 	})
 
 	writeJSON(w, http.StatusOK, map[string]any{
