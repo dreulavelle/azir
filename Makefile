@@ -1,4 +1,7 @@
-COMPOSE := docker compose --env-file .env -f deploy/compose.yaml
+# compose.yaml and .env are both at the root, which is where Compose looks by
+# default — so `docker compose up -d` works on its own, and this is only here
+# so the targets below read the same as what you would type.
+COMPOSE := docker compose
 
 .PHONY: help
 help:

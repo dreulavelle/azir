@@ -1,13 +1,14 @@
 name: azir
 
-# Two services. Azir is one binary — embedded NATS with JetStream, the API, the
-# frontend, and supervised plugins — and Postgres is the one external
-# dependency, because semantic recall needs a real ANN index and ingest is
-# genuinely concurrent.
+# Azir is one binary — embedded NATS with JetStream, the API, the frontend, and
+# supervised plugins. Two services stand beside it: Postgres, because semantic
+# recall needs a real ANN index and ingest is genuinely concurrent, and SearXNG,
+# so the assistant can search the web without a search provider learning what
+# your customers are having trouble with.
 services:
   azir:
     build:
-      context: ..
+      context: .
       dockerfile: Dockerfile
     image: azir:local
     # Named so `docker logs azir` works without hunting for a generated
@@ -49,7 +50,7 @@ services:
       # on the next start — nothing to register, nothing to rebuild. Read-only,
       # because the container has no business writing to it, and it still has
       # to be approved in Settings before it can do anything.
-      - ../plugins:/opt/azir/plugins:ro
+      - ./plugins:/opt/azir/plugins:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -69,7 +70,7 @@ services:
       SEARXNG_SECRET: ${SEARXNG_SECRET:?run `make init` to generate .env}
       SEARXNG_BASE_URL: http://searxng:8080/
     volumes:
-      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+      - ./deploy/searxng/settings.yml:/etc/searxng/settings.yml:ro
       - searxng-cache:/var/cache/searxng
     restart: unless-stopped
 
@@ -92,7 +93,7 @@ services:
       # subdirectory, so a future major upgrade can use `pg_upgrade --link`
       # without both versions straddling a mount boundary.
       - pg-data:/var/lib/postgresql
-      - ./postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ./deploy/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
     ports:
       # Published for psql during development, off 5432 so a Postgres already
       # running on the host does not collide.

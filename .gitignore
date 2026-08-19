@@ -5,3 +5,7 @@ web/dist/*
 .env
 *.local
 web/tsconfig.tsbuildinfo
+
+# Tooling caches. Nothing here is a Python project; ruff runs from a global
+# editor hook and leaves this behind anyway.
+.ruff_cache/

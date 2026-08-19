@@ -88,9 +88,11 @@ func WithSecrets(values ...string) Option {
 // NATS micro service; replacing that with another transport would not change
 // any plugin's code.
 //
-// Serve returns [ErrMutatingTool] before opening a connection if any tool
-// declares Mutates, so a write-capable plugin fails to boot rather than
-// failing quietly at request time.
+// A tool that declares Mutates is registered like any other, having been
+// refused entirely when Azir was read-only. What replaced the refusal is
+// narrower and lives in validate: a mutating tool must name the permission it
+// requires, or the plugin does not start. A write nobody has to be allowed to
+// make is not a write anyone should make.
 func Serve(ctx context.Context, p Plugin, opts ...Option) error {
 	o := options{
 		natsURL: envOr("NATS_URL", nats.DefaultURL),
