@@ -216,7 +216,17 @@ export function Extensions({ actor, go }: { actor: Actor; go?: (path: string) =>
     setBusy(true);
     setEditorProblem(null);
     try {
-      await api.createExtension(customerID, number, draft);
+      const got = await api.createExtension(customerID, number, draft);
+      // The extension is made either way. Its settings are a second step, and
+      // saying "created" when half of them were refused sends somebody looking
+      // for the wrong problem.
+      if (got.settings_problem) {
+        setEditorProblem(
+          `Extension ${number} was created, but its settings were not applied: ${got.settings_problem}`,
+        );
+        await load(customerID, find.trim(), offset);
+        return;
+      }
       toast(`Extension ${number} created`, { tone: "good" });
       setMode(null);
       await load(customerID, find.trim(), offset);
@@ -473,6 +483,15 @@ export function Extensions({ actor, go }: { actor: Actor; go?: (path: string) =>
 
       {mode && (
         <Editor
+          // Keyed so opening a different extension starts a fresh form rather
+          // than carrying the last one's draft into it.
+          key={
+            mode.kind === "one"
+              ? mode.extension.extension
+              : mode.kind === "together"
+                ? mode.extensions.map((e) => e.extension).join(",")
+                : "new"
+          }
           mode={mode}
           specs={specs}
           kinds={kinds}

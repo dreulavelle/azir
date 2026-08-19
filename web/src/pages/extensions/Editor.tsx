@@ -45,7 +45,11 @@ const TABS = [
 const NEW_DEFAULTS: Record<string, string> = {
   PbxDeliversAudio: "yes",
   BlockTunnel: "no",
-  Enabled: "yes",
+  // Azir's own field for this, not the phone system's "Enabled" — the two
+  // describe one switch and Azir's is the one that survives. Naming the wrong
+  // one made the phone system refuse the whole set of defaults, so a new
+  // extension came out with none of them.
+  enabled: "yes",
   VMEnabled: "yes",
 };
 
@@ -95,9 +99,25 @@ export function Editor({
     return shared;
   }, [mode]);
 
-  // Only what somebody actually set. Starting empty rather than from `now` is
-  // what makes "submit the difference" true by construction.
-  const [draft, setDraft] = useState<Record<string, string>>({});
+  /*
+   * What is being set, as against what is merely on screen.
+   *
+   * Empty for an extension that exists, so what goes out is the difference and
+   * a field somebody scrolled past is not a field they set.
+   *
+   * Seeded for a new one, because the defaults are the point. They were shown
+   * as the starting values and never sent — a new extension came out with the
+   * phone system's own defaults, which are the two this is here to turn round.
+   */
+  const [draft, setDraft] = useState<Record<string, string>>(() => {
+    if (!making) return {};
+    // Only defaults this phone system actually has. One that names a field it
+    // does not know is refused, and refused with the rest of them.
+    const known = new Set(specs.map((s) => s.field));
+    return Object.fromEntries(
+      Object.entries(NEW_DEFAULTS).filter(([field]) => known.has(field)),
+    );
+  });
   const [number, setNumber] = useState(nextNumber);
   const [tab, setTab] = useState("General");
 
@@ -119,13 +139,21 @@ export function Editor({
   const set = (field: string, next: string) =>
     setDraft((was) => ({ ...was, [field]: next }));
 
-  // A field is being set if it was touched and says something other than
-  // "leave alone" or "mixed".
-  const setting = Object.entries(draft).filter(
-    ([field, value]) =>
-      value !== MIXED && (together || making ? value !== LEAVE || now[field] !== undefined : true) &&
-      value !== (together ? LEAVE : (now[field] ?? "")),
-  );
+  /*
+   * The fields that would actually go out.
+   *
+   * Three modes and three answers, spelled out rather than folded into one
+   * condition — the folded version was wrong about new extensions and unclear
+   * about the rest.
+   */
+  const setting = Object.entries(draft).filter(([field, value]) => {
+    // Never: these are the absence of an answer, not an answer.
+    if (value === MIXED || value === LEAVE) return false;
+    // Editing several, or making one: anything explicitly set is set.
+    if (together || making) return true;
+    // Editing one: only what differs from what it says now.
+    return value !== (now[field] ?? "");
+  });
 
   const byTab = useMemo(() => {
     const groups = new Map<string, BulkSpec[]>();

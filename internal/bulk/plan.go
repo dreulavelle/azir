@@ -285,7 +285,7 @@ func Normalise(spec Spec, cell string) (string, error) {
 			// is, not where the call goes — and carrying it would make
 			// "VoiceMail" and "VoiceMail:100" two different answers to the
 			// same question, so every comparison would find a change.
-			if !needsNumber(choice) {
+			if !NeedsNumber(choice) {
 				return choice, nil
 			}
 			// Somewhere that needs a number and has not been given one is a
@@ -620,12 +620,18 @@ func compare(sheet Sheet, i int, mapping Mapping, state Values, specs []Spec) ([
 }
 
 /*
-needsNumber reports whether a destination is incomplete without one.
+NeedsNumber reports whether a destination is incomplete without one.
 
 Voicemail and nothing are complete on their own; an extension or an outside
 number is a place, and a place with no address sends calls into silence.
+
+Exported because a plugin reading a destination off a phone system has to give
+the same answer as this does reading one somebody typed. When they disagreed —
+and they did, as two identical copies that drifted apart the moment one was
+edited — a rule read as "VoiceMail" and stored as "VoiceMail:100" was a change
+on every extension, on every comparison, forever.
 */
-func needsNumber(where string) bool {
+func NeedsNumber(where string) bool {
 	switch where {
 	case "Extension", "External", "Queue", "RingGroup", "IVR", "Fax", "RoutePoint":
 		return true
@@ -633,7 +639,7 @@ func needsNumber(where string) bool {
 	return false
 }
 
-// Where returns a destination's two halves: what kind of place, and which one.
+// Where splits a destination into what kind of place it is and which one.
 func Where(value string) (where, number string) {
 	where, number, _ = strings.Cut(value, ":")
 	return strings.TrimSpace(where), strings.TrimSpace(number)
