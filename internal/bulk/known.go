@@ -33,6 +33,12 @@ const (
 	// what somebody scans one to find.
 	FieldRecording = "RecordCalls"
 	FieldVoicemail = "VMEnabled"
+	// FieldDepartment is where an extension is filed, and FieldPhoneName is
+	// what is on the desk. Shown in the list because both are things somebody
+	// scans one to find.
+	FieldDepartment = "Department"
+	FieldPhoneName  = "PhoneName"
+
 	// FieldTunnel blocks remote connections that are not tunnelled, and
 	// FieldAudio has the phone system carry the audio. Both ship the wrong way
 	// round for a hosted deployment.

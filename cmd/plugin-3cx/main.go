@@ -1540,3 +1540,9 @@ func (c pbx) fetch(ctx context.Context, path string, query url.Values, timeout t
 	}
 	return res, nil
 }
+
+// fqdn is the host this connection was configured against, which is also the
+// routing device every handset on the same network as the phone system uses.
+func (c pbx) fqdn() string {
+	return strings.TrimPrefix(strings.TrimPrefix(c.base, "https://"), "http://")
+}

@@ -98,6 +98,10 @@ type Spec struct {
 	// By value rather than positional, so a choice with no entry simply shows
 	// as itself and a list can grow without the two falling out of step.
 	Labels map[string]string `json:"labels,omitempty"`
+	// States is how each choice is doing, where that is a thing a choice can
+	// be. A routing device that is not connected is still a choice; it is one
+	// somebody should make on purpose rather than by accident.
+	States map[string]string `json:"states,omitempty"`
 	/*
 		Unique marks a field no two extensions may share — an email address.
 
@@ -489,7 +493,9 @@ func Choose(want map[string]Values, now Current, specs []Spec) Plan {
 	for _, spec := range specs {
 		byField[spec.Field] = spec
 	}
-	clashes := shared(want, specs)
+	// A unique field given one value across several extensions is settled here
+	// rather than refused: each extension gets its own address.
+	want = disambiguate(want, now, specs)
 
 	for _, extension := range order(want) {
 		state, known := now[extension]
@@ -518,10 +524,10 @@ func Choose(want map[string]Values, now Current, specs []Spec) Plan {
 			if strings.TrimSpace(raw) == "" && spec.Kind != KindText {
 				continue
 			}
-			if clashes[spec.Field] && strings.TrimSpace(raw) != "" {
+			if spec.Unique && collides(extension, spec.Field, raw, now) {
 				row.Problem = fmt.Sprintf(
-					"%s has to be different on every extension, so it cannot be set to one value across several",
-					spec.Label)
+					"another extension already has that %s, and it is not an address this can tell apart",
+					strings.ToLower(spec.Label))
 				break
 			}
 			after, err := Normalise(spec, raw)
@@ -553,52 +559,146 @@ func Choose(want map[string]Values, now Current, specs []Spec) Plan {
 }
 
 /*
-shared finds the fields a batch would give the same value to and may not.
+disambiguate gives each extension its own value where the phone system insists
+they differ.
 
-An email address belongs to one extension, and the phone system enforces that.
-Setting one across five is not a change that half works — the first extension
-takes it and the other four are refused, individually, after the write to the
-first has already happened. That is what somebody sees as "it only edited the
-first one", and no amount of reading the error afterwards puts the first one
-back.
+An email address belongs to one extension and 3CX enforces it, so setting one
+across five is not an edit that half works — the first takes it and the rest
+are refused, individually, after the first has already been written. That was
+caught and refused outright, which was correct and unhelpful: "give these five
+an address" is a real thing to want, and the extensions are what make them
+distinguishable.
 
-So it is caught here, before anything is written, and reported against the rows
-it would have broken. Only values that repeat: setting a different address on
-each of five extensions is an ordinary bulk edit and stays one.
+So the address gets a tag naming the extension. reception@example.com becomes
+reception+101@example.com, reception+102@example.com, and so on — one address
+to a mailbox, delivered to the same place, and the extension is right there in
+it. Only where it is needed: an extension that already holds the address keeps
+it unchanged, and a value nothing else claims is used as it was typed.
+
+Only addresses. Plus-addressing means something for an email and nothing for
+anything else, so a unique field carrying some other kind of value is left for
+the caller to sort out, and Choose reports the collision rather than inventing
+a value it has no rule for.
 */
-func shared(want map[string]Values, specs []Spec) map[Field]bool {
-	unique := map[Field]bool{}
+func disambiguate(want map[string]Values, now Current, specs []Spec) map[string]Values {
+	var unique []Spec
 	for _, spec := range specs {
 		if spec.Unique && Comparable(spec) {
-			unique[spec.Field] = true
+			unique = append(unique, spec)
 		}
 	}
-	if len(unique) == 0 || len(want) < 2 {
-		return nil
+	if len(unique) == 0 {
+		return want
 	}
 
-	seen := map[Field]map[string]int{}
-	clashes := map[Field]bool{}
-	for _, values := range want {
-		for field := range unique {
-			value := strings.TrimSpace(values[field])
-			if value == "" {
-				continue
-			}
-			// Compared case-insensitively: a phone system that will not take
-			// two of the same address will not take two spellings of it
-			// either.
-			value = strings.ToLower(value)
-			if seen[field] == nil {
-				seen[field] = map[string]int{}
-			}
-			seen[field][value]++
-			if seen[field][value] > 1 {
-				clashes[field] = true
+	out := want
+	copied := false
+	for _, spec := range unique {
+		// Every value this field already holds, so an address is checked
+		// against the whole phone system and not merely against this batch.
+		// The one belonging to the extension being changed does not count
+		// against it.
+		taken := map[string]string{}
+		for extension, values := range now {
+			if value := strings.ToLower(strings.TrimSpace(values[spec.Field])); value != "" {
+				taken[value] = extension
 			}
 		}
+
+		// How many extensions in this batch are asking for each value. Two or
+		// more and every one of them is tagged, rather than whichever sorted
+		// first keeping the plain address and the rest looking like an
+		// afterthought. Setting one address on one extension is untouched.
+		asking := map[string]int{}
+		for _, values := range want {
+			if value := strings.ToLower(strings.TrimSpace(values[spec.Field])); value != "" {
+				asking[value]++
+			}
+		}
+
+		for _, extension := range order(want) {
+			raw := strings.TrimSpace(want[extension][spec.Field])
+			if raw == "" {
+				continue
+			}
+			holder, claimed := taken[strings.ToLower(raw)]
+			// The extension that already has the address keeps it exactly as
+			// it is. Tagging it would be a change nobody asked for, on the one
+			// extension that was already right.
+			if holder == extension {
+				continue
+			}
+			if !claimed && asking[strings.ToLower(raw)] < 2 {
+				taken[strings.ToLower(raw)] = extension
+				continue
+			}
+			tagged, ok := tag(raw, extension)
+			if !ok {
+				// Not an address. Left alone, and Choose refuses it.
+				continue
+			}
+			if !copied {
+				out = deepen(want)
+				copied = true
+			}
+			out[extension][spec.Field] = tagged
+			taken[strings.ToLower(tagged)] = extension
+		}
 	}
-	return clashes
+	return out
+}
+
+// collides reports whether a value is already held by a different extension.
+// Reached only for a unique field that could not be told apart.
+func collides(extension string, field Field, raw string, now Current) bool {
+	raw = strings.ToLower(strings.TrimSpace(raw))
+	if raw == "" {
+		return false
+	}
+	for other, values := range now {
+		if other == extension {
+			continue
+		}
+		if strings.ToLower(strings.TrimSpace(values[field])) == raw {
+			return true
+		}
+	}
+	return false
+}
+
+/*
+tag puts the extension into an address, the way a mailbox already understands.
+
+"reception@example.com" and 101 become "reception+101@example.com". Anything
+that is not an address is refused rather than mangled, and an address that
+already carries this extension's tag is left exactly as it is.
+*/
+func tag(address, extension string) (string, bool) {
+	at := strings.LastIndex(address, "@")
+	if at <= 0 || at == len(address)-1 {
+		return "", false
+	}
+	local, domain := address[:at], address[at+1:]
+	if strings.HasSuffix(local, "+"+extension) {
+		return address, true
+	}
+	return local + "+" + extension + "@" + domain, true
+}
+
+// deepen copies the wanted values, so disambiguating never edits the caller's
+// map. The rows arrive sharing one map per extension where a console set the
+// same fields on all of them, and writing through that would give every
+// extension the last one's address.
+func deepen(want map[string]Values) map[string]Values {
+	out := make(map[string]Values, len(want))
+	for extension, values := range want {
+		copied := make(Values, len(values))
+		for field, value := range values {
+			copied[field] = value
+		}
+		out[extension] = copied
+	}
+	return out
 }
 
 // order lists extension numbers the way somebody reads them, so 100 comes

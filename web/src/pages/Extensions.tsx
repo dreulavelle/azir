@@ -59,7 +59,14 @@ export function Extensions({ actor, go }: { actor: Actor; go?: (path: string) =>
   const [picking, setPicking] = useState(false);
   const [missed, setMissed] = useState<string[]>([]);
   const [mode, setMode] = useState<Mode | null>(null);
-  const [plan, setPlan] = useState<{ id: string; plan: BulkPlan } | null>(null);
+  // The staged before-and-after, plus the write-only fields it deliberately
+  // does not contain. Those are held here, in the browser, until somebody
+  // confirms — see reviewMany.
+  const [plan, setPlan] = useState<{
+    id: string;
+    plan: BulkPlan;
+    secrets: Record<string, string>;
+  } | null>(null);
   const [removing, setRemoving] = useState(false);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
@@ -224,16 +231,33 @@ export function Extensions({ actor, go }: { actor: Actor; go?: (path: string) =>
     }
   }
 
-  /** Editing several goes through the before-and-after, as it always has. */
+  /**
+   * Editing several goes through the before-and-after, as it always has.
+   *
+   * Except the write-only fields, which are held here instead. A voicemail PIN
+   * has nothing to compare against and no business in a plan that gets stored,
+   * drawn and kept as an undo — so it stays in the browser until somebody
+   * confirms, and goes straight out with the apply.
+   */
   async function reviewMany(draft: Record<string, string>, numbers: string[]) {
     setBusy(true);
     setEditorProblem(null);
     try {
+      const secret = new Set(
+        specs.filter((s) => s.kind === "secret").map((s) => s.field),
+      );
       const wanted: Record<string, Record<string, string>> = {};
-      for (const number of numbers) wanted[number] = draft;
+      const compared = Object.fromEntries(
+        Object.entries(draft).filter(([field]) => !secret.has(field)),
+      );
+      for (const number of numbers) wanted[number] = compared;
+
+      const held = Object.fromEntries(
+        Object.entries(draft).filter(([field, value]) => secret.has(field) && value !== ""),
+      );
       const got = await api.planChosen(customerID, wanted);
       setMode(null);
-      setPlan({ id: got.edit.id, plan: got.plan });
+      setPlan({ id: got.edit.id, plan: got.plan, secrets: held });
     } catch (e) {
       setEditorProblem(e instanceof Error ? e.message : "Could not work out what would change");
     } finally {
@@ -270,7 +294,7 @@ export function Extensions({ actor, go }: { actor: Actor; go?: (path: string) =>
     if (!plan) return;
     setBusy(true);
     try {
-      const got = await api.applySheet(plan.id);
+      const got = await api.applySheet(plan.id, [], plan.secrets);
       toast(
         got.failed > 0 ? `${got.changed} changed, ${got.failed} failed` : `${got.changed} changed`,
         { tone: got.failed > 0 ? "bad" : "good" },
@@ -493,10 +517,12 @@ export function Extensions({ actor, go }: { actor: Actor; go?: (path: string) =>
                       }
                     />
                   </th>
-                  <th className="w-[90px]">Ext</th>
-                  <th>Name</th>
+                  <th className="w-[80px]">Ext</th>
+                  <th className="w-[190px]">Name</th>
                   <th className="w-[220px]">Email</th>
-                  <th className="w-[200px]">Set up</th>
+                  <th className="w-[150px]">Department</th>
+                  <th>Phone</th>
+                  <th className="w-[170px]">Set up</th>
                   <th className="w-[80px]" />
                 </tr>
               </thead>
@@ -517,6 +543,10 @@ export function Extensions({ actor, go }: { actor: Actor; go?: (path: string) =>
                       {e.name || <span className="italic text-ink-faint">unnamed</span>}
                     </td>
                     <td className="text-ink-dim">{e.email || "—"}</td>
+                    <td className="text-ink-dim">{e.department || "—"}</td>
+                    <td className="text-ink-dim">
+                      {e.phone || <span className="text-ink-faint">no handset</span>}
+                    </td>
                     <td>
                       <Marks row={e} />
                     </td>
@@ -529,7 +559,7 @@ export function Extensions({ actor, go }: { actor: Actor; go?: (path: string) =>
                 ))}
                 {shown.length === 0 && (
                   <tr>
-                    <td colSpan={6} className="py-8 text-center text-sm text-ink-faint">
+                    <td colSpan={8} className="py-8 text-center text-sm text-ink-faint">
                       {find.trim()
                         ? `Nothing matches "${find.trim()}".`
                         : "This phone system has no extensions."}
@@ -601,7 +631,15 @@ export function Extensions({ actor, go }: { actor: Actor; go?: (path: string) =>
             if (!next && !busy) setPlan(null);
           }}
           title="Before and after"
-          description={`${plan.plan.changing} of the ${picked.size} selected would change on ${customer?.display_name ?? "this customer"}'s phone system.`}
+          // A write-only field is not part of "would change" — there is
+          // nothing to compare it against — so a batch that only sets one
+          // would otherwise be introduced as changing nothing, directly above
+          // the line saying what it changes.
+          description={
+            plan.plan.changing === 0 && Object.keys(plan.secrets).length > 0
+              ? `Nothing else differs on ${customer?.display_name ?? "this customer"}'s phone system.`
+              : `${plan.plan.changing} of the ${picked.size} selected would change on ${customer?.display_name ?? "this customer"}'s phone system.`
+          }
           footer={
             <>
               <Button onClick={() => setPlan(null)} disabled={busy}>
@@ -609,10 +647,16 @@ export function Extensions({ actor, go }: { actor: Actor; go?: (path: string) =>
               </Button>
               <Button
                 weight="primary"
-                disabled={busy || plan.plan.changing === 0}
+                // A write-only field has no before and after, so a batch that
+                // only sets one has nothing "changing" and still has work to do.
+                disabled={busy || (plan.plan.changing === 0 && Object.keys(plan.secrets).length === 0)}
                 onClick={() => void applyPlan()}
               >
-                {busy ? "Applying…" : `Change ${plan.plan.changing}`}
+                {busy
+                  ? "Applying…"
+                  : plan.plan.changing > 0
+                    ? `Change ${plan.plan.changing}`
+                    : "Apply"}
               </Button>
             </>
           }
@@ -632,7 +676,7 @@ export function Extensions({ actor, go }: { actor: Actor; go?: (path: string) =>
                     </tr>
                   )),
                 )}
-                {plan.plan.changing === 0 && (
+                {plan.plan.changing === 0 && Object.keys(plan.secrets).length === 0 && (
                   <tr>
                     <td className="py-4 text-center text-sm text-ink-faint">
                       Every one of them already says that.
@@ -642,6 +686,31 @@ export function Extensions({ actor, go }: { actor: Actor; go?: (path: string) =>
               </tbody>
             </table>
           </div>
+
+          {/* Named, never shown. There is nothing to compare a PIN against, so
+              it has no before and no after — but somebody approving this still
+              has to know it is part of what they are approving. */}
+          {Object.keys(plan.secrets).length > 0 && (
+            <div className="mt-3 rounded-lg border border-edge bg-sunken/60 px-3 py-2.5 text-sm">
+              {Object.keys(plan.secrets).map((field) => (
+                <div key={field} className="flex items-center gap-2 text-ink-dim">
+                  <span className="font-medium text-ink">
+                    {specs.find((s) => s.field === field)?.label ?? field}
+                  </span>
+                  <span>
+                    will be set on {plan.plan.rows.filter((r) => !r.problem).length}{" "}
+                    {plan.plan.rows.filter((r) => !r.problem).length === 1
+                      ? "extension"
+                      : "extensions"}
+                  </span>
+                </div>
+              ))}
+              <p className="mt-1 text-2xs text-ink-faint">
+                Not shown, and not stored anywhere on the way. Nothing reads it back, so
+                there is no before and after for it.
+              </p>
+            </div>
+          )}
         </Dialog>
       )}
 
@@ -720,7 +789,11 @@ function Marks({ row }: { row: ExtensionRow }) {
   const marks: { label: string; tone: "good" | "warn" | "urgent" | "accent" | ""; title: string }[] = [];
   if (!row.enabled) marks.push({ label: "off", tone: "urgent", title: "This extension is disabled" });
   if (row.recording) marks.push({ label: "rec", tone: "accent", title: "Calls are recorded" });
-  if (row.voicemail) marks.push({ label: "vm", tone: "", title: "Voicemail is on" });
+  // The exception, not the rule. Voicemail is on almost everywhere, so a chip
+  // for it sat on every row of every list and distinguished nothing — which is
+  // the opposite of what this column is for.
+  if (!row.voicemail)
+    marks.push({ label: "no vm", tone: "warn", title: "Voicemail is off" });
   if (row.tunnel_blocked)
     marks.push({ label: "tunnel", tone: "warn", title: "Blocking remote non-tunnel connections" });
   if (row.no_audio)

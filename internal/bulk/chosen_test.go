@@ -80,18 +80,20 @@ func TestAnEmptyChoiceStillMeansLeaveItAlone(t *testing.T) {
 }
 
 /*
-One email address across five extensions is refused before anything is written.
+One address across five extensions becomes five addresses.
 
 This is the bug as it was reported: "some fields don't update in bulk, and only
 edit the first extension from that bulk list". Setting one address on five is
 not an edit that half works — the phone system takes it on the first extension
 and refuses the other four, one at a time, after the first has already been
-changed. What somebody sees is one extension edited and four errors, and there
-is no undoing the first from there.
+changed.
 
-So it never starts. The rows carry the reason instead.
+Refusing it outright was the first fix and the wrong one. "Give these five an
+address" is a real thing to want, and the extension number is what tells them
+apart, so each gets a tag: reception+101@, reception+102@, and so on. One
+address to a mailbox, all delivered to the same place.
 */
-func TestOneUniqueValueAcrossManyIsRefused(t *testing.T) {
+func TestOneAddressAcrossManyBecomesOnePerExtension(t *testing.T) {
 	want := map[string]Values{}
 	for _, n := range []string{"101", "102", "103", "104", "105"} {
 		want[n] = Values{"EmailAddress": "reception@example.com"}
@@ -99,17 +101,79 @@ func TestOneUniqueValueAcrossManyIsRefused(t *testing.T) {
 
 	plan := Choose(want, systemWith("101", "102", "103", "104", "105"), forms)
 
-	if plan.Changing != 0 {
-		t.Errorf("%d extensions would have been changed; the first would have taken the address "+
-			"and the rest would have been refused", plan.Changing)
+	if plan.Changing != 5 {
+		t.Fatalf("%d of 5 would change; every one of them should get an address", plan.Changing)
 	}
-	if plan.Skipped != 5 {
-		t.Fatalf("%d of 5 rows were marked, want all of them", plan.Skipped)
-	}
+	seen := map[string]string{}
 	for _, row := range plan.Rows {
-		if !strings.Contains(row.Problem, "different on every extension") {
-			t.Errorf("%s says %q, which does not explain why", row.Extension, row.Problem)
+		if row.Problem != "" {
+			t.Fatalf("%s was refused: %s", row.Extension, row.Problem)
 		}
+		after := row.Changes[0].After
+		want := "reception+" + row.Extension + "@example.com"
+		if after != want {
+			t.Errorf("%s gets %q, want %q", row.Extension, after, want)
+		}
+		if other, clash := seen[after]; clash {
+			t.Errorf("%s and %s would both get %q", other, row.Extension, after)
+		}
+		seen[after] = row.Extension
+	}
+}
+
+// The extension that already holds the address keeps it untagged. Tagging it
+// would be a change nobody asked for, on the one extension that was already
+// right.
+func TestTheExtensionThatAlreadyHasItKeepsIt(t *testing.T) {
+	now := systemWith("101", "102")
+	now["101"]["EmailAddress"] = "reception@example.com"
+
+	plan := Choose(
+		map[string]Values{
+			"101": {"EmailAddress": "reception@example.com"},
+			"102": {"EmailAddress": "reception@example.com"},
+		}, now, forms)
+
+	for _, row := range plan.Rows {
+		if row.Extension == "101" && len(row.Changes) != 0 {
+			t.Errorf("101 already had the address and would be changed to %q", row.Changes[0].After)
+		}
+		if row.Extension == "102" && row.Changes[0].After != "reception+102@example.com" {
+			t.Errorf("102 gets %q", row.Changes[0].After)
+		}
+	}
+}
+
+// An address held by an extension nobody is editing still counts. The phone
+// system will refuse it either way, and finding that out from the diff beats
+// finding it out from a half-applied batch.
+func TestAnAddressHeldElsewhereIsStillTakenj(t *testing.T) {
+	now := systemWith("101", "102", "103")
+	now["103"]["EmailAddress"] = "reception@example.com"
+
+	plan := Choose(
+		map[string]Values{"101": {"EmailAddress": "reception@example.com"}}, now, forms)
+
+	if got := plan.Rows[0].Changes[0].After; got != "reception+101@example.com" {
+		t.Errorf("101 gets %q, want it told apart from the one 103 holds", got)
+	}
+}
+
+// A unique field that is not an address has no rule for telling values apart,
+// so the collision is reported rather than guessed at.
+func TestAUniqueValueThatIsNotAnAddressIsRefused(t *testing.T) {
+	specs := append(append([]Spec{}, forms...),
+		Spec{Field: "DeviceTag", Label: "Device tag", Kind: KindText, Group: "General", Unique: true})
+	now := systemWith("101", "102")
+	now["102"]["DeviceTag"] = "front-desk"
+
+	plan := Choose(map[string]Values{"101": {"DeviceTag": "front-desk"}}, now, specs)
+
+	if plan.Skipped != 1 {
+		t.Fatalf("a collision with no way to tell the values apart was not reported")
+	}
+	if !strings.Contains(plan.Rows[0].Problem, "already has that device tag") {
+		t.Errorf("says %q", plan.Rows[0].Problem)
 	}
 }
 
@@ -125,34 +189,6 @@ func TestDifferentUniqueValuesAreFine(t *testing.T) {
 	)
 	if plan.Changing != 2 {
 		t.Errorf("%d of 2 would change; giving everybody their own address is the normal case", plan.Changing)
-	}
-}
-
-// Two spellings of one address are one address. A phone system that will not
-// take the same one twice will not take two cases of it either.
-func TestUniquenessIgnoresCase(t *testing.T) {
-	plan := Choose(
-		map[string]Values{
-			"101": {"EmailAddress": "Reception@Example.com"},
-			"102": {"EmailAddress": "reception@example.com"},
-		},
-		systemWith("101", "102"),
-		forms,
-	)
-	if plan.Changing != 0 {
-		t.Errorf("%d would change, but both are the same address", plan.Changing)
-	}
-}
-
-// Setting a unique field on one extension is not a clash with anything.
-func TestOneExtensionIsNeverAClash(t *testing.T) {
-	plan := Choose(
-		map[string]Values{"101": {"EmailAddress": "ann@example.com"}},
-		systemWith("101"),
-		forms,
-	)
-	if plan.Changing != 1 {
-		t.Errorf("renaming one extension's address was refused: %+v", plan.Rows)
 	}
 }
 

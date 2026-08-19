@@ -871,6 +871,13 @@ export type BulkSpec = {
    */
   labels?: Record<string, string>;
   /**
+   * How each choice is doing, where that is a thing a choice can be: "up",
+   * "down", or absent when the phone system does not track it. A routing
+   * device that is not connected is still a choice, and still one worth
+   * making deliberately.
+   */
+  states?: Record<string, string>;
+  /**
    * No two extensions may hold the same value — an email address. Set on one
    * at a time; a bulk edit that gave one value to several would be taken by
    * the first and refused by the rest.
@@ -919,6 +926,9 @@ export type ExtensionRow = {
   voicemail: boolean;
   tunnel_blocked: boolean;
   no_audio: boolean;
+  /** Where they are filed, and what is on the desk. Either may be empty. */
+  department: string;
+  phone: string;
 };
 
 /** One extension as the phone system has it right now, field by field. */
@@ -1188,8 +1198,15 @@ export const api = {
       method: "POST",
     }),
 
-  /** `skip` is the extensions unticked in the before-and-after. */
-  applySheet: (id: string, skip: string[] = []) =>
+  /**
+   * `skip` is the extensions unticked in the before-and-after.
+   *
+   * `secrets` are the write-only fields — a voicemail PIN — sent now rather
+   * than staged. A plan is stored, drawn, logged and kept as an undo, which is
+   * four places a credential would then be at rest for a value nothing ever
+   * reads back. So it is held in the form until this moment and sent once.
+   */
+  applySheet: (id: string, skip: string[] = [], secrets: Record<string, string> = {}) =>
     request<{
       edit: BulkEdit;
       changed: number;
@@ -1199,7 +1216,7 @@ export const api = {
       failed: number;
     }>(`/api/bulk/${encodeURIComponent(id)}/apply`, {
       method: "POST",
-      body: JSON.stringify({ confirm: "apply", skip }),
+      body: JSON.stringify({ confirm: "apply", skip, secrets }),
     }),
 
   cancelSheet: (id: string) =>
