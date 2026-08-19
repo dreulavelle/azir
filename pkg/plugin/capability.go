@@ -105,6 +105,9 @@ const (
 	CapPhoneSchedule       Capability = "phone_system.schedule"
 	CapPhoneScheduleAdd    Capability = "phone_system.schedule_add"
 	CapPhoneScheduleRemove Capability = "phone_system.schedule_remove"
+	// CapPhoneHoursSet is the week a department keeps, which is a different
+	// thing from the days it is shut.
+	CapPhoneHoursSet Capability = "phone_system.office_hours_set"
 
 	// CapPhoneCapture is a diagnostic capture pulled from a live phone system
 	// rather than uploaded as a file. Distinct from CapPhoneEvents, which is
@@ -182,6 +185,7 @@ var vocabulary = map[Capability]struct{}{
 	CapPhoneSchedule:          {},
 	CapPhoneScheduleAdd:       {},
 	CapPhoneScheduleRemove:    {},
+	CapPhoneHoursSet:          {},
 	CapCallsList:              {},
 	CapDocsSearch:             {},
 	CapInvoicesList:           {},

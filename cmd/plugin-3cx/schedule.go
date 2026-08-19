@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
+	"slices"
 	"sort"
 	"strings"
 
@@ -50,43 +52,177 @@ type closure struct {
 }
 
 /*
-listSchedule reads every closure, and the office hours they are exceptions to.
+listSchedule reads one department's schedule, and names the rest.
 
-Both together because neither answers the question on its own. "Are they open
-on the 24th" needs the weekly pattern and the list of days that override it,
-and a screen showing one without the other is one somebody has to check twice.
+Per department, because that is how the phone system keeps it: a group carries
+its own office hours, its own holidays and its own time zone, and "the company"
+is simply the group everybody is in. Reading the system-wide /OfficeHours and
+/Holidays gave one answer for an organisation that has as many as it has
+departments — right for Cooli, which has one, and wrong for anybody with a
+warehouse that shuts at four.
+
+The departments come back with it so a screen can offer them without a second
+request, and because the one being shown means nothing without the others
+beside it.
 */
 func listSchedule(ctx context.Context, req plugin.Request) (any, error) {
+	var args struct {
+		Department string `json:"department"`
+	}
+	if len(req.Args) > 0 {
+		if err := json.Unmarshal(req.Args, &args); err != nil {
+			return nil, plugin.Errorf("400", "those arguments could not be read")
+		}
+	}
+
 	conn, err := connect(ctx, req)
 	if err != nil {
 		return nil, err
 	}
 
-	var answer struct {
-		Value []closure `json:"value"`
+	all, err := readGroups(ctx, conn)
+	if err != nil {
+		return nil, err
 	}
-	if err := conn.get(ctx, "Holidays", nil, &answer); err != nil {
+	if len(all) == 0 {
+		return nil, plugin.Errorf("404", "this phone system has no departments")
+	}
+
+	departments := make([]map[string]any, 0, len(all))
+	for _, g := range all {
+		departments = append(departments, map[string]any{"name": g.Name, "number": g.Number})
+	}
+	sort.SliceStable(departments, func(a, b int) bool {
+		return asText(departments[a]["name"]) < asText(departments[b]["name"])
+	})
+
+	chosen, err := pickGroup(all, args.Department)
+	if err != nil {
 		return nil, err
 	}
 
-	out := make([]map[string]any, 0, len(answer.Value))
-	for _, c := range answer.Value {
-		out = append(out, c.plain())
+	detail, err := groupSchedule(ctx, conn, chosen.ID)
+	if err != nil {
+		return nil, err
+	}
+	detail["departments"] = departments
+	detail["department"] = chosen.Name
+	detail["department_number"] = chosen.Number
+	return detail, nil
+}
+
+/*
+pickGroup resolves which department was asked for.
+
+By name or by number, because a screen holds the name and a closure carries the
+number. Nothing named means the default group, which on 3CX is everybody and is
+therefore what "the company" means.
+*/
+func pickGroup(all []group, asked string) (group, error) {
+	asked = strings.TrimSpace(asked)
+	for _, g := range all {
+		if asked != "" && (g.Name == asked || g.Number == asked) {
+			return g, nil
+		}
+	}
+	if asked != "" {
+		return group{}, plugin.Errorf("404", "this phone system has no department called %q", asked)
+	}
+	for _, g := range all {
+		if g.Name == "DEFAULT" {
+			return g, nil
+		}
+	}
+	return all[0], nil
+}
+
+/*
+groupSchedule reads one department's hours, closures and current state.
+
+Expanded in one request rather than fetched in three. The holidays hang off the
+group as a navigation property, which is the phone system saying plainly that
+they belong to it.
+*/
+func groupSchedule(ctx context.Context, conn pbx, id int64) (map[string]any, error) {
+	var g struct {
+		Hours struct {
+			Type           string `json:"Type"`
+			IgnoreHolidays *bool  `json:"IgnoreHolidays"`
+			Periods        []struct {
+				DayOfWeek string `json:"DayOfWeek"`
+				Start     string `json:"Start"`
+				Stop      string `json:"Stop"`
+			} `json:"Periods"`
+		} `json:"Hours"`
+		OfficeHolidays    []closure `json:"OfficeHolidays"`
+		CurrentGroupHours string    `json:"CurrentGroupHours"`
+		TimeZoneID        string    `json:"TimeZoneId"`
+	}
+	query := url.Values{"$expand": {"OfficeHolidays"}}
+	if err := conn.get(ctx, fmt.Sprintf("Groups(%d)", id), query, &g); err != nil {
+		return nil, err
+	}
+
+	closures := make([]map[string]any, 0, len(g.OfficeHolidays))
+	for _, c := range g.OfficeHolidays {
+		closures = append(closures, c.plain())
 	}
 	// By when they happen, so the list reads as a year rather than as whatever
 	// order they were added in. A repeating closure sorts as "--12-25", which
 	// puts it among the months where it belongs.
-	sort.SliceStable(out, func(a, b int) bool {
-		return asText(out[a]["starts"]) < asText(out[b]["starts"])
+	sort.SliceStable(closures, func(a, b int) bool {
+		return asText(closures[a]["starts"]) < asText(closures[b]["starts"])
 	})
 
-	open, zone := officeHours(ctx, conn)
+	open := make([]map[string]any, 0, len(g.Hours.Periods))
+	for _, p := range g.Hours.Periods {
+		open = append(open, map[string]any{
+			"day": p.DayOfWeek,
+			// The phone system keeps seconds; nobody opens at 09:00:30.
+			"from": hhmm(p.Start),
+			"to":   hhmm(p.Stop),
+		})
+	}
+
 	return map[string]any{
-		"closures":     out,
-		"count":        len(out),
-		"office_hours": open,
-		"time_zone":    timeZoneName(ctx, conn, zone),
+		"closures": closures,
+		"count":    len(closures),
+		"office_hours": map[string]any{
+			"kind":            g.Hours.Type,
+			"days":            open,
+			"ignore_closures": g.Hours.IgnoreHolidays != nil && *g.Hours.IgnoreHolidays,
+		},
+		// Whether somebody has forced this department open or closed right
+		// now, which no amount of reading the schedule would tell you.
+		"forced":    forcedAs(g.CurrentGroupHours),
+		"time_zone": timeZoneName(ctx, conn, g.TimeZoneID),
 	}, nil
+}
+
+/*
+forcedAs reads the phone system's override mode as something worth showing.
+
+"Default" is the schedule doing its job and is reported as nothing at all — an
+indicator that is always lit says nothing. Anything else is somebody having
+overridden the schedule by hand, which is the single most useful thing to know
+when a customer says their phones are behaving oddly.
+*/
+func forcedAs(mode string) string {
+	switch mode {
+	case "", "Default":
+		return ""
+	case "ForceOpened":
+		return "forced open"
+	case "ForceClosed":
+		return "forced closed"
+	case "ForceBreak":
+		return "forced onto break"
+	case "ForceHoliday":
+		return "forced onto holiday hours"
+	case "ForceCustomOperator":
+		return "forced to a custom operator"
+	}
+	return mode
 }
 
 /*
@@ -168,47 +304,6 @@ func asDuration(hhmm string) (string, error) {
 		return "", plugin.Errorf("400", "%q is not a time of day", hhmm)
 	}
 	return fmt.Sprintf("PT%dH%dM", hours, minutes), nil
-}
-
-/*
-officeHours reads the weekly pattern the closures are exceptions to.
-
-Answered as nothing rather than as an error when the phone system will not say.
-The closures are the point of this tool and the hours are the context; a screen
-that refuses to draw because it could not fetch the context is worse than one
-that draws without it.
-*/
-func officeHours(ctx context.Context, conn pbx) (any, string) {
-	var answer struct {
-		Hours struct {
-			Type           string `json:"Type"`
-			IgnoreHolidays *bool  `json:"IgnoreHolidays"`
-			Periods        []struct {
-				DayOfWeek string `json:"DayOfWeek"`
-				Start     string `json:"Start"`
-				Stop      string `json:"Stop"`
-			} `json:"Periods"`
-		} `json:"Hours"`
-		TimeZoneID string `json:"TimeZoneId"`
-	}
-	if err := conn.get(ctx, "OfficeHours", nil, &answer); err != nil {
-		return nil, ""
-	}
-
-	open := make([]map[string]any, 0, len(answer.Hours.Periods))
-	for _, p := range answer.Hours.Periods {
-		open = append(open, map[string]any{
-			"day": p.DayOfWeek,
-			// The phone system keeps seconds; nobody opens at 09:00:30.
-			"from": hhmm(p.Start),
-			"to":   hhmm(p.Stop),
-		})
-	}
-	return map[string]any{
-		"kind":            answer.Hours.Type,
-		"days":            open,
-		"ignore_closures": answer.Hours.IgnoreHolidays != nil && *answer.Hours.IgnoreHolidays,
-	}, answer.TimeZoneID
 }
 
 /*
@@ -564,4 +659,133 @@ func badDate(date string) error {
 	return plugin.Errorf("400",
 		"%q is not a date. Write one as 2026-12-25, or as --12-25 for a day that repeats every year",
 		date)
+}
+
+/*
+Office hours and office holidays are two different things.
+
+The hours are the week a department keeps — open nine to six, Monday to Friday.
+The holidays are the dated exceptions to it. The console keeps them on separate
+pages and so does this: setting the hours is changing what normally happens,
+and adding a holiday is saying that one day is not normal.
+
+Which also settles a question that looks harder than it is. "Close at four this
+Friday, back to six the Friday after" needs no scheduled reversion and no
+second action — it is one holiday, on one date, from 16:00 to 18:00. It expires
+because it is dated. Changing the office hours and changing them back is the
+thing to avoid: it leaves the department wrong if the second half is forgotten,
+and there is nothing to forget in a dated exception.
+*/
+
+// hoursArgs sets one department's weekly pattern.
+type hoursArgs struct {
+	Department string `json:"department"`
+	// Days is the week, as it will be. A day left out is a day the department
+	// is closed — the whole pattern is written at once, because that is how
+	// the phone system keeps it and a partial write would be a week nobody
+	// described.
+	Days []struct {
+		Day  string `json:"day"`
+		From string `json:"from"`
+		To   string `json:"to"`
+	} `json:"days"`
+}
+
+// The days a week has, in the order the phone system names them.
+var weekdays = []string{
+	"Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
+}
+
+/*
+setHours writes a department's office hours.
+
+The whole week every time. 3CX keeps the pattern as a list of periods and
+replaces it wholesale, so sending one day would be sending a week with one day
+in it — and a department open only on Thursdays is a change nobody asked for.
+*/
+func setHours(ctx context.Context, req plugin.Request) (any, error) {
+	var args hoursArgs
+	if len(req.Args) > 0 {
+		if err := json.Unmarshal(req.Args, &args); err != nil {
+			return nil, plugin.Errorf("400", "those arguments could not be read")
+		}
+	}
+
+	periods := make([]map[string]any, 0, len(args.Days))
+	for _, day := range args.Days {
+		name := strings.TrimSpace(day.Day)
+		if !slices.Contains(weekdays, name) {
+			return nil, plugin.Errorf("400", "%q is not a day of the week", day.Day)
+		}
+		from, err := hoursOfDay(day.From)
+		if err != nil {
+			return nil, err
+		}
+		to, err := hoursOfDay(day.To)
+		if err != nil {
+			return nil, err
+		}
+		if from == to {
+			// A day that opens and closes at the same moment is a day the
+			// department is shut, and the phone system says that by the day
+			// not being there at all.
+			continue
+		}
+		periods = append(periods, map[string]any{"DayOfWeek": name, "Start": from, "Stop": to})
+	}
+
+	conn, err := connect(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	all, err := readGroups(ctx, conn)
+	if err != nil {
+		return nil, err
+	}
+	chosen, err := pickGroup(all, args.Department)
+	if err != nil {
+		return nil, err
+	}
+
+	/*
+		SpecificHoursExcludingHolidays: the week below, with the holidays still
+		overriding it. The alternative treats every holiday as an ordinary day,
+		which is the setting somebody notices on Christmas morning.
+
+		Written whatever the week says, including when it says nothing. The
+		phone system has a "Never" for a department that is never open, and
+		reaching for it because somebody cleared the days would be answering a
+		question nobody asked — a week with no open days and a department shut
+		permanently are different statements, and only one of them was made.
+	*/
+	body := map[string]any{"Hours": map[string]any{
+		"Type":    "SpecificHoursExcludingHolidays",
+		"Periods": periods,
+	}}
+	if err := conn.patch(ctx, fmt.Sprintf("Groups(%d)", chosen.ID), body); err != nil {
+		return nil, err
+	}
+	return map[string]any{"changed": true, "department": chosen.Name, "open_days": len(periods)}, nil
+}
+
+/*
+hoursOfDay writes a time of day the way office hours keep one.
+
+Seconds included, because the phone system's own format has them — its pattern
+insists on HH:MM:SS and refuses HH:MM. Nobody opens at half past nine and
+thirty seconds, so they are always zero.
+*/
+func hoursOfDay(hhmm string) (string, error) {
+	hhmm = strings.TrimSpace(hhmm)
+	if hhmm == "" {
+		return "00:00:00", nil
+	}
+	var hours, minutes int
+	if _, err := fmt.Sscanf(hhmm, "%d:%d", &hours, &minutes); err != nil {
+		return "", plugin.Errorf("400", "%q is not a time of day, which reads as 09:00", hhmm)
+	}
+	if hours < 0 || hours > 23 || minutes < 0 || minutes > 59 {
+		return "", plugin.Errorf("400", "%q is not a time of day", hhmm)
+	}
+	return fmt.Sprintf("%02d:%02d:00", hours, minutes), nil
 }

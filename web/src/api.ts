@@ -961,15 +961,35 @@ export type NewClosure = {
   department?: string;
 };
 
-/** The closures, and the weekly hours they are exceptions to. */
+/** One day a department is open. */
+export type OpenDay = { day: string; from: string; to: string };
+
+/**
+ * One department's schedule.
+ *
+ * Office hours and office holidays are two things, not one. The hours are the
+ * week a department keeps; the closures are the dated exceptions to it. Both
+ * belong to a department rather than to the company — a warehouse that shuts at
+ * four does not share its hours with the office.
+ *
+ * The whole week is written at once, because the phone system keeps the pattern
+ * as one value.
+ */
 export type Schedule = {
   closures: Closure[];
   count: number;
   office_hours: {
     kind: string;
-    days: { day: string; from: string; to: string }[];
+    days: OpenDay[];
     ignore_closures: boolean;
   } | null;
+  /** Every department, so a picker needs no second request. */
+  departments: { name: string; number: string }[];
+  /** The one being shown. */
+  department: string;
+  department_number: string;
+  /** Somebody has overridden the schedule by hand, in words. Empty if not. */
+  forced: string;
   /** The customer's own zone, inherited from the phone system. Never set here. */
   time_zone: string;
 };
@@ -1327,8 +1347,18 @@ export const api = {
     request<Customer[]>(`/api/customers/recent?limit=${encodeURIComponent(String(limit))}`),
 
   /** When a customer's phone system is closed, and the hours it keeps. */
-  schedule: (customerID: string) =>
-    request<Schedule>(`/api/schedule?customer_id=${encodeURIComponent(customerID)}`),
+  schedule: (customerID: string, department = "") =>
+    request<Schedule>(
+      `/api/schedule?customer_id=${encodeURIComponent(customerID)}` +
+        (department ? `&department=${encodeURIComponent(department)}` : ""),
+    ),
+
+  /** The week a department keeps. Written whole; see the note on the type. */
+  setOfficeHours: (customerID: string, department: string, days: OpenDay[]) =>
+    request<{ changed: boolean; department: string; open_days: number }>(
+      `/api/schedule/hours?customer_id=${encodeURIComponent(customerID)}`,
+      { method: "PUT", body: JSON.stringify({ department, days }) },
+    ),
 
   addClosure: (customerID: string, closure: NewClosure) =>
     request<{ added: boolean; closure: Closure }>(

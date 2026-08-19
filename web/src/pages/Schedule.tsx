@@ -1,9 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { api, type Actor, type Closure, type Customer, type Schedule as Sched } from "../api";
+import {
+  api,
+  type Actor,
+  type Closure,
+  type Customer,
+  type OpenDay,
+  type Schedule as Sched,
+} from "../api";
 import { CustomerSearch } from "../CustomerSearch";
 import { Dialog } from "../components";
 import { useToast } from "../Toast";
-import { Button, Chip, Empty, Icon, Label, Panel, Problem, TextInput } from "../ui";
+import { Button, Chip, Empty, Icon, Label, Panel, Picker, Problem, TextInput } from "../ui";
 
 /**
  * When a customer is closed.
@@ -11,6 +18,15 @@ import { Button, Chip, Empty, Icon, Label, Panel, Problem, TextInput } from "../
  * A holiday and an early closing are the same record to a phone system — a
  * span of dates, sometimes narrowed to a span of hours, sometimes repeating
  * every year — so they are one screen.
+ *
+ * Office hours and office holidays are two things, not one. The hours are the
+ * week a department keeps; the closures are the dated exceptions to it. They
+ * sit side by side here because that is how somebody reads them — "when are
+ * they open, and when are they not" — and they are written separately because
+ * they are separate acts.
+ *
+ * Per department, because that is how the phone system keeps both. A warehouse
+ * that shuts at four does not share its hours with the office.
  *
  * A year at a time, because that is the unit closures come in. Most of them
  * repeat, which makes "the 25th of December" the fact and "2026" an accident
@@ -99,6 +115,7 @@ export function Schedule({ actor }: { actor: Actor }) {
   const [customerID, setCustomerID] = useState("");
   const [customer, setCustomer] = useState<Customer | null>(null);
   const [schedule, setSchedule] = useState<Sched | null>(null);
+  const [department, setDepartment] = useState("");
   const [year, setYear] = useState(new Date().getFullYear());
   const [problem, setProblem] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -108,14 +125,18 @@ export function Schedule({ actor }: { actor: Actor }) {
 
   const mayManage = actor.permissions.includes("phone.manage");
 
-  const load = useCallback(async (id: string) => {
+  const load = useCallback(async (id: string, dept: string) => {
     if (!id) {
       setSchedule(null);
       return;
     }
     setProblem(null);
     try {
-      setSchedule(await api.schedule(id));
+      const got = await api.schedule(id, dept);
+      setSchedule(got);
+      // The phone system decides which department answers when none was asked
+      // for, so the picker follows it rather than guessing the same way twice.
+      setDepartment(got.department);
     } catch (e) {
       setProblem(e instanceof Error ? e.message : "Could not read the schedule");
       setSchedule(null);
@@ -123,8 +144,14 @@ export function Schedule({ actor }: { actor: Actor }) {
   }, []);
 
   useEffect(() => {
-    void load(customerID);
+    void load(customerID, department);
+    // Deliberately not on `department`: choosing one calls load itself, and
+    // load sets it, which would otherwise be a loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [customerID, load]);
+
+  // A different customer has different departments; theirs is not ours.
+  useEffect(() => setDepartment(""), [customerID]);
 
   // One customer is not a choice.
   useEffect(() => {
@@ -156,10 +183,10 @@ export function Schedule({ actor }: { actor: Actor }) {
     setBusy(true);
     setProblem(null);
     try {
-      await api.addClosure(customerID, closure);
+      await api.addClosure(customerID, { ...closure, department });
       toast(`${closure.name} scheduled`, { tone: "good" });
       setMaking(false);
-      await load(customerID);
+      await load(customerID, department);
     } catch (e) {
       setProblem(e instanceof Error ? e.message : "Could not schedule that");
     } finally {
@@ -173,7 +200,7 @@ export function Schedule({ actor }: { actor: Actor }) {
       await api.removeClosure(customerID, closure.id);
       toast(`${closure.name} removed`, { tone: "good" });
       setRemoving(null);
-      await load(customerID);
+      await load(customerID, department);
     } catch (e) {
       setProblem(e instanceof Error ? e.message : "Could not remove that");
       setRemoving(null);
@@ -182,7 +209,6 @@ export function Schedule({ actor }: { actor: Actor }) {
     }
   }
 
-  const hours = schedule?.office_hours;
 
   return (
     <div className="mx-auto flex max-w-[1400px] flex-col gap-4 p-6">
@@ -209,6 +235,28 @@ export function Schedule({ actor }: { actor: Actor }) {
               }}
             />
           </div>
+
+          {customerID && schedule && schedule.departments.length > 0 && (
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="which-department">Department</Label>
+              <div className="w-[200px]">
+                <Picker
+                  id="which-department"
+                  value={department}
+                  onChange={(e) => {
+                    setDepartment(e.target.value);
+                    void load(customerID, e.target.value);
+                  }}
+                >
+                  {schedule.departments.map((d) => (
+                    <option key={d.number} value={d.name}>
+                      {d.name}
+                    </option>
+                  ))}
+                </Picker>
+              </div>
+            </div>
+          )}
 
           {customerID && (
             <>
@@ -240,30 +288,13 @@ export function Schedule({ actor }: { actor: Actor }) {
           </div>
         )}
 
-        {customerID && schedule && (
-          <div className="border-t border-edge px-4 py-3 text-xs text-ink-dim">
-            {hours?.kind === "AllHours" ? (
-              <>Open around the clock, except on the days below.</>
-            ) : (
-              <>
-                Office hours: {hours?.days?.length ?? 0} day
-                {(hours?.days?.length ?? 0) === 1 ? "" : "s"} a week
-                {hours?.days?.length ? (
-                  <>
-                    {" — "}
-                    {hours.days.map((d) => `${d.day.slice(0, 3)} ${d.from}–${d.to}`).join(", ")}
-                  </>
-                ) : null}
-              </>
-            )}
-            {schedule.time_zone && (
-              <>
-                {" · "}
-                <span title="The customer's own time zone, inherited from their phone system">
-                  {schedule.time_zone}
-                </span>
-              </>
-            )}
+        {customerID && schedule?.forced && (
+          <div className="border-t border-edge px-4 py-2.5 text-xs">
+            <Chip tone="warn">{schedule.forced}</Chip>{" "}
+            <span className="text-ink-dim">
+              Somebody has overridden this department's schedule by hand. Until that is put
+              back, the hours below are not what callers meet.
+            </span>
           </div>
         )}
       </Panel>
@@ -272,6 +303,30 @@ export function Schedule({ actor }: { actor: Actor }) {
         <Panel>
           <Empty headline="Choose a customer to start" />
         </Panel>
+      )}
+
+      {customerID && schedule && (
+        <Hours
+          key={schedule.department}
+          days={schedule.office_hours?.days ?? []}
+          zone={schedule.time_zone}
+          department={schedule.department}
+          mayManage={mayManage}
+          busy={busy}
+          onSave={async (days) => {
+            setBusy(true);
+            setProblem(null);
+            try {
+              await api.setOfficeHours(customerID, schedule.department, days);
+              toast(`Office hours saved for ${schedule.department}`, { tone: "good" });
+              await load(customerID, department);
+            } catch (e) {
+              setProblem(e instanceof Error ? e.message : "Could not save those hours");
+            } finally {
+              setBusy(false);
+            }
+          }}
+        />
       )}
 
       {customerID && schedule && (
@@ -561,5 +616,140 @@ function NewClosure({
         )}
       </div>
     </Dialog>
+  );
+}
+
+/** The days of a week, in the order a week is read. */
+const WEEK = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+
+/**
+ * The week a department keeps.
+ *
+ * Seven rows, because a week has seven days and hiding the closed ones would
+ * make "are they open on Saturday" a question you answer by counting. A day
+ * with no hours is a day they are shut, which is the same thing the phone
+ * system means by leaving it out.
+ *
+ * Saved whole. The phone system replaces the pattern rather than merging it,
+ * so sending one changed day would send a week with one day in it.
+ */
+function Hours({
+  days,
+  zone,
+  department,
+  mayManage,
+  busy,
+  onSave,
+}: {
+  days: OpenDay[];
+  zone: string;
+  department: string;
+  mayManage: boolean;
+  busy: boolean;
+  onSave: (days: OpenDay[]) => void;
+}) {
+  const asIs = useMemo(() => {
+    const out = new Map<string, OpenDay>();
+    for (const day of days) {
+      // A day the phone system keeps as open and closed at the same moment is
+      // a day they are shut, and reads better as an empty row than as 00:00.
+      if (day.from !== day.to) out.set(day.day, day);
+    }
+    return out;
+  }, [days]);
+
+  const [week, setWeek] = useState<Map<string, OpenDay>>(() => new Map(asIs));
+  const changed =
+    JSON.stringify([...week.entries()].sort()) !== JSON.stringify([...asIs.entries()].sort());
+
+  const set = (day: string, patch: Partial<OpenDay>) =>
+    setWeek((was) => {
+      const next = new Map(was);
+      const now = next.get(day) ?? { day, from: "09:00", to: "17:00" };
+      next.set(day, { ...now, ...patch });
+      return next;
+    });
+
+  return (
+    <Panel>
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-edge px-4 py-3">
+        <div>
+          <h2 className="text-sm font-medium">Office hours</h2>
+          <p className="text-xs text-ink-dim">
+            The week {department} keeps. The closures below are the exceptions to it.
+            {zone ? ` Times are ${zone}.` : ""}
+          </p>
+        </div>
+        {mayManage && (
+          <div className="flex items-center gap-2">
+            {changed && (
+              <Button disabled={busy} onClick={() => setWeek(new Map(asIs))}>
+                Undo
+              </Button>
+            )}
+            <Button
+              weight="primary"
+              disabled={busy || !changed}
+              onClick={() => onSave([...week.values()])}
+            >
+              {busy ? "Saving…" : "Save hours"}
+            </Button>
+          </div>
+        )}
+      </div>
+
+      <div className="flex flex-wrap gap-x-6 gap-y-2 px-4 py-3">
+        {WEEK.map((day) => {
+          const open = week.get(day);
+          return (
+            <div key={day} className="flex min-w-[210px] items-center gap-2">
+              <label className="flex w-[104px] shrink-0 items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  className="size-3.5 accent-azir"
+                  checked={Boolean(open)}
+                  disabled={!mayManage || busy}
+                  aria-label={`Open on ${day}`}
+                  onChange={(e) =>
+                    setWeek((was) => {
+                      const next = new Map(was);
+                      if (e.target.checked) next.set(day, { day, from: "09:00", to: "17:00" });
+                      else next.delete(day);
+                      return next;
+                    })
+                  }
+                />
+                {day.slice(0, 3)}
+              </label>
+              {open ? (
+                <div className="flex items-center gap-1">
+                  <div className="w-[92px]">
+                    <TextInput
+                      type="time"
+                      value={open.from}
+                      disabled={!mayManage || busy}
+                      aria-label={`${day} opens`}
+                      onChange={(e) => set(day, { from: e.target.value })}
+                    />
+                  </div>
+                  <span className="text-xs text-ink-faint">–</span>
+                  <div className="w-[92px]">
+                    <TextInput
+                      type="time"
+                      value={open.to}
+                      disabled={!mayManage || busy}
+                      aria-label={`${day} closes`}
+                      onChange={(e) => set(day, { to: e.target.value })}
+                    />
+                  </div>
+                </div>
+              ) : (
+                <span className="text-xs text-ink-faint">closed</span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </Panel>
   );
 }

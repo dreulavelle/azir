@@ -90,6 +90,10 @@ const ACTIONS: Record<string, { verb: string; note?: string }> = {
     verb: "Scheduled a closure",
     note: "A holiday or an early closing. Refused before it is written if the name is already used, or if it covers a day another closure already covers.",
   },
+  "schedule.hours": {
+    verb: "Changed a department's office hours",
+    note: "The whole week is written at once — the phone system keeps the pattern as one thing.",
+  },
   "schedule.remove": {
     verb: "Removed a scheduled closure",
     note: "The phones keep their usual hours on those days again.",

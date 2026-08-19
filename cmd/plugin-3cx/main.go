@@ -497,13 +497,22 @@ func main() {
 			},
 			{
 				Name: "schedule.list",
-				Description: "When this phone system is closed: every holiday and early closing, with the " +
-					"office hours they are exceptions to. A closure is a span of dates, sometimes narrowed " +
-					"to a span of hours, sometimes repeating every year.",
-				Summary:  "Lists closures and office hours.",
+				Description: "When a department is closed: its holidays and early closings, the office hours " +
+					"they are exceptions to, and whether somebody has forced it open or shut. Hours and " +
+					"holidays belong to a department rather than to the company, so this answers for one " +
+					"and names the rest.",
+				Summary:  "Lists one department's closures and office hours.",
 				Provides: []plugin.Capability{plugin.CapPhoneSchedule},
-				Schema:   json.RawMessage(`{"type": "object", "properties": {}}`),
-				Handler:  listSchedule,
+				Schema: json.RawMessage(`{
+					"type": "object",
+					"properties": {
+						"department": {
+							"type": "string",
+							"description": "Which department's schedule, by name or number. Left out for the default one, which is everybody."
+						}
+					}
+				}`),
+				Handler: listSchedule,
 			},
 			{
 				Name: "schedule.add",
@@ -549,6 +558,38 @@ func main() {
 					"properties": {"id": {"type": "integer", "description": "The closure's id, from schedule.list."}}
 				}`),
 				Handler: removeSchedule,
+			},
+			{
+				Name: "schedule.hours",
+				Description: "Sets the office hours a department keeps: the days it is open and the times " +
+					"on each. The whole week is written at once, because that is how the phone system " +
+					"keeps it. This is the normal week — a single early closing is a holiday, not a " +
+					"change to this.",
+				Summary:            "Sets a department's weekly office hours.",
+				Provides:           []plugin.Capability{plugin.CapPhoneHoursSet},
+				Mutates:            true,
+				RequiresPermission: "phone.manage",
+				Schema: json.RawMessage(`{
+					"type": "object",
+					"required": ["days"],
+					"properties": {
+						"department": {"type": "string", "description": "Which department, by name or number. Left out for the default one."},
+						"days": {
+							"type": "array",
+							"description": "The week as it will be. A day left out is a day the department is closed.",
+							"items": {
+								"type": "object",
+								"required": ["day", "from", "to"],
+								"properties": {
+									"day": {"type": "string", "enum": ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]},
+									"from": {"type": "string", "description": "Opens, as 09:00."},
+									"to": {"type": "string", "description": "Closes, as 18:00."}
+								}
+							}
+						}
+					}
+				}`),
+				Handler: setHours,
 			},
 			{
 				Name:        "ringgroups.list",
