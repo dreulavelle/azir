@@ -75,12 +75,12 @@ and decline.
 func TestOnlyTheDifferenceIsProposed(t *testing.T) {
 	s := sheet(t, "Extension,Name,Active\n101,Alice Smith,yes\n102,Bob Jones,no\n103,Carol,yes\n")
 	now := Current{
-		"101": {Name: "A. Smith", Enabled: true},  // name differs
-		"102": {Name: "Bob Jones", Enabled: true}, // enabled differs
-		"103": {Name: "Carol", Enabled: true},     // nothing differs
+		"101": {FieldName: "A. Smith", FieldEnabled: "yes"},  // name differs
+		"102": {FieldName: "Bob Jones", FieldEnabled: "yes"}, // enabled differs
+		"103": {FieldName: "Carol", FieldEnabled: "yes"},     // nothing differs
 	}
 
-	plan, err := Build(s, Mapping{Extension: 0, Fields: map[Field]int{FieldName: 1, FieldEnabled: 2}}, now)
+	plan, err := Build(s, Mapping{Extension: 0, Fields: map[Field]int{FieldName: 1, FieldEnabled: 2}}, now, Core)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,9 +113,9 @@ not causing it is better than catching it.
 */
 func TestABlankCellChangesNothing(t *testing.T) {
 	s := sheet(t, "Extension,Name,Active\n101,,\n")
-	now := Current{"101": {Name: "Alice", Enabled: true}}
+	now := Current{"101": {FieldName: "Alice", FieldEnabled: "yes"}}
 
-	plan, err := Build(s, Mapping{Extension: 0, Fields: map[Field]int{FieldName: 1, FieldEnabled: 2}}, now)
+	plan, err := Build(s, Mapping{Extension: 0, Fields: map[Field]int{FieldName: 1, FieldEnabled: 2}}, now, Core)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,9 +133,9 @@ nothing about the rest would be the worst of both.
 */
 func TestRowsThatCannotBeAppliedAreShown(t *testing.T) {
 	s := sheet(t, "Extension,Name\n101,Alice\n999,Ghost\n,Nameless\n101,Duplicate\n")
-	now := Current{"101": {Name: "A. Smith"}}
+	now := Current{"101": {FieldName: "A. Smith"}}
 
-	plan, err := Build(s, Mapping{Extension: 0, Fields: map[Field]int{FieldName: 1}}, now)
+	plan, err := Build(s, Mapping{Extension: 0, Fields: map[Field]int{FieldName: 1}}, now, Core)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,9 +166,9 @@ func TestRowsThatCannotBeAppliedAreShown(t *testing.T) {
 // at. Guessing here disables somebody's phone.
 func TestAnUnreadableYesOrNoStopsItsRow(t *testing.T) {
 	s := sheet(t, "Extension,Active\n101,perhaps\n")
-	now := Current{"101": {Name: "Alice", Enabled: true}}
+	now := Current{"101": {FieldName: "Alice", FieldEnabled: "yes"}}
 
-	plan, err := Build(s, Mapping{Extension: 0, Fields: map[Field]int{FieldEnabled: 1}}, now)
+	plan, err := Build(s, Mapping{Extension: 0, Fields: map[Field]int{FieldEnabled: 1}}, now, Core)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +205,7 @@ func TestAMappingMustNameRealColumns(t *testing.T) {
 		{Extension: 0, Fields: map[Field]int{}},
 		{Extension: 0, Fields: map[Field]int{FieldName: 9}},
 	} {
-		if _, err := Build(s, m, Current{}); err == nil {
+		if _, err := Build(s, m, Current{}, Core); err == nil {
 			t.Errorf("accepted %+v", m)
 		}
 	}
@@ -220,7 +220,7 @@ func TestColumnsAreGuessedFromTheirHeaders(t *testing.T) {
 		{"Extension Number", "Full Name", "Status"},
 		{"EXT_NUMBER", "USER-NAME", "IN.USE"},
 	} {
-		m := Suggest(header)
+		m := Suggest(header, Core)
 		if m.Extension != 0 {
 			t.Errorf("%v: extension guessed as %d", header, m.Extension)
 		}
@@ -233,7 +233,7 @@ func TestColumnsAreGuessedFromTheirHeaders(t *testing.T) {
 	}
 
 	// A header it does not recognise is left for a person, not guessed at.
-	m := Suggest([]string{"Widget", "Sprocket"})
+	m := Suggest([]string{"Widget", "Sprocket"}, Core)
 	if m.Extension != -1 || len(m.Fields) != 0 {
 		t.Errorf("guessed at columns it should not have: %+v", m)
 	}
@@ -250,9 +250,9 @@ means.
 */
 func TestNothingIsCreatedUnlessItWasAskedFor(t *testing.T) {
 	s := sheet(t, "Extension,Name\n101,Alice\n900,New Person\n")
-	now := Current{"101": {Name: "Alice"}}
+	now := Current{"101": {FieldName: "Alice"}}
 
-	off, err := Build(s, Mapping{Extension: 0, Fields: map[Field]int{FieldName: 1}}, now)
+	off, err := Build(s, Mapping{Extension: 0, Fields: map[Field]int{FieldName: 1}}, now, Core)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +260,7 @@ func TestNothingIsCreatedUnlessItWasAskedFor(t *testing.T) {
 		t.Fatalf("created something with creating off: %+v", off)
 	}
 
-	on, err := Build(s, Mapping{Extension: 0, Fields: map[Field]int{FieldName: 1}, Create: true}, now)
+	on, err := Build(s, Mapping{Extension: 0, Fields: map[Field]int{FieldName: 1}, Create: true}, now, Core)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,9 +284,9 @@ dialling the old number reaches a new person.
 func TestANewExtensionStartsAfterTheHighest(t *testing.T) {
 	// 102 is missing, and must stay missing.
 	s := sheet(t, "Extension,Name\n,First Hire\n,Second Hire\n")
-	now := Current{"100": {Name: "A"}, "101": {Name: "B"}, "103": {Name: "C"}}
+	now := Current{"100": {FieldName: "A"}, "101": {FieldName: "B"}, "103": {FieldName: "C"}}
 
-	plan, err := Build(s, Mapping{Extension: 0, Fields: map[Field]int{FieldName: 1}, Create: true}, now)
+	plan, err := Build(s, Mapping{Extension: 0, Fields: map[Field]int{FieldName: 1}, Create: true}, now, Core)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -309,7 +309,7 @@ func TestANewExtensionStartsAfterTheHighest(t *testing.T) {
 // nobody can identify.
 func TestANewExtensionNeedsAName(t *testing.T) {
 	s := sheet(t, "Extension,Name\n900,\n")
-	plan, err := Build(s, Mapping{Extension: 0, Fields: map[Field]int{FieldName: 1}, Create: true}, Current{"100": {Name: "A"}})
+	plan, err := Build(s, Mapping{Extension: 0, Fields: map[Field]int{FieldName: 1}, Create: true}, Current{"100": {FieldName: "A"}}, Core)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -322,9 +322,9 @@ func TestANewExtensionNeedsAName(t *testing.T) {
 // buries twenty new extensions among unchanged rows is a plan nobody reads.
 func TestEditsAndCreationsAreShownApart(t *testing.T) {
 	s := sheet(t, "Extension,Name\n100,Renamed\n101,Same\n900,Brand New\n")
-	now := Current{"100": {Name: "Old"}, "101": {Name: "Same"}}
+	now := Current{"100": {FieldName: "Old"}, "101": {FieldName: "Same"}}
 
-	plan, err := Build(s, Mapping{Extension: 0, Fields: map[Field]int{FieldName: 1}, Create: true}, now)
+	plan, err := Build(s, Mapping{Extension: 0, Fields: map[Field]int{FieldName: 1}, Create: true}, now, Core)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -352,9 +352,9 @@ This is the third bug of this exact shape in this codebase. The other two were
 permission labels and audit action names.
 */
 func TestAzirCanReadTheSheetItWrites(t *testing.T) {
-	columns := SheetColumns()
-	guessed := Suggest(columns)
-	want := CanonicalMapping()
+	columns := SheetColumns(Core)
+	guessed := Suggest(columns, Core)
+	want := CanonicalMapping(Core)
 
 	if guessed.Extension != want.Extension {
 		t.Errorf("Suggest put the extension column at %d, CanonicalMapping says %d",
@@ -377,17 +377,17 @@ func TestAzirCanReadTheSheetItWrites(t *testing.T) {
 	}
 }
 
-// Line has a switch over the fields; a new one added to Editable and forgotten
-// there would write a short row, silently shifting every column after it.
+// Line writes one cell per spec; a mismatch would silently shift every column
+// after it.
 func TestLineFillsEveryColumn(t *testing.T) {
-	line := Line("100", Values{Name: "Reception", Enabled: true})
-	if len(line) != len(SheetColumns()) {
-		t.Fatalf("Line wrote %d cells for %d columns", len(line), len(SheetColumns()))
+	line := Line("100", Values{FieldName: "Reception", FieldEnabled: "yes"}, Core)
+	if len(line) != len(SheetColumns(Core)) {
+		t.Fatalf("Line wrote %d cells for %d columns", len(line), len(SheetColumns(Core)))
 	}
 	for i, cell := range line {
 		if cell == "" {
 			t.Errorf("Line left %q empty, so a field is missing from its switch",
-				SheetColumns()[i])
+				SheetColumns(Core)[i])
 		}
 	}
 }
@@ -397,13 +397,13 @@ func TestLineFillsEveryColumn(t *testing.T) {
 func TestTheRoundTripSurvivesParsing(t *testing.T) {
 	var out strings.Builder
 	sheet := csv.NewWriter(&out)
-	if err := sheet.Write(SheetColumns()); err != nil {
+	if err := sheet.Write(SheetColumns(Core)); err != nil {
 		t.Fatal(err)
 	}
-	if err := sheet.Write(Line("100", Values{Name: "Dreu Lavelle", Enabled: true})); err != nil {
+	if err := sheet.Write(Line("100", Values{FieldName: "Dreu Lavelle", FieldEnabled: "yes"}, Core)); err != nil {
 		t.Fatal(err)
 	}
-	if err := sheet.Write(Line("101", Values{Name: "Front Desk", Enabled: false})); err != nil {
+	if err := sheet.Write(Line("101", Values{FieldName: "Front Desk", FieldEnabled: "no"}, Core)); err != nil {
 		t.Fatal(err)
 	}
 	sheet.Flush()
@@ -414,10 +414,10 @@ func TestTheRoundTripSurvivesParsing(t *testing.T) {
 	}
 
 	now := Current{
-		"100": {Name: "Dreu Lavelle", Enabled: true},
-		"101": {Name: "Front Desk", Enabled: false},
+		"100": {FieldName: "Dreu Lavelle", FieldEnabled: "yes"},
+		"101": {FieldName: "Front Desk", FieldEnabled: "no"},
 	}
-	plan, err := Build(parsed, Suggest(parsed.Columns), now)
+	plan, err := Build(parsed, Suggest(parsed.Columns, Core), now, Core)
 	if err != nil {
 		t.Fatalf("building from Azir's own sheet: %v", err)
 	}
@@ -441,7 +441,7 @@ already in the database — a crash no amount of testing the endpoints would hav
 found, because the JSON was well-formed and the failure was in reading it.
 */
 func TestEmptySheetsAndPlansEncodeAsLists(t *testing.T) {
-	sheet, err := json.Marshal(Sheet{Columns: SheetColumns()})
+	sheet, err := json.Marshal(Sheet{Columns: SheetColumns(Core)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -469,5 +469,126 @@ func TestEmptySheetsAndPlansEncodeAsLists(t *testing.T) {
 	}
 	if len(back.Rows) != 1 || back.Cell(0, 0) != "100" {
 		t.Errorf("round trip lost the rows: %s -> %+v", full, back)
+	}
+}
+
+/*
+A phone system's own fields become columns, and come back through the sheet.
+
+The sheet used to carry two fields on a phone system that will set thirty-two,
+because this package held its own list. It builds from what the plugin
+publishes now, and this is the whole round trip: publish, write a sheet,
+read it back, compare.
+*/
+func TestPublishedFieldsMakeItThroughTheSheet(t *testing.T) {
+	published := []Spec{
+		{Field: "Enabled", Label: "Enabled", Kind: KindBool, Group: "Basics"},
+		{Field: "RecordCalls", Label: "Record calls", Kind: KindBool, Group: "Recording"},
+		{Field: "SRTPMode", Label: "Encrypt the audio", Kind: KindChoice, Group: "Network",
+			Choices: []string{"SRTPDisabled", "SRTPEnabled"}},
+	}
+	specs := Merge(Core, published)
+
+	// 3CX publishes its own Enabled, which is the switch Core already
+	// describes. Two columns fighting over one setting is the bug.
+	if len(specs) != 4 {
+		t.Fatalf("merged to %d fields, want 4: %+v", len(specs), specs)
+	}
+	for _, spec := range specs[2:] {
+		if spec.Field == "Enabled" {
+			t.Error("the plugin's Enabled was kept alongside Azir's own")
+		}
+	}
+
+	columns := SheetColumns(specs)
+	want := []string{"Extension", "Display name", "Enabled", "Record calls", "Encrypt the audio"}
+	if strings.Join(columns, ",") != strings.Join(want, ",") {
+		t.Errorf("columns = %v, want %v", columns, want)
+	}
+
+	// Written out, read back, and mapped without anybody touching a dropdown.
+	now := Current{"100": {FieldName: "Reception", FieldEnabled: "yes",
+		"RecordCalls": "no", "SRTPMode": "SRTPDisabled"}}
+	var out strings.Builder
+	w := csv.NewWriter(&out)
+	_ = w.Write(columns)
+	_ = w.Write(Line("100", now["100"], specs))
+	w.Flush()
+
+	parsed, err := Parse(strings.NewReader(out.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	guessed := Suggest(parsed.Columns, specs)
+	if len(guessed.Fields) != len(specs) {
+		t.Errorf("Suggest mapped %d of %d published columns: %+v",
+			len(guessed.Fields), len(specs), guessed.Fields)
+	}
+	plan, err := Build(parsed, guessed, now, specs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Changing != 0 {
+		t.Errorf("an unedited round trip proposed %d changes", plan.Changing)
+	}
+
+	// And an edit to a published field is seen as one change, in its words.
+	parsed.Rows[0][3] = "yes" // Record calls
+	plan, err = Build(parsed, guessed, now, specs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Changing != 1 || len(plan.Rows[0].Changes) != 1 {
+		t.Fatalf("editing an option gave %+v", plan.Rows)
+	}
+	if got := plan.Rows[0].Changes[0]; got.Label != "Record calls" || got.Before != "no" || got.After != "yes" {
+		t.Errorf("change reads as %+v", got)
+	}
+}
+
+// A choice is checked against what the phone system accepts, so a typo is a
+// skipped row with a reason rather than a failure halfway through a batch.
+func TestAChoiceIsCheckedBeforeItIsSent(t *testing.T) {
+	spec := Spec{Field: "SRTPMode", Label: "Encrypt", Kind: KindChoice,
+		Choices: []string{"SRTPDisabled", "SRTPEnabled"}}
+
+	if got, err := Normalise(spec, "srtpenabled"); err != nil || got != "SRTPEnabled" {
+		t.Errorf("Normalise(%q) = %q, %v; want the canonical spelling", "srtpenabled", got, err)
+	}
+	if _, err := Normalise(spec, "SRTPMaybe"); err == nil {
+		t.Error("a value the phone system does not take was accepted")
+	}
+	if got, _ := Normalise(Spec{Kind: KindBool}, "TRUE"); got != "yes" {
+		t.Errorf(`Normalise bool "TRUE" = %q, want "yes"`, got)
+	}
+}
+
+/*
+Choosing extensions in the console produces the same plan a sheet does.
+
+Same comparison, same rows, same counts — which is what makes the diff, the
+approval, the audit line and the undo work for both without a second path
+through any of them.
+*/
+func TestChoosingIsTheSameComparison(t *testing.T) {
+	specs := Merge(Core, []Spec{{Field: "RecordCalls", Label: "Record calls", Kind: KindBool}})
+	now := Current{
+		"100": {FieldName: "Reception", FieldEnabled: "yes", "RecordCalls": "no"},
+		"101": {FieldName: "Sales", FieldEnabled: "yes", "RecordCalls": "yes"},
+	}
+
+	plan := Choose(map[string]Values{
+		"100": {"RecordCalls": "yes"}, // differs
+		"101": {"RecordCalls": "yes"}, // already so
+		"999": {"RecordCalls": "yes"}, // not there
+	}, now, specs)
+
+	if plan.Changing != 1 || plan.Unchanged != 1 || plan.Skipped != 1 {
+		t.Fatalf("changing=%d unchanged=%d skipped=%d; want 1/1/1",
+			plan.Changing, plan.Unchanged, plan.Skipped)
+	}
+	// A field nobody set is left alone, not blanked.
+	if got := plan.Rows[0]; len(got.Changes) != 1 || got.Changes[0].Field != "RecordCalls" {
+		t.Errorf("choosing one option proposed %+v", got.Changes)
 	}
 }

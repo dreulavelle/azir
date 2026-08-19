@@ -850,8 +850,30 @@ export type BulkPlan = {
   skipped: number;
 };
 
-/** One extension as the phone system has it right now. */
-export type BulkExtension = { extension: string; name: string; enabled: boolean };
+/**
+ * One field a sheet can set, as the phone system published it.
+ *
+ * Azir does not know what a 3CX extension can be set to and does not keep a
+ * list: the plugin publishes these, and the columns, the form and the
+ * allowlist on the way back out are all built from them.
+ */
+export type BulkSpec = {
+  field: string;
+  label: string;
+  /** "text", "bool" or "choice". */
+  kind: string;
+  group: string;
+  choices?: string[];
+};
+
+/** One extension as the phone system has it right now, field by field. */
+export type BulkExtension = {
+  extension: string;
+  name: string;
+  enabled: boolean;
+  /** Every editable field, as text. Booleans read "yes" or "no". */
+  values: Record<string, string>;
+};
 
 export type BulkEdit = {
   id: string;
@@ -884,7 +906,8 @@ export type BulkMapping = {
   create?: boolean;
 };
 
-export type BulkField = { Field: string; Label: string };
+/** What the mapping screen offers. Same shape as BulkSpec. */
+export type BulkField = BulkSpec;
 
 /** One open sign-in. */
 export type Session = {
@@ -949,7 +972,7 @@ export const api = {
 
   /** What the phone system says right now, to pick from. */
   extensions: (customerID: string) =>
-    request<{ extensions: BulkExtension[]; columns: string[] }>(
+    request<{ extensions: BulkExtension[]; fields: BulkSpec[]; columns: string[] }>(
       `/api/bulk/extensions?customer_id=${encodeURIComponent(customerID)}`,
     ),
 
@@ -960,9 +983,14 @@ export const api = {
    * that the phone system cannot be reached — and a plain link would answer
    * that by navigating the console to a page of JSON.
    */
-  startingSheet: async (customerID: string, saveAs: (blob: Blob, name: string) => void) => {
+  startingSheet: async (
+    customerID: string,
+    fields: string[],
+    saveAs: (blob: Blob, name: string) => void,
+  ) => {
+    const columns = fields.length > 0 ? `&fields=${encodeURIComponent(fields.join(","))}` : "";
     const res = await fetch(
-      `/api/bulk/starting-sheet?customer_id=${encodeURIComponent(customerID)}`,
+      `/api/bulk/starting-sheet?customer_id=${encodeURIComponent(customerID)}${columns}`,
     );
     if (!res.ok) {
       let message = `${res.status} ${res.statusText}`;
@@ -980,11 +1008,16 @@ export const api = {
     saveAs(await res.blob(), name);
   },
 
-  /** Extensions ticked in the console, compared the same way a sheet is. */
-  planChosen: (customerID: string, rows: { extension: string; name: string; enabled: string }[]) =>
+  /**
+   * Extensions ticked in the console, compared the same way a sheet is.
+   *
+   * `wanted` is what each extension should say, keyed by number then by field.
+   * A field left out is left alone.
+   */
+  planChosen: (customerID: string, wanted: Record<string, Record<string, string>>) =>
     request<{ edit: BulkEdit; plan: BulkPlan }>(
       `/api/bulk/chosen?customer_id=${encodeURIComponent(customerID)}`,
-      { method: "POST", body: JSON.stringify({ rows }) },
+      { method: "POST", body: JSON.stringify({ wanted }) },
     ),
 
   bulkEdits: (customerID: string) =>

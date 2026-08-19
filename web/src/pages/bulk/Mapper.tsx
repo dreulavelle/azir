@@ -36,8 +36,8 @@ export function Mapper({
   const readAs = new Map<number, string>();
   if (mapping.extension >= 0) readAs.set(mapping.extension, "Extension");
   for (const field of editable) {
-    const col = mapping.fields[field.Field];
-    if (col !== undefined) readAs.set(col, field.Label);
+    const col = mapping.fields[field.field];
+    if (col !== undefined) readAs.set(col, field.label);
   }
 
   return (
@@ -69,11 +69,11 @@ export function Mapper({
         </div>
 
         {editable.map((field) => (
-          <div key={field.Field} className="flex min-w-[200px] flex-col gap-1.5">
-            <Label>{field.Label}</Label>
+          <div key={field.field} className="flex min-w-[200px] flex-col gap-1.5">
+            <Label>{field.label}</Label>
             <Picker
-              value={mapping.fields[field.Field] === undefined ? "" : String(mapping.fields[field.Field])}
-              onChange={(e) => choose(field.Field, e.target.value)}
+              value={mapping.fields[field.field] === undefined ? "" : String(mapping.fields[field.field])}
+              onChange={(e) => choose(field.field, e.target.value)}
             >
               <option value="">Leave alone</option>
               {columns.map((c, i) => (

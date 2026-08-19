@@ -94,11 +94,12 @@ func (s *Server) uploadBulk(w http.ResponseWriter, r *http.Request, actor identi
 		Detail:      fmt.Sprintf("%s, %d rows", header.Filename, len(sheet.Rows)),
 	})
 
+	specs := s.specsFor(r.Context(), actor, customerID)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"edit":     saved,
 		"columns":  sheet.Columns,
-		"suggests": bulk.Suggest(sheet.Columns),
-		"editable": bulk.Editable,
+		"suggests": bulk.Suggest(sheet.Columns, specs),
+		"editable": specs,
 	})
 }
 
@@ -121,7 +122,7 @@ func (s *Server) planBulk(w http.ResponseWriter, r *http.Request, actor identity
 		return
 	}
 
-	now, err := s.currentExtensions(r.Context(), actor, edit.CustomerID)
+	now, specs, err := s.currentExtensions(r.Context(), actor, edit.CustomerID)
 	if err != nil {
 		// Worth being plain about: without the current state there is no
 		// before, and a plan with no before is just the sheet again.
@@ -130,7 +131,7 @@ func (s *Server) planBulk(w http.ResponseWriter, r *http.Request, actor identity
 		return
 	}
 
-	plan, err := bulk.Build(sheet, mapping, now)
+	plan, err := bulk.Build(sheet, mapping, now, specs)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, errBody(err.Error()))
 		return
@@ -156,7 +157,7 @@ func (s *Server) planBulk(w http.ResponseWriter, r *http.Request, actor identity
 }
 
 // getBulk reads one back, plan and all.
-func (s *Server) getBulk(w http.ResponseWriter, r *http.Request) {
+func (s *Server) getBulk(w http.ResponseWriter, r *http.Request, actor identity.Actor) {
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, errBody("that is not a bulk edit id"))
@@ -167,7 +168,8 @@ func (s *Server) getBulk(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, errBody("no such bulk edit"))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"edit": edit, "editable": bulk.Editable})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"edit": edit, "editable": s.specsFor(r.Context(), actor, edit.CustomerID)})
 }
 
 // listBulk returns a customer's recent sheets.
@@ -248,39 +250,130 @@ func (s *Server) applyBulk(w http.ResponseWriter, r *http.Request, actor identit
 		left[extension] = true
 	}
 
-	results := make([]applied, 0, plan.Changing+plan.Creating+plan.Removing)
-	var done, made, gone, gaveUp, failed int
+	specs := s.specsFor(r.Context(), actor, edit.CustomerID)
+	byField := make(map[bulk.Field]bulk.Spec, len(specs))
+	for _, spec := range specs {
+		byField[spec.Field] = spec
+	}
+
+	// Outcomes by extension rather than a list built as it goes, because the
+	// option changes are sent in batches below and have to find their way back
+	// to the row they came from.
+	outcome := map[string]*applied{}
+	var order []string
+	note := func(row bulk.Row, was applied) *applied {
+		if got, seen := outcome[row.Extension]; seen {
+			return got
+		}
+		copied := was
+		outcome[row.Extension] = &copied
+		order = append(order, row.Extension)
+		return &copied
+	}
+
+	// Option changes are grouped by what they set. A dialog that turns call
+	// recording on for forty extensions is one request, not forty, because
+	// the phone system's own bulk endpoint takes a list — and it answers per
+	// extension, so the grouping costs nothing in what can be reported.
+	type batch struct {
+		settings   map[string]any
+		extensions []string
+	}
+	batches := map[string]*batch{}
+	var batchOrder []string
+
+	var made, gone, gaveUp int
 	for _, row := range plan.Rows {
 		if left[row.Extension] && (row.Changed() || row.Creates() || row.Removes()) {
-			results = append(results, applied{Extension: row.Extension, Left: true})
+			note(row, applied{Extension: row.Extension, Left: true})
 			gaveUp++
 			continue
 		}
 		switch {
 		case row.Removes():
+			at := note(row, applied{Extension: row.Extension, Gone: true})
 			if err := s.removeRow(r.Context(), actor, edit.CustomerID, row); err != nil {
-				results = append(results, applied{Extension: row.Extension, Gone: true, Problem: err.Error()})
-				failed++
+				at.Problem = err.Error()
 				continue
 			}
-			results = append(results, applied{Extension: row.Extension, Gone: true, OK: true})
+			at.OK = true
 			gone++
-		case row.Changed():
-			if err := s.applyRow(r.Context(), actor, edit.CustomerID, row); err != nil {
-				results = append(results, applied{Extension: row.Extension, Problem: err.Error()})
-				failed++
-				continue
-			}
-			results = append(results, applied{Extension: row.Extension, OK: true})
-			done++
 		case row.Creates():
+			at := note(row, applied{Extension: row.Extension, New: true})
 			if err := s.createRow(r.Context(), actor, edit.CustomerID, row); err != nil {
-				results = append(results, applied{Extension: row.Extension, New: true, Problem: err.Error()})
-				failed++
+				at.Problem = err.Error()
 				continue
 			}
-			results = append(results, applied{Extension: row.Extension, New: true, OK: true})
+			at.OK = true
 			made++
+		case row.Changed():
+			at := note(row, applied{Extension: row.Extension})
+			core, options := splitChanges(row.Changes)
+
+			if len(core) > 0 {
+				if err := s.applyRow(r.Context(), actor, edit.CustomerID, row.Extension, core); err != nil {
+					at.Problem = err.Error()
+					continue
+				}
+				at.OK = true
+			}
+			if len(options) == 0 {
+				continue
+			}
+
+			settings := settingsFor(options, byField)
+			key, err := json.Marshal(settings)
+			if err != nil {
+				at.Problem = "those settings could not be sent"
+				at.OK = false
+				continue
+			}
+			group, seen := batches[string(key)]
+			if !seen {
+				group = &batch{settings: settings}
+				batches[string(key)] = group
+				batchOrder = append(batchOrder, string(key))
+			}
+			group.extensions = append(group.extensions, row.Extension)
+		}
+	}
+
+	for _, key := range batchOrder {
+		group := batches[key]
+		said, err := s.setOptions(r.Context(), actor, edit.CustomerID, group.extensions, group.settings)
+		for _, extension := range group.extensions {
+			at := outcome[extension]
+			if at == nil {
+				continue
+			}
+			switch {
+			case err != nil:
+				at.OK = false
+				at.Problem = err.Error()
+			case said[extension] != "":
+				at.OK = false
+				at.Problem = said[extension]
+			default:
+				at.OK = true
+			}
+		}
+	}
+
+	// made and gone are only ever counted on success above, so failures are
+	// counted here once, whatever kind of row they were.
+	results := make([]applied, 0, len(order))
+	var done, failed int
+	for _, extension := range order {
+		at := outcome[extension]
+		results = append(results, *at)
+		switch {
+		case at.Left:
+		case !at.OK:
+			failed++
+		case at.New, at.Gone:
+			// Already counted as made or gone.
+		default:
+			done++
 		}
 	}
 
@@ -346,21 +439,32 @@ func (s *Server) bulkEdit(w http.ResponseWriter, r *http.Request) (store.BulkEdi
 }
 
 /*
-currentExtensions reads what the phone system says right now.
+currentExtensions reads what the phone system says right now, and what it will
+let somebody change.
 
 One call for the whole list rather than one per row. A sheet of two hundred
 extensions would otherwise be two hundred requests against a customer's PBX
 just to find out that three of them differ.
+
+The settings capability is asked first because it answers both questions at
+once: every extension's editable options, and the list of what those options
+are. Without it — not approved, not offered — this falls back to the plain
+extension list, and the sheet carries the two fields Azir knows about on its
+own. That is worth having rather than refusing: a deployment that has not
+approved the settings tool can still rename forty extensions.
 */
-func (s *Server) currentExtensions(ctx context.Context, actor identity.Actor, customer uuid.UUID) (bulk.Current, error) {
-	tool, err := s.approvedTool(ctx, plugin.CapPhoneExtensions, false)
-	if err != nil {
-		return nil, err
+func (s *Server) currentExtensions(ctx context.Context, actor identity.Actor, customer uuid.UUID) (bulk.Current, []bulk.Spec, error) {
+	if now, specs, err := s.extensionSettings(ctx, actor, customer); err == nil {
+		return now, specs, nil
 	}
 
-	raw, err := s.performTool(ctx, actor, tool, json.RawMessage(`{}`), &customer)
+	tool, err := s.approvedTool(ctx, plugin.CapPhoneExtensions, false)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	raw, err := s.performTool(ctx, actor, tool, json.RawMessage(`{}`), &customer, fromSheet)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	var answer struct {
@@ -371,21 +475,142 @@ func (s *Server) currentExtensions(ctx context.Context, actor identity.Actor, cu
 		} `json:"extensions"`
 	}
 	if err := json.Unmarshal(raw, &answer); err != nil {
-		return nil, errors.New("the phone system returned a list that could not be read")
+		return nil, nil, errors.New("the phone system returned a list that could not be read")
 	}
 	if len(answer.Extensions) == 0 {
-		return nil, errors.New("the phone system reported no extensions")
+		return nil, nil, errors.New("the phone system reported no extensions")
 	}
 
 	now := make(bulk.Current, len(answer.Extensions))
 	for _, e := range answer.Extensions {
-		now[e.Extension] = bulk.Values{Name: e.Name, Enabled: e.Enabled}
+		now[e.Extension] = bulk.Values{
+			bulk.FieldName:    e.Name,
+			bulk.FieldEnabled: yesNo(e.Enabled),
+		}
 	}
-	return now, nil
+	return now, bulk.Core, nil
 }
 
 /*
-applyRow makes one extension's changes.
+extensionSettings reads every extension's options, and the list of what they
+are.
+
+The field list travels with the values on purpose. Azir does not know what a
+3CX extension can be set to and should not: the plugin owns that, publishes it,
+and the columns of the sheet, the choices in the form and the allowlist on the
+way back out are all built from the one list.
+*/
+func (s *Server) extensionSettings(ctx context.Context, actor identity.Actor, customer uuid.UUID) (bulk.Current, []bulk.Spec, error) {
+	tool, err := s.approvedTool(ctx, plugin.CapPhoneExtensionSettings, false)
+	if err != nil {
+		return nil, nil, err
+	}
+	raw, err := s.performTool(ctx, actor, tool, json.RawMessage(`{}`), &customer, fromSheet)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var answer struct {
+		Extensions []struct {
+			Extension string         `json:"extension"`
+			Name      string         `json:"name"`
+			Settings  map[string]any `json:"settings"`
+		} `json:"extensions"`
+		Fields []bulk.Spec `json:"fields"`
+	}
+	if err := json.Unmarshal(raw, &answer); err != nil {
+		return nil, nil, errors.New("the phone system returned settings that could not be read")
+	}
+	if len(answer.Extensions) == 0 {
+		return nil, nil, errors.New("the phone system reported no extensions")
+	}
+
+	specs := bulk.Merge(bulk.Core, answer.Fields)
+	byField := make(map[bulk.Field]bulk.Spec, len(specs))
+	for _, spec := range specs {
+		byField[spec.Field] = spec
+	}
+
+	now := make(bulk.Current, len(answer.Extensions))
+	for _, e := range answer.Extensions {
+		values := bulk.Values{bulk.FieldName: e.Name}
+		for name, value := range e.Settings {
+			spec, wanted := byField[bulk.Field(name)]
+			if !wanted {
+				continue
+			}
+			// Normalised on the way in, so a phone system saying true and a
+			// spreadsheet saying "Yes" are one answer rather than a change.
+			text, err := bulk.Normalise(spec, asText(value))
+			if err != nil {
+				continue
+			}
+			values[spec.Field] = text
+		}
+		// 3CX publishes its own Enabled, which Merge drops in favour of
+		// Azir's. The value still has to land somewhere.
+		if _, ok := e.Settings["Enabled"]; ok {
+			values[bulk.FieldEnabled] = asText(e.Settings["Enabled"])
+			if on, err := readTruth(e.Settings["Enabled"]); err == nil {
+				values[bulk.FieldEnabled] = yesNo(on)
+			}
+		}
+		now[e.Extension] = values
+	}
+	return now, specs, nil
+}
+
+/*
+specsFor is what this customer's phone system will let a sheet change.
+
+Never fails. A page that cannot reach the PBX still has to render, and Azir's
+own two fields are a worse answer than thirty-two but a much better one than an
+error where the column list should be.
+*/
+func (s *Server) specsFor(ctx context.Context, actor identity.Actor, customer uuid.UUID) []bulk.Spec {
+	_, specs, err := s.extensionSettings(ctx, actor, customer)
+	if err != nil {
+		return bulk.Core
+	}
+	return specs
+}
+
+// asText reads whatever JSON shape a setting arrived in as a string.
+func asText(v any) string {
+	switch t := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return t
+	case bool:
+		return yesNo(t)
+	case float64:
+		return strconv.FormatFloat(t, 'f', -1, 64)
+	default:
+		return fmt.Sprint(t)
+	}
+}
+
+func readTruth(v any) (bool, error) {
+	if b, ok := v.(bool); ok {
+		return b, nil
+	}
+	return false, errors.New("not a yes or a no")
+}
+
+func yesNo(on bool) string {
+	if on {
+		return "yes"
+	}
+	return "no"
+}
+
+/*
+applyRow makes one extension's core changes.
+
+Only the two Azir knows on its own — what it is called, and whether it is on.
+Everything the phone system publishes goes through setOptions instead, which is
+the capability that owns it and can take many extensions at once.
 
 The display name is split into a first and last name, because that is the shape
 the write takes and a single name is the shape a sheet has. Everything before
@@ -393,14 +618,14 @@ the first space is the first name; the rest is the last. A one-word name
 becomes a first name with no last, which is what a phone system does with
 "Reception" anyway.
 */
-func (s *Server) applyRow(ctx context.Context, actor identity.Actor, customer uuid.UUID, row bulk.Row) error {
+func (s *Server) applyRow(ctx context.Context, actor identity.Actor, customer uuid.UUID, extension string, changes []bulk.Change) error {
 	tool, err := s.approvedTool(ctx, plugin.CapPhoneExtensionWrite, true)
 	if err != nil {
 		return err
 	}
 
-	args := map[string]any{"extension": row.Extension}
-	for _, change := range row.Changes {
+	args := map[string]any{"extension": extension}
+	for _, change := range changes {
 		switch change.Field {
 		case bulk.FieldName:
 			first, last, _ := strings.Cut(strings.TrimSpace(change.After), " ")
@@ -415,10 +640,103 @@ func (s *Server) applyRow(ctx context.Context, actor identity.Actor, customer uu
 	if err != nil {
 		return err
 	}
-	if _, err := s.performTool(ctx, actor, tool, encoded, &customer); err != nil {
+	if _, err := s.performTool(ctx, actor, tool, encoded, &customer, fromSheet); err != nil {
 		return err
 	}
 	return nil
+}
+
+/*
+setOptions applies one set of options to many extensions in one request.
+
+Returns what went wrong per extension, keyed by number, so a batch where two of
+forty were refused says which two. An empty entry is a success; a missing one
+means the phone system did not mention it, which is reported rather than
+assumed either way.
+*/
+func (s *Server) setOptions(ctx context.Context, actor identity.Actor, customer uuid.UUID, extensions []string, settings map[string]any) (map[string]string, error) {
+	tool, err := s.approvedTool(ctx, plugin.CapPhoneExtensionOptions, true)
+	if err != nil {
+		return nil, err
+	}
+	encoded, err := json.Marshal(map[string]any{
+		"extensions": extensions,
+		"options":    settings,
+	})
+	if err != nil {
+		return nil, err
+	}
+	raw, err := s.performTool(ctx, actor, tool, encoded, &customer, fromSheet)
+	if err != nil {
+		return nil, err
+	}
+
+	var answer struct {
+		Results []struct {
+			Extension string `json:"extension"`
+			Changed   bool   `json:"changed"`
+			Reason    string `json:"reason"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(raw, &answer); err != nil {
+		return nil, errors.New("the phone system answered in a way that could not be read")
+	}
+
+	said := make(map[string]string, len(extensions))
+	mentioned := map[string]bool{}
+	for _, r := range answer.Results {
+		mentioned[r.Extension] = true
+		if !r.Changed {
+			said[r.Extension] = reasonOr(r.Reason, "the phone system did not change it")
+		}
+	}
+	for _, extension := range extensions {
+		if !mentioned[extension] {
+			said[extension] = "the phone system did not say what happened to it"
+		}
+	}
+	return said, nil
+}
+
+func reasonOr(reason, fallback string) string {
+	if strings.TrimSpace(reason) == "" {
+		return fallback
+	}
+	return reason
+}
+
+/*
+splitChanges separates what Azir writes itself from what the phone system's
+own options endpoint writes.
+
+Two capabilities, deliberately: renaming an extension and setting thirty
+options on it are different powers, approved separately, and a plan that does
+both should need both rather than one standing in for the other.
+*/
+func splitChanges(changes []bulk.Change) (core, options []bulk.Change) {
+	for _, change := range changes {
+		if change.Field == bulk.FieldName || change.Field == bulk.FieldEnabled {
+			core = append(core, change)
+			continue
+		}
+		options = append(options, change)
+	}
+	return core, options
+}
+
+// settingsFor turns approved changes back into the typed values the phone
+// system takes. The text in a plan is what a person read; this is what goes
+// out.
+func settingsFor(changes []bulk.Change, byField map[bulk.Field]bulk.Spec) map[string]any {
+	settings := make(map[string]any, len(changes))
+	for _, change := range changes {
+		if byField[change.Field].Kind == bulk.KindBool {
+			settings[string(change.Field)] = change.After == "yes"
+			continue
+		}
+		settings[string(change.Field)] = change.After
+	}
+	return settings
 }
 
 // approvedTool finds an approved, available provider of a capability.
@@ -474,7 +792,7 @@ func (s *Server) createRow(ctx context.Context, actor identity.Actor, customer u
 	if err != nil {
 		return err
 	}
-	if _, err := s.performTool(ctx, actor, tool, encoded, &customer); err != nil {
+	if _, err := s.performTool(ctx, actor, tool, encoded, &customer, fromSheet); err != nil {
 		return err
 	}
 	return nil
@@ -531,24 +849,28 @@ func (s *Server) revertBulk(w http.ResponseWriter, r *http.Request, actor identi
 		}
 	}
 
-	// The undo, as a sheet: the values these extensions had before.
-	undo := bulk.Sheet{Columns: bulk.SheetColumns()}
+	// Read first, because the undo is compared against this and its columns
+	// are whatever the phone system says it will write.
+	now, specs, err := s.currentExtensions(r.Context(), actor, edit.CustomerID)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, errBody(
+			"could not read the phone system, so there is nothing to compare against: "+err.Error()))
+		return
+	}
+
+	// The undo, as a sheet: the values these extensions had before. A field
+	// this sheet never touched is simply absent, so putting a rename back does
+	// not also assert what everything else was at the time.
+	undo := bulk.Sheet{Columns: bulk.SheetColumns(specs)}
 	for _, row := range plan.Rows {
 		if !row.Changed() || !went[row.Extension] {
 			continue
 		}
 		was := bulk.Values{}
 		for _, change := range row.Changes {
-			switch change.Field {
-			case bulk.FieldName:
-				was.Name = change.Before
-			case bulk.FieldEnabled:
-				was.Enabled = change.Before == "yes"
-			}
+			was[change.Field] = change.Before
 		}
-		// A field this sheet never touched is left out of the undo too, so
-		// putting a rename back does not also assert what "Enabled" was.
-		undo.Rows = append(undo.Rows, blankUntouched(bulk.Line(row.Extension, was), row))
+		undo.Rows = append(undo.Rows, bulk.Line(row.Extension, was, specs))
 	}
 
 	encoded, err := json.Marshal(undo)
@@ -569,14 +891,8 @@ func (s *Server) revertBulk(w http.ResponseWriter, r *http.Request, actor identi
 
 	// Compared straight away, because an undo nobody has looked at is not
 	// something to hand somebody an Apply button for.
-	now, err := s.currentExtensions(r.Context(), actor, edit.CustomerID)
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, errBody(
-			"could not read the phone system, so there is nothing to compare against: "+err.Error()))
-		return
-	}
-	mapping := bulk.CanonicalMapping()
-	undoPlan, err := bulk.Build(undo, mapping, now)
+	mapping := bulk.CanonicalMapping(specs)
+	undoPlan, err := bulk.Build(undo, mapping, now, specs)
 	if err != nil {
 		s.fail(w, err, "could not work out the undo")
 		return
@@ -595,7 +911,7 @@ func (s *Server) revertBulk(w http.ResponseWriter, r *http.Request, actor identi
 		}
 		undoPlan.Rows = append(undoPlan.Rows, bulk.Row{
 			Extension: row.Extension,
-			Name:      state.Name,
+			Name:      state[bulk.FieldName],
 			Gone:      true,
 		})
 		undoPlan.Removing++
@@ -636,28 +952,8 @@ func (s *Server) revertBulk(w http.ResponseWriter, r *http.Request, actor identi
 }
 
 /*
-blankUntouched empties the cells for fields the original sheet did not change.
-
-An undo asserts only what it is undoing. Writing every column would mean
-putting a rename back also states what Enabled was at the time — true when the
-plan was made, and quite possibly not now.
-*/
-func blankUntouched(line []string, row bulk.Row) []string {
-	touched := map[bulk.Field]bool{}
-	for _, change := range row.Changes {
-		touched[change.Field] = true
-	}
-	mapping := bulk.CanonicalMapping()
-	for field, col := range mapping.Fields {
-		if !touched[field] && col < len(line) {
-			line[col] = ""
-		}
-	}
-	return line
-}
-
-/*
-listExtensions hands back what the phone system says right now.
+listExtensions hands back what the phone system says right now, and what can be
+changed about it.
 
 The screen that picks extensions to change needs the same list the comparison
 uses, so it comes from the same call. Somebody choosing from a list of what is
@@ -671,26 +967,38 @@ func (s *Server) listExtensions(w http.ResponseWriter, r *http.Request, actor id
 		writeJSON(w, http.StatusBadRequest, errBody("say which customer"))
 		return
 	}
-	now, err := s.currentExtensions(r.Context(), actor, customerID)
+	now, specs, err := s.currentExtensions(r.Context(), actor, customerID)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, errBody("could not read the phone system: "+err.Error()))
 		return
 	}
 
 	type extension struct {
-		Extension string `json:"extension"`
-		Name      string `json:"name"`
-		Enabled   bool   `json:"enabled"`
+		Extension string            `json:"extension"`
+		Name      string            `json:"name"`
+		Enabled   bool              `json:"enabled"`
+		Values    map[string]string `json:"values"`
 	}
 	list := make([]extension, 0, len(now))
 	for _, number := range inOrder(now) {
-		list = append(list, extension{number, now[number].Name, now[number].Enabled})
+		values := make(map[string]string, len(now[number]))
+		for field, text := range now[number] {
+			values[string(field)] = text
+		}
+		list = append(list, extension{
+			Extension: number,
+			Name:      now[number][bulk.FieldName],
+			Enabled:   now[number][bulk.FieldEnabled] != "no",
+			Values:    values,
+		})
 	}
-	// The column names go with the list so the console can show what a sheet
-	// has to look like without keeping its own copy of the answer.
+
+	// The fields travel with the values, so the console can offer them as
+	// columns and as a form without keeping its own copy of the answer.
 	writeJSON(w, http.StatusOK, map[string]any{
 		"extensions": list,
-		"columns":    bulk.SheetColumns(),
+		"fields":     specs,
+		"columns":    bulk.SheetColumns(specs),
 	})
 }
 
@@ -703,6 +1011,12 @@ by construction: the headers are the ones Suggest recognises, the rows are what
 is true today, and every cell left alone means exactly that. Editing what you
 were given is also the only version of this where the extension numbers are
 guaranteed right.
+
+Which columns is asked rather than assumed. A phone system with thirty-two
+settings makes a thirty-three column sheet, which is correct and unusable;
+naming the handful somebody came to change makes a sheet they can read. Left
+unsaid, they all come, because a download that quietly dropped the column
+somebody needed would be worse than a wide file.
 */
 func (s *Server) startingSheet(w http.ResponseWriter, r *http.Request, actor identity.Actor) {
 	customerID, err := uuid.Parse(strings.TrimSpace(r.URL.Query().Get("customer_id")))
@@ -715,17 +1029,22 @@ func (s *Server) startingSheet(w http.ResponseWriter, r *http.Request, actor ide
 		writeJSON(w, http.StatusNotFound, errBody("no such customer"))
 		return
 	}
-	now, err := s.currentExtensions(r.Context(), actor, customerID)
+	now, specs, err := s.currentExtensions(r.Context(), actor, customerID)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, errBody("could not read the phone system: "+err.Error()))
+		return
+	}
+	specs = onlyAsked(specs, r.URL.Query().Get("fields"))
+	if len(specs) == 0 {
+		writeJSON(w, http.StatusBadRequest, errBody("choose at least one column"))
 		return
 	}
 
 	var out strings.Builder
 	sheet := csv.NewWriter(&out)
-	_ = sheet.Write(bulk.SheetColumns())
+	_ = sheet.Write(bulk.SheetColumns(specs))
 	for _, number := range inOrder(now) {
-		_ = sheet.Write(bulk.Line(number, now[number]))
+		_ = sheet.Write(bulk.Line(number, now[number], specs))
 	}
 	sheet.Flush()
 	if err := sheet.Error(); err != nil {
@@ -742,12 +1061,25 @@ func (s *Server) startingSheet(w http.ResponseWriter, r *http.Request, actor ide
 	_, _ = io.WriteString(w, out.String())
 }
 
-// chosenRow is one extension somebody ticked in the console, with what they
-// want it to say.
-type chosenRow struct {
-	Extension string `json:"extension"`
-	Name      string `json:"name"`
-	Enabled   string `json:"enabled"`
+// onlyAsked narrows the fields to the ones named, keeping the published order
+// so two downloads of the same choice are the same file. An empty ask means
+// all of them.
+func onlyAsked(specs []bulk.Spec, asked string) []bulk.Spec {
+	asked = strings.TrimSpace(asked)
+	if asked == "" {
+		return specs
+	}
+	wanted := map[string]bool{}
+	for _, name := range strings.Split(asked, ",") {
+		wanted[strings.TrimSpace(name)] = true
+	}
+	kept := make([]bulk.Spec, 0, len(wanted))
+	for _, spec := range specs {
+		if wanted[string(spec.Field)] {
+			kept = append(kept, spec)
+		}
+	}
+	return kept
 }
 
 /*
@@ -775,41 +1107,45 @@ func (s *Server) planChosen(w http.ResponseWriter, r *http.Request, actor identi
 	}
 
 	var body struct {
-		Rows []chosenRow `json:"rows"`
+		// Wanted is what each ticked extension should say, keyed by extension
+		// number then by field. A field left out is left alone.
+		Wanted map[string]map[string]string `json:"wanted"`
 	}
 	if err := decode(r, &body); err != nil {
 		writeJSON(w, http.StatusBadRequest, errBody("invalid json body"))
 		return
 	}
-	if len(body.Rows) == 0 {
+	if len(body.Wanted) == 0 {
 		writeJSON(w, http.StatusBadRequest, errBody("choose at least one extension"))
 		return
 	}
-	if len(body.Rows) > bulk.MaxRows {
+	if len(body.Wanted) > bulk.MaxRows {
 		writeJSON(w, http.StatusBadRequest, errBody("that is more extensions than this will take at once"))
 		return
 	}
 
-	sheet := bulk.Sheet{Columns: bulk.SheetColumns()}
-	for _, row := range body.Rows {
-		sheet.Rows = append(sheet.Rows, []string{
-			strings.TrimSpace(row.Extension),
-			strings.TrimSpace(row.Name),
-			strings.TrimSpace(row.Enabled),
-		})
-	}
-
-	now, err := s.currentExtensions(r.Context(), actor, customerID)
+	now, specs, err := s.currentExtensions(r.Context(), actor, customerID)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, errBody(
 			"could not read the phone system, so there is nothing to compare against: "+err.Error()))
 		return
 	}
-	mapping := bulk.CanonicalMapping()
-	plan, err := bulk.Build(sheet, mapping, now)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, errBody(err.Error()))
-		return
+
+	want := make(map[string]bulk.Values, len(body.Wanted))
+	for extension, fields := range body.Wanted {
+		values := make(bulk.Values, len(fields))
+		for field, text := range fields {
+			values[bulk.Field(field)] = text
+		}
+		want[strings.TrimSpace(extension)] = values
+	}
+	plan := bulk.Choose(want, now, specs)
+
+	// Written out as a sheet as well, so what was decided reads the same way
+	// however it was made, and so the undo has something to build from.
+	sheet := bulk.Sheet{Columns: bulk.SheetColumns(specs)}
+	for _, extension := range inOrderOf(want) {
+		sheet.Rows = append(sheet.Rows, bulk.Line(extension, want[extension], specs))
 	}
 
 	encodedSheet, err := json.Marshal(sheet)
@@ -828,6 +1164,7 @@ func (s *Server) planChosen(w http.ResponseWriter, r *http.Request, actor identi
 		return
 	}
 
+	mapping := bulk.CanonicalMapping(specs)
 	encodedMapping, _ := json.Marshal(mapping)
 	encodedPlan, err := json.Marshal(plan)
 	if err != nil {
@@ -845,10 +1182,27 @@ func (s *Server) planChosen(w http.ResponseWriter, r *http.Request, actor identi
 		Action:      "bulk.chosen",
 		Outcome:     audit.OutcomeOK,
 		CustomerID:  &customerID,
-		Detail:      fmt.Sprintf("%d chosen, %d would change", len(body.Rows), plan.Changing),
+		Detail:      fmt.Sprintf("%d chosen, %d would change", len(want), plan.Changing),
 	})
 
 	writeJSON(w, http.StatusOK, map[string]any{"edit": planned, "plan": plan})
+}
+
+// inOrderOf sorts the extensions somebody chose the way they read.
+func inOrderOf(want map[string]bulk.Values) []string {
+	numbers := make([]string, 0, len(want))
+	for number := range want {
+		numbers = append(numbers, number)
+	}
+	sort.Slice(numbers, func(a, b int) bool {
+		x, errX := strconv.Atoi(numbers[a])
+		y, errY := strconv.Atoi(numbers[b])
+		if errX == nil && errY == nil {
+			return x < y
+		}
+		return numbers[a] < numbers[b]
+	})
+	return numbers
 }
 
 /*
@@ -866,7 +1220,7 @@ func (s *Server) removeRow(ctx context.Context, actor identity.Actor, customer u
 	if err != nil {
 		return err
 	}
-	if _, err := s.performTool(ctx, actor, tool, encoded, &customer); err != nil {
+	if _, err := s.performTool(ctx, actor, tool, encoded, &customer, fromSheet); err != nil {
 		return err
 	}
 	return nil

@@ -201,8 +201,7 @@ func (s *Server) Routes() http.Handler {
 	// extension has no business staging forty of them.
 	mux.HandleFunc("GET /api/bulk",
 		s.require(identity.PermPhoneManage, ignoreActor(s.listBulk)))
-	mux.HandleFunc("GET /api/bulk/{id}",
-		s.require(identity.PermPhoneManage, ignoreActor(s.getBulk)))
+	mux.HandleFunc("GET /api/bulk/{id}", s.require(identity.PermPhoneManage, s.getBulk))
 	mux.HandleFunc("GET /api/bulk/extensions",
 		s.require(identity.PermPhoneManage, s.listExtensions))
 	mux.HandleFunc("GET /api/bulk/starting-sheet",

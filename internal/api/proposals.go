@@ -134,7 +134,7 @@ func (s *Server) decideProposal(w http.ResponseWriter, r *http.Request, actor id
 	// Performed through the ordinary path, so the write gate, the approver's
 	// permission and the audit trail are the same code that runs when somebody
 	// presses a button on a screen. There is no second way in.
-	result, failure := s.performTool(r.Context(), actor, tool, proposal.Args, proposal.CustomerID)
+	result, failure := s.performTool(r.Context(), actor, tool, proposal.Args, proposal.CustomerID, fromAssistant)
 	if failure != nil {
 		// Put it back to failed, not left as applied. A row that says a change
 		// happened when it did not is worse than no row at all.
@@ -162,12 +162,29 @@ func (s *Server) decideProposal(w http.ResponseWriter, r *http.Request, actor id
 // from cache or writing its result into the cache would both be wrong. It
 // invalidates instead, because the thing it just altered is now stale
 // everywhere.
+/*
+why says where a call came from.
+
+The activity log's whole job is answering who wanted something, and "a person
+pressed a button" and "a person approved what a model suggested" are different
+answers to that. Passed in rather than guessed, because the one place that
+could guess is the one place that cannot see the difference.
+*/
+type why string
+
+const (
+	byHand        why = "a person asked for it"
+	fromSheet     why = "from a sheet of changes"
+	fromAssistant why = "approved from the assistant"
+)
+
 func (s *Server) performTool(
 	ctx context.Context,
 	actor identity.Actor,
 	tool registry.Tool,
 	args json.RawMessage,
 	customer *uuid.UUID,
+	reason why,
 ) (json.RawMessage, error) {
 	if err := s.mayUse(ctx, actor, tool); err != nil {
 		return nil, err
@@ -198,10 +215,21 @@ func (s *Server) performTool(
 
 	// Recorded against the person who approved it, which is the answer to
 	// "who changed this" — never the assistant that suggested it.
+	//
+	// A read taken this way is recorded as a read. This used to say
+	// "tool.write, approved from the assistant" for every call through here,
+	// whatever the tool did and whoever asked — so the activity log reported a
+	// change every time somebody opened a screen that reads a phone system.
+	// The log exists to answer "did anybody change anything", and a yes when
+	// nothing happened is worse than no log at all.
+	action := "tool.invoke"
+	if tool.Mutates {
+		action = "tool.write"
+	}
 	s.Audit.Record(ctx, audit.Event{
-		ActorUserID: actor.Email, Action: "tool.write",
+		ActorUserID: actor.Email, Action: action,
 		Plugin: tool.Plugin, Tool: tool.Name,
-		Outcome: audit.OutcomeOK, Detail: "approved from the assistant",
+		Outcome: audit.OutcomeOK, Detail: string(reason),
 	})
 
 	// What was just changed is stale wherever it was cached, and every open

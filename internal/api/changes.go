@@ -77,7 +77,7 @@ func (s *Server) applyChange(w http.ResponseWriter, r *http.Request, actor ident
 			continue
 		}
 
-		result, err := s.performTool(r.Context(), actor, tool, body.Args, customer)
+		result, err := s.performTool(r.Context(), actor, tool, body.Args, customer, byHand)
 		if err != nil {
 			var gate *gateError
 			if errors.As(err, &gate) {

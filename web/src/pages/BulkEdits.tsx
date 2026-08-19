@@ -142,11 +142,11 @@ export function BulkEdits({ actor }: { actor: Actor }) {
     }
   }
 
-  async function compareChosen(rows: { extension: string; name: string; enabled: string }[]) {
+  async function compareChosen(wanted: Record<string, Record<string, string>>) {
     setBusy(true);
     setProblem(null);
     try {
-      const got = await api.planChosen(customerID, rows);
+      const got = await api.planChosen(customerID, wanted);
       setEdit(got.edit);
       setPlan(got.plan);
       setSkip(new Set());
@@ -305,7 +305,7 @@ export function BulkEdits({ actor }: { actor: Actor }) {
             <Chooser
               customerID={customerID}
               busy={busy}
-              onCompare={(rows) => void compareChosen(rows)}
+              onCompare={(wanted) => void compareChosen(wanted)}
               onBack={() => setWay("")}
             />
           )}

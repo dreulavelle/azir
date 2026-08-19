@@ -22,9 +22,16 @@ edited since describes a system that has moved on; applying it wholesale would
 quietly undo whatever changed in between. Comparing first means those rows show
 up as changes a person can see and decline, rather than as work nobody asked
 for.
+
+What a sheet can carry is not decided here. The plugin publishes the fields it
+will write, and this package builds columns, mappings and comparisons from that
+list. It used to hold its own list of two, which is why a sheet could rename an
+extension and turn it on and do nothing else, on a phone system that will set
+thirty more.
 */
 
-// Field is something a sheet can set.
+// Field is something a sheet can set: one of Azir's own two, or a name the
+// phone system published.
 type Field string
 
 const (
@@ -32,13 +39,69 @@ const (
 	FieldEnabled Field = "enabled"
 )
 
-// Editable is every field this can change, with the words a person reads.
-var Editable = []struct {
-	Field Field
-	Label string
-}{
-	{FieldName, "Display name"},
-	{FieldEnabled, "Enabled"},
+// Kinds of value a field takes.
+const (
+	KindText   = "text"
+	KindBool   = "bool"
+	KindChoice = "choice"
+)
+
+// Spec describes one field: what it is called, how it reads, and what it will
+// accept.
+type Spec struct {
+	Field   Field    `json:"field"`
+	Label   string   `json:"label"`
+	Kind    string   `json:"kind"`
+	Group   string   `json:"group"`
+	Choices []string `json:"choices,omitempty"`
+}
+
+/*
+Core is what Azir knows about any phone system, in its own vocabulary.
+
+These two are capability-level ideas rather than one system's field names:
+every phone system has something an extension is called and something that
+turns it off. They are written through the extension-change capability, and
+everything a plugin publishes is written through the options one — which is
+why they are kept apart rather than merged into whatever the plugin happens to
+call them.
+*/
+var Core = []Spec{
+	{Field: FieldName, Label: "Display name", Kind: KindText, Group: "Basics"},
+	{Field: FieldEnabled, Label: "Enabled", Kind: KindBool, Group: "Basics"},
+}
+
+/*
+Merge puts a plugin's published fields behind Azir's own.
+
+A published field that means the same thing as a core one is dropped — 3CX
+publishes "Enabled", which is the same switch FieldEnabled already describes,
+and carrying both would put two columns in the sheet that fight over one
+setting. Matched on the field name and on the label, case-insensitively,
+because a plugin agreeing with Azir about what something is called is exactly
+the case worth catching.
+*/
+func Merge(core []Spec, published []Spec) []Spec {
+	taken := map[string]bool{}
+	for _, spec := range core {
+		taken[strings.ToLower(string(spec.Field))] = true
+		taken[strings.ToLower(spec.Label)] = true
+	}
+
+	all := append([]Spec{}, core...)
+	for _, spec := range published {
+		if taken[strings.ToLower(string(spec.Field))] || taken[strings.ToLower(spec.Label)] {
+			continue
+		}
+		if spec.Kind == "" {
+			spec.Kind = KindText
+		}
+		if spec.Group == "" {
+			spec.Group = "Other"
+		}
+		all = append(all, spec)
+	}
+	return all
 }
 
 /*
@@ -48,45 +111,32 @@ Everywhere Azir hands somebody a sheet — the starting list they download, the
 undo built from an applied plan — it writes these headers, and Suggest
 recognises every one of them. That round trip is the point: download, edit in
 Excel, upload, and the columns map themselves.
-
-Derived from Editable rather than written out, so a new field appears in the
-download, in the mapping, and in the diff together. The three used to be three
-separate lists.
 */
-func SheetColumns() []string {
-	columns := make([]string, 0, len(Editable)+1)
+func SheetColumns(specs []Spec) []string {
+	columns := make([]string, 0, len(specs)+1)
 	columns = append(columns, "Extension")
-	for _, e := range Editable {
-		columns = append(columns, e.Label)
+	for _, spec := range specs {
+		columns = append(columns, spec.Label)
 	}
 	return columns
 }
 
 // CanonicalMapping is what SheetColumns maps to, for the sheets Azir writes
 // itself and does not need to guess at.
-func CanonicalMapping() Mapping {
-	m := Mapping{Extension: 0, Fields: make(map[Field]int, len(Editable))}
-	for i, e := range Editable {
-		m.Fields[e.Field] = i + 1
+func CanonicalMapping(specs []Spec) Mapping {
+	m := Mapping{Extension: 0, Fields: make(map[Field]int, len(specs))}
+	for i, spec := range specs {
+		m.Fields[spec.Field] = i + 1
 	}
 	return m
 }
 
 // Line renders one extension as a row under SheetColumns.
-func Line(extension string, v Values) []string {
-	line := make([]string, 0, len(Editable)+1)
+func Line(extension string, v Values, specs []Spec) []string {
+	line := make([]string, 0, len(specs)+1)
 	line = append(line, extension)
-	for _, e := range Editable {
-		switch e.Field {
-		case FieldName:
-			line = append(line, v.Name)
-		case FieldEnabled:
-			line = append(line, said(v.Enabled))
-		default:
-			// Unreachable while Editable and this switch agree, which is what
-			// TestLineFillsEveryColumn is for.
-			line = append(line, "")
-		}
+	for _, spec := range specs {
+		line = append(line, v[spec.Field])
 	}
 	return line
 }
@@ -111,10 +161,48 @@ type Mapping struct {
 // Current is what the phone system says today, keyed by extension number.
 type Current map[string]Values
 
-// Values is the editable state of one extension.
-type Values struct {
-	Name    string `json:"name"`
-	Enabled bool   `json:"enabled"`
+/*
+Values is one extension's editable state, as text.
+
+Text rather than a struct per field, because the fields are not known when this
+package is compiled — they are whatever the phone system says it will write.
+Everything is normalised on the way in, so a comparison is a string comparison
+and "true", "Yes" and "1" cannot read as three different settings.
+*/
+type Values map[Field]string
+
+/*
+Normalise puts a cell into the one form this package compares.
+
+A phone system saying true and a spreadsheet saying "Yes" are the same answer,
+and finding that out at comparison time rather than at read time is how a plan
+ends up full of changes that change nothing.
+*/
+func Normalise(spec Spec, cell string) (string, error) {
+	cell = strings.TrimSpace(cell)
+	if cell == "" {
+		return "", nil
+	}
+	switch spec.Kind {
+	case KindBool:
+		on, err := truth(cell)
+		if err != nil {
+			return "", err
+		}
+		return said(on), nil
+	case KindChoice:
+		for _, choice := range spec.Choices {
+			if strings.EqualFold(choice, cell) {
+				return choice, nil
+			}
+		}
+		if len(spec.Choices) == 0 {
+			return cell, nil
+		}
+		return "", fmt.Errorf("%q is not one of %s", cell, strings.Join(spec.Choices, ", "))
+	default:
+		return cell, nil
+	}
 }
 
 // Change is one field on one extension, before and after.
@@ -144,7 +232,7 @@ type Row struct {
 }
 
 // Changed reports whether this row would alter an extension that exists.
-func (r Row) Changed() bool { return r.Problem == "" && !r.New && len(r.Changes) > 0 }
+func (r Row) Changed() bool { return r.Problem == "" && !r.New && !r.Gone && len(r.Changes) > 0 }
 
 // Creates reports whether this row would make a new extension.
 func (r Row) Creates() bool { return r.Problem == "" && r.New }
@@ -182,7 +270,7 @@ A sheet naming extensions that do not exist is worth seeing — it usually means
 the wrong customer, or a column shifted by one — and silently applying the rows
 that happened to match would be the worst of both.
 */
-func Build(sheet Sheet, mapping Mapping, now Current) (Plan, error) {
+func Build(sheet Sheet, mapping Mapping, now Current, specs []Spec) (Plan, error) {
 	if mapping.Extension < 0 || mapping.Extension >= len(sheet.Columns) {
 		return Plan{}, errors.New("say which column holds the extension number")
 	}
@@ -193,11 +281,6 @@ func Build(sheet Sheet, mapping Mapping, now Current) (Plan, error) {
 		if col < 0 || col >= len(sheet.Columns) {
 			return Plan{}, fmt.Errorf("there is no column %d for %s", col, field)
 		}
-	}
-
-	label := map[Field]string{}
-	for _, e := range Editable {
-		label[e.Field] = e.Label
 	}
 
 	// Where a new extension's number comes from when the sheet does not give
@@ -236,8 +319,8 @@ func Build(sheet Sheet, mapping Mapping, now Current) (Plan, error) {
 		case row.Problem != "":
 			// Already ruled out above.
 		case known:
-			row.Name = state.Name
-			changes, err := compare(sheet, i, mapping, state, label)
+			row.Name = state[FieldName]
+			changes, err := compare(sheet, i, mapping, state, specs)
 			if err != nil {
 				row.Problem = err.Error()
 			} else {
@@ -277,20 +360,95 @@ func Build(sheet Sheet, mapping Mapping, now Current) (Plan, error) {
 	return plan, nil
 }
 
+/*
+Choose builds the same plan from extensions somebody ticked and values they set
+in the console, without a sheet in the middle.
+
+The wanted values are per extension, so setting one option across forty and
+renaming one of them are the same call. Only extensions the phone system has;
+a screen that picks from what is there is the wrong place to invent something
+that is not.
+*/
+func Choose(want map[string]Values, now Current, specs []Spec) Plan {
+	var plan Plan
+	byField := make(map[Field]Spec, len(specs))
+	for _, spec := range specs {
+		byField[spec.Field] = spec
+	}
+
+	for _, extension := range order(want) {
+		state, known := now[extension]
+		row := Row{Extension: extension}
+		if !known {
+			row.Problem = "the phone system has no such extension"
+			plan.Skipped++
+			plan.Rows = append(plan.Rows, row)
+			continue
+		}
+		row.Name = state[FieldName]
+
+		for _, spec := range specs {
+			raw, asked := want[extension][spec.Field]
+			if !asked || strings.TrimSpace(raw) == "" {
+				continue
+			}
+			after, err := Normalise(spec, raw)
+			if err != nil {
+				row.Problem = err.Error()
+				break
+			}
+			if before := state[spec.Field]; after != before {
+				row.Changes = append(row.Changes, Change{
+					Field: spec.Field, Label: spec.Label, Before: before, After: after,
+				})
+			}
+		}
+
+		switch {
+		case row.Problem != "":
+			row.Changes = nil
+			plan.Skipped++
+		case len(row.Changes) > 0:
+			plan.Changing++
+		default:
+			plan.Unchanged++
+		}
+		plan.Rows = append(plan.Rows, row)
+	}
+
+	plan.Sort()
+	return plan
+}
+
+// order lists extension numbers the way somebody reads them, so 100 comes
+// before 1000 rather than after it.
+func order(want map[string]Values) []string {
+	numbers := make([]string, 0, len(want))
+	for number := range want {
+		numbers = append(numbers, number)
+	}
+	sort.Slice(numbers, func(a, b int) bool {
+		x, errX := strconv.Atoi(numbers[a])
+		y, errY := strconv.Atoi(numbers[b])
+		if errX == nil && errY == nil {
+			return x < y
+		}
+		return numbers[a] < numbers[b]
+	})
+	return numbers
+}
+
 // Sort puts the rows in the order somebody reviews them in. Exported because
 // an undo appends its removals after Build has run.
 func (p *Plan) Sort() {
 	sort.SliceStable(p.Rows, func(a, b int) bool {
-		return order(p.Rows[a]) < order(p.Rows[b])
+		return reading(p.Rows[a]) < reading(p.Rows[b])
 	})
 }
 
-// order puts the rows that do something first, then the problems, then the
+// reading puts the rows that do something first, then the problems, then the
 // rows that change nothing — which is the order somebody reviews them in.
-// New extensions sit together after the edits: they are the part of a plan
-// most worth reading twice, and scattered among unchanged rows they are not
-// read at all.
-func order(r Row) int {
+func reading(r Row) int {
 	switch {
 	case r.Changed():
 		return 0
@@ -329,11 +487,11 @@ func wantedName(sheet Sheet, i int, mapping Mapping) string {
 }
 
 // compare works out what one row would change.
-func compare(sheet Sheet, i int, mapping Mapping, state Values, label map[Field]string) ([]Change, error) {
+func compare(sheet Sheet, i int, mapping Mapping, state Values, specs []Spec) ([]Change, error) {
 	var changes []Change
 
-	for _, e := range Editable {
-		col, mapped := mapping.Fields[e.Field]
+	for _, spec := range specs {
+		col, mapped := mapping.Fields[spec.Field]
 		if !mapped {
 			continue
 		}
@@ -345,26 +503,14 @@ func compare(sheet Sheet, i int, mapping Mapping, state Values, label map[Field]
 		if cell == "" {
 			continue
 		}
-
-		switch e.Field {
-		case FieldName:
-			if cell != state.Name {
-				changes = append(changes, Change{
-					Field: e.Field, Label: label[e.Field],
-					Before: state.Name, After: cell,
-				})
-			}
-		case FieldEnabled:
-			want, err := truth(cell)
-			if err != nil {
-				return nil, err
-			}
-			if want != state.Enabled {
-				changes = append(changes, Change{
-					Field: e.Field, Label: label[e.Field],
-					Before: said(state.Enabled), After: said(want),
-				})
-			}
+		after, err := Normalise(spec, cell)
+		if err != nil {
+			return nil, err
+		}
+		if before := state[spec.Field]; after != before {
+			changes = append(changes, Change{
+				Field: spec.Field, Label: spec.Label, Before: before, After: after,
+			})
 		}
 	}
 	return changes, nil
@@ -395,32 +541,53 @@ func said(on bool) string {
 Suggest guesses which column is which from the header names.
 
 Not clever, and deliberately not asked of a model — the file is not shown to
-one. It matches the words people actually put at the top of these sheets, and
-whatever it gets wrong is corrected in a dropdown before anything is compared.
-A wrong guess costs one click; asking somebody to map four columns by hand
-every time costs four.
+one. It matches a field's own label first, which is what Azir writes into every
+sheet it hands out, and then the words people actually put at the top of the
+ones they write themselves. Whatever it gets wrong is corrected in a dropdown
+before anything is compared: a wrong guess costs one click, and mapping thirty
+columns by hand every time costs thirty.
 */
-func Suggest(columns []string) Mapping {
+func Suggest(columns []string, specs []Spec) Mapping {
 	m := Mapping{Extension: -1, Fields: map[Field]int{}}
 
-	for i, raw := range columns {
-		name := strings.ToLower(strings.TrimSpace(raw))
-		name = strings.NewReplacer("_", " ", "-", " ", ".", " ").Replace(name)
-		name = strings.Join(strings.Fields(name), " ")
+	// The words somebody writes at the top of a sheet of their own, for the
+	// two fields that predate any plugin. A published field is matched on its
+	// label and its name, which is all Azir knows about it.
+	aliases := map[Field][]string{
+		FieldName:    {"name", "display name", "full name", "display", "user", "user name"},
+		FieldEnabled: {"enabled", "active", "status", "in use", "on"},
+	}
 
-		switch {
-		case m.Extension < 0 && matches(name,
-			"extension", "extension number", "ext", "ext number", "number", "did"):
+	for i, raw := range columns {
+		name := tidy(raw)
+		if name == "" {
+			continue
+		}
+		if m.Extension < 0 && matches(name,
+			"extension", "extension number", "ext", "ext number", "number", "did") {
 			m.Extension = i
-		case missing(m.Fields, FieldName) && matches(name,
-			"name", "display name", "full name", "display", "user", "user name"):
-			m.Fields[FieldName] = i
-		case missing(m.Fields, FieldEnabled) && matches(name,
-			"enabled", "active", "status", "in use", "on"):
-			m.Fields[FieldEnabled] = i
+			continue
+		}
+		for _, spec := range specs {
+			if _, already := m.Fields[spec.Field]; already {
+				continue
+			}
+			if name == tidy(spec.Label) || name == tidy(string(spec.Field)) ||
+				matches(name, aliases[spec.Field]...) {
+				m.Fields[spec.Field] = i
+				break
+			}
 		}
 	}
 	return m
+}
+
+// tidy reduces a header to the form headers are compared in, so "Display_Name"
+// and "display name" are the same column.
+func tidy(raw string) string {
+	name := strings.ToLower(strings.TrimSpace(raw))
+	name = strings.NewReplacer("_", " ", "-", " ", ".", " ").Replace(name)
+	return strings.Join(strings.Fields(name), " ")
 }
 
 func matches(name string, any ...string) bool {
@@ -430,9 +597,4 @@ func matches(name string, any ...string) bool {
 		}
 	}
 	return false
-}
-
-func missing(fields map[Field]int, f Field) bool {
-	_, ok := fields[f]
-	return !ok
 }

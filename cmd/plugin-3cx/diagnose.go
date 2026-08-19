@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/url"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -593,49 +594,81 @@ The names are 3CX's own, so what an administrator reads in the console is what
 they write here. The comments are the console's wording, which is not always
 the same thing.
 */
-var editable = map[string]string{
+// option is one extension setting this plugin will change, and how it reads.
+//
+// Published to Azir with every settings read, so the console can offer these
+// as columns and as a form without keeping its own copy of the list. Keeping
+// a second copy is how the sheet ended up carrying two of the thirty-two.
+type option struct {
+	// Field is 3CX's own name for the setting, so what an administrator reads
+	// in the console is what they write here. Published as "field" because
+	// that is what it is to whatever reads this: the thing a column or a form
+	// control is identified by.
+	Field string `json:"field"`
+	// Label is the console's wording, which is not always the same thing.
+	Label string `json:"label"`
+	// Kind is "bool" or "choice"; a choice carries its Choices.
+	Kind    string   `json:"kind"`
+	Group   string   `json:"group"`
+	Choices []string `json:"choices,omitempty"`
+}
+
+var editable = []option{
+	{"Enabled", "Enabled", "bool", "Basics", nil},
+	{"Internal", "May only call internally", "bool", "Basics", nil},
+	{"HideInPhonebook", "Hide from the company phonebook", "bool", "Basics", nil},
+	{"EnableHotdesking", "Hot desking", "bool", "Basics", nil},
+	{"SendEmailMissedCalls", "Email on a missed call", "bool", "Basics", nil},
+
 	// The two on every MSP's list.
-	"PbxDeliversAudio": "bool", // "PBX delivers audio"
-	"BlockTunnel":      "bool", // "Block remote non-tunnel connections" — false unblocks
-	"AllowLanOnly":     "bool", // refuse anything that is not on the LAN
-	"SRTPMode":         "string",
-
-	"Enabled":              "bool",
-	"Internal":             "bool", // may only call internally
-	"HideInPhonebook":      "bool",
-	"EnableHotdesking":     "bool",
-	"SendEmailMissedCalls": "bool",
-
-	// Voicemail.
-	"VMEnabled":         "bool",
-	"VMDisablePinAuth":  "bool",
-	"VMPlayCallerID":    "bool",
-	"VMPlayMsgDateTime": "string",
-	"VMEmailOptions":    "string",
-	"PinProtected":      "bool",
+	{"PbxDeliversAudio", "PBX delivers audio", "bool", "Network and audio", nil},
+	{"BlockTunnel", "Block remote non-tunnel connections", "bool", "Network and audio", nil},
+	{"AllowLanOnly", "Allow only from the local network", "bool", "Network and audio", nil},
+	{"SRTPMode", "Encrypt the audio (SRTP)", "choice", "Network and audio",
+		[]string{"SRTPDisabled", "SRTPEnabled", "SRTPEnforced"}},
 
 	// Recording.
-	"RecordCalls":             "bool",
-	"RecordExternalCallsOnly": "bool",
-	"RecordEmailNotify":       "bool",
-	"AllowOwnRecordings":      "bool",
+	{"RecordCalls", "Record calls", "bool", "Recording", nil},
+	{"RecordExternalCallsOnly", "Record external calls only", "bool", "Recording", nil},
+	{"RecordEmailNotify", "Email when a call is recorded", "bool", "Recording", nil},
+	{"AllowOwnRecordings", "Let them hear their own recordings", "bool", "Recording", nil},
 
-	// Apps and integrations.
-	"MyPhoneShowRecordings":        "bool",
-	"MyPhoneHideForwardings":       "bool",
-	"MyPhoneAllowDeleteRecordings": "bool",
-	"GoogleSignInEnabled":          "bool",
-	"GoogleCalendarEnabled":        "bool",
-	"GoogleContactsEnabled":        "bool",
-	"MS365SignInEnabled":           "bool",
-	"MS365CalendarEnabled":         "bool",
-	"MS365ContactsEnabled":         "bool",
-	"MS365TeamsEnabled":            "bool",
+	// Voicemail.
+	{"VMEnabled", "Voicemail", "bool", "Voicemail", nil},
+	{"VMDisablePinAuth", "No PIN needed for voicemail", "bool", "Voicemail", nil},
+	{"VMPlayCallerID", "Read out the caller's number", "bool", "Voicemail", nil},
+	{"PinProtected", "PIN protected", "bool", "Voicemail", nil},
+	{"VMPlayMsgDateTime", "Read out the time of the message", "choice", "Voicemail",
+		[]string{"None", "Play12Hr", "Play24Hr"}},
+	{"VMEmailOptions", "What to email about voicemail", "choice", "Voicemail",
+		[]string{"None", "Notification", "Attachment", "AttachmentAndDelete", "VmailToMembers", "EmailToExtrasOnly"}},
 
-	"CallScreening":     "bool",
-	"TranscriptionMode": "string",
-	"PromptSet":         "string",
+	// Apps and sign-in.
+	{"MyPhoneShowRecordings", "Show recordings in the app", "bool", "Apps and sign-in", nil},
+	{"MyPhoneHideForwardings", "Hide forwarding rules in the app", "bool", "Apps and sign-in", nil},
+	{"MyPhoneAllowDeleteRecordings", "Let them delete recordings", "bool", "Apps and sign-in", nil},
+	{"GoogleSignInEnabled", "Sign in with Google", "bool", "Apps and sign-in", nil},
+	{"GoogleCalendarEnabled", "Google Calendar", "bool", "Apps and sign-in", nil},
+	{"GoogleContactsEnabled", "Google Contacts", "bool", "Apps and sign-in", nil},
+	{"MS365SignInEnabled", "Sign in with Microsoft 365", "bool", "Apps and sign-in", nil},
+	{"MS365CalendarEnabled", "Microsoft 365 Calendar", "bool", "Apps and sign-in", nil},
+	{"MS365ContactsEnabled", "Microsoft 365 Contacts", "bool", "Apps and sign-in", nil},
+	{"MS365TeamsEnabled", "Microsoft Teams", "bool", "Apps and sign-in", nil},
+
+	{"CallScreening", "Ask callers to say who they are", "bool", "Calls", nil},
+	{"TranscriptionMode", "Transcribe", "choice", "Calls",
+		[]string{"Nothing", "Voicemail", "Recordings", "Both", "Inherit"}},
+	{"PromptSet", "Prompt set", "text", "Calls", nil},
 }
+
+// editableByName is the same list as an allowlist to check against.
+var editableByName = func() map[string]option {
+	byName := make(map[string]option, len(editable))
+	for _, o := range editable {
+		byName[o.Field] = o
+	}
+	return byName
+}()
 
 type bulkOptionsArgs struct {
 	Extensions []string       `json:"extensions"`
@@ -672,12 +705,12 @@ func setExtensionOptions(ctx context.Context, req plugin.Request) (any, error) {
 	settings := map[string]any{}
 	var refused []string
 	for key, value := range args.Options {
-		kind, ok := editable[key]
+		spec, ok := editableByName[key]
 		if !ok {
 			refused = append(refused, key)
 			continue
 		}
-		switch kind {
+		switch spec.Kind {
 		case "bool":
 			b, ok := value.(bool)
 			if !ok {
@@ -685,6 +718,16 @@ func setExtensionOptions(ctx context.Context, req plugin.Request) (any, error) {
 			}
 			settings[key] = b
 		default:
+			// A choice is checked against what 3CX accepts, so a typo is
+			// refused by name here rather than as an opaque 400 from the PBX
+			// halfway through a batch.
+			if len(spec.Choices) > 0 {
+				text, _ := value.(string)
+				if !slices.Contains(spec.Choices, text) {
+					return nil, plugin.Errorf("400", "%s is one of %s",
+						key, strings.Join(spec.Choices, ", "))
+				}
+			}
 			settings[key] = value
 		}
 	}
@@ -1137,8 +1180,8 @@ func extensionSettings(ctx context.Context, req plugin.Request) (any, error) {
 	// Sorted so the request is identical between calls, which keeps it
 	// cacheable and keeps a diff of two runs readable.
 	fields := make([]string, 0, len(editable))
-	for name := range editable {
-		fields = append(fields, name)
+	for _, o := range editable {
+		fields = append(fields, o.Field)
 	}
 	sort.Strings(fields)
 	selected := append([]string{"Number", "DisplayName"}, fields...)
@@ -1175,7 +1218,10 @@ func extensionSettings(ctx context.Context, req plugin.Request) (any, error) {
 		}
 	}
 
-	return map[string]any{"extensions": out, "count": len(out)}, nil
+	// The field list travels with the values, so whatever reads this can offer
+	// them as columns or as a form without keeping its own copy of what 3CX
+	// will accept.
+	return map[string]any{"extensions": out, "count": len(out), "fields": editable}, nil
 }
 
 // asText reads a JSON value as a string without caring which shape it arrived
