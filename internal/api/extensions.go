@@ -131,8 +131,8 @@ func (s *Server) createExtension(w http.ResponseWriter, r *http.Request, actor i
 		writeJSON(w, http.StatusBadRequest, errBody("a new extension needs a number"))
 		return
 	}
-	first := strings.TrimSpace(body.Values["FirstName"])
-	last := strings.TrimSpace(body.Values["LastName"])
+	first := strings.TrimSpace(body.Values[bulk.FieldFirst])
+	last := strings.TrimSpace(body.Values[bulk.FieldLast])
 	if first == "" && last == "" {
 		writeJSON(w, http.StatusBadRequest, errBody("a new extension needs a name"))
 		return
@@ -168,7 +168,7 @@ func (s *Server) createExtension(w http.ResponseWriter, r *http.Request, actor i
 
 	rest := map[string]string{}
 	for field, value := range body.Values {
-		if field == "FirstName" || field == "LastName" {
+		if field == bulk.FieldFirst || field == bulk.FieldLast {
 			continue
 		}
 		rest[field] = value
@@ -288,8 +288,8 @@ func sortOut(values map[string]string, specs []bulk.Spec) (core []bulk.Change, s
 	// the phone system builds one from the other, and which wins would come
 	// down to the order they happened to be sent in.
 	if _, whole := values[string(bulk.FieldName)]; whole && bulk.Splits(specs) {
-		_, first := values["FirstName"]
-		_, last := values["LastName"]
+		_, first := values[bulk.FieldFirst]
+		_, last := values[bulk.FieldLast]
 		if first || last {
 			return nil, nil, fmt.Errorf(
 				"set the first and last name, or the display name, but not both — the phone system builds one from the other")
@@ -309,6 +309,15 @@ func sortOut(values map[string]string, specs []bulk.Spec) (core []bulk.Change, s
 		spec, known := byField[bulk.Field(field)]
 		if !known {
 			return nil, nil, fmt.Errorf("this phone system has no setting called %q", field)
+		}
+		// Refused here, by its own name and for the actual reason. It would
+		// otherwise reach the phone system's allowlist and come back as "this
+		// changes extension options only, never credentials or numbering",
+		// which is true of that allowlist and says nothing about why a
+		// department cannot be set from here.
+		if spec.Kind == bulk.KindReadOnly {
+			return nil, nil, fmt.Errorf(
+				"%s is shown here and changed on the phone system itself", spec.Label)
 		}
 		raw := values[field]
 
@@ -405,7 +414,7 @@ func (s *Server) listExtensionsPage(w http.ResponseWriter, r *http.Request, acto
 		if find == "" ||
 			strings.Contains(number, find) ||
 			strings.Contains(strings.ToLower(now[number][bulk.FieldName]), find) ||
-			strings.Contains(strings.ToLower(now[number]["EmailAddress"]), find) {
+			strings.Contains(strings.ToLower(now[number][bulk.FieldEmail]), find) {
 			matched = append(matched, number)
 		}
 	}
@@ -437,12 +446,12 @@ func (s *Server) listExtensionsPage(w http.ResponseWriter, r *http.Request, acto
 		rows = append(rows, row{
 			Extension: number,
 			Name:      v[bulk.FieldName],
-			Email:     v["EmailAddress"],
+			Email:     v[bulk.FieldEmail],
 			Enabled:   v[bulk.FieldEnabled] != "no",
-			Recording: v["RecordCalls"] == "yes",
-			Voicemail: v["VMEnabled"] == "yes",
-			Tunnel:    v["BlockTunnel"] == "yes",
-			NoAudio:   v["PbxDeliversAudio"] == "no",
+			Recording: v[bulk.FieldRecording] == "yes",
+			Voicemail: v[bulk.FieldVoicemail] == "yes",
+			Tunnel:    v[bulk.FieldTunnel] == "yes",
+			NoAudio:   v[bulk.FieldAudio] == "no",
 		})
 	}
 

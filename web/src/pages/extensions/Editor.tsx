@@ -157,13 +157,10 @@ export function Editor({
 
   const byTab = useMemo(() => {
     const groups = new Map<string, BulkSpec[]>();
-    // Where the phone system has the parts of a name, the form offers the
-    // parts. The display name is what it builds from them, so offering both
-    // would be two controls fighting over one setting — it stays for the
-    // spreadsheet, which has always had one column for it.
-    const splits = specs.some((s) => s.field === "FirstName");
+    // A field the server marked as belonging in a spreadsheet rather than a
+    // form — the display name, where the phone system also offers its parts.
     for (const spec of specs) {
-      if (splits && spec.field === "name") continue;
+      if (spec.sheet_only) continue;
       const list = groups.get(spec.group) ?? [];
       list.push(spec);
       groups.set(spec.group, list);

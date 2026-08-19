@@ -91,6 +91,13 @@ type Spec struct {
 	Kind    string   `json:"kind"`
 	Group   string   `json:"group"`
 	Choices []string `json:"choices,omitempty"`
+	// Sheeted marks a field that belongs in a spreadsheet and not in a form.
+	//
+	// One field so far: the display name, where the phone system also offers
+	// the parts of it. A sheet has always had one column for a name and should
+	// keep it; a form offering both the whole and the parts is two controls
+	// fighting over one setting.
+	SheetOnly bool `json:"sheet_only,omitempty"`
 }
 
 /*
@@ -106,24 +113,6 @@ call them.
 var Core = []Spec{
 	{Field: FieldName, Label: "Display name", Kind: KindText, Group: "General"},
 	{Field: FieldEnabled, Label: "Enabled", Kind: KindBool, Group: "General"},
-}
-
-/*
-Splits reports whether a phone system offers the parts of a name separately.
-
-Where it does, the display name is the two of them joined and setting both is a
-contradiction — so a form offers the parts and the display name stays for the
-sheet, which has always had one column for it. Answered from the published
-fields rather than assumed, because a phone system that only has a display name
-is a phone system where the display name is the field.
-*/
-func Splits(specs []Spec) bool {
-	for _, spec := range specs {
-		if spec.Field == "FirstName" {
-			return true
-		}
-	}
-	return false
 }
 
 /*
@@ -143,7 +132,17 @@ func Merge(core []Spec, published []Spec) []Spec {
 		taken[strings.ToLower(spec.Label)] = true
 	}
 
-	all := append([]Spec{}, core...)
+	// Where the phone system offers the parts of a name, the display name
+	// stops being something a form should offer. Decided here rather than in
+	// whatever draws the form, so it is decided once and can be tested.
+	splits := Splits(published)
+	all := make([]Spec, 0, len(core)+len(published))
+	for _, spec := range core {
+		if splits && spec.Field == FieldName {
+			spec.SheetOnly = true
+		}
+		all = append(all, spec)
+	}
 	for _, spec := range published {
 		if taken[strings.ToLower(string(spec.Field))] || taken[strings.ToLower(spec.Label)] {
 			continue

@@ -864,6 +864,8 @@ export type BulkSpec = {
   kind: string;
   group: string;
   choices?: string[];
+  /** Belongs in a spreadsheet, not in a form. */
+  sheet_only?: boolean;
 };
 
 /**

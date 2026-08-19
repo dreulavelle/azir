@@ -686,3 +686,39 @@ func TestWhereACallGoes(t *testing.T) {
 		t.Errorf(`Where("VoiceMail") = %q, %q`, where, number)
 	}
 }
+
+// Where a phone system offers the parts of a name, the display name stops
+// being something a form should offer — two controls over one setting is the
+// bug. It stays in sheets, which have always had one column for a name.
+func TestTheDisplayNameLeavesTheFormWhenThePartsArrive(t *testing.T) {
+	alone := Merge(Core, []Spec{{Field: "RecordCalls", Label: "Record calls", Kind: KindBool}})
+	for _, spec := range alone {
+		if spec.Field == FieldName && spec.SheetOnly {
+			t.Error("the display name left the form on a phone system that has no other name field")
+		}
+	}
+
+	split := Merge(Core, []Spec{
+		{Field: FieldFirst, Label: "First name", Kind: KindText},
+		{Field: FieldLast, Label: "Last name", Kind: KindText},
+	})
+	shown := false
+	for _, spec := range split {
+		if spec.Field == FieldName {
+			shown = !spec.SheetOnly
+		}
+	}
+	if shown {
+		t.Error("the form offers the display name and its parts, which fight over one setting")
+	}
+	// And it is still a column, because a sheet has one name column.
+	found := false
+	for _, column := range SheetColumns(split) {
+		if column == "Display name" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("the display name left the spreadsheet too")
+	}
+}
