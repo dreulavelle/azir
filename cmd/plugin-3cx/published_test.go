@@ -22,7 +22,7 @@ costs one test.
 */
 func TestAzirCanReadWhatThisPublishes(t *testing.T) {
 	// The roles a real system would have found in use.
-	published := settable([]string{"system_owners", "users"})
+	published := settable(rolesFrom(nil, []string{"system_owners"}))
 	if len(published) == 0 {
 		t.Fatal("nothing is published, so this test checks nothing")
 	}
@@ -69,7 +69,7 @@ func TestAzirCanReadWhatThisPublishes(t *testing.T) {
 // own. 3CX publishes Enabled, which is the switch bulk.FieldEnabled already
 // describes, and two columns fighting over one setting is the bug.
 func TestAzirsOwnFieldsWin(t *testing.T) {
-	encoded, _ := json.Marshal(settable([]string{"system_owners", "users"}))
+	encoded, _ := json.Marshal(settable(rolesFrom(nil, []string{"system_owners"})))
 	var read []bulk.Spec
 	if err := json.Unmarshal(encoded, &read); err != nil {
 		t.Fatal(err)

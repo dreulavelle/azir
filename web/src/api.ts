@@ -864,6 +864,18 @@ export type BulkSpec = {
   kind: string;
   group: string;
   choices?: string[];
+  /**
+   * What to show for each choice, where the stored value is not something to
+   * put in front of a person. A role is kept as "system_owners" and read as
+   * "System Owner".
+   */
+  labels?: Record<string, string>;
+  /**
+   * No two extensions may hold the same value — an email address. Set on one
+   * at a time; a bulk edit that gave one value to several would be taken by
+   * the first and refused by the rest.
+   */
+  unique?: boolean;
   /** Belongs in a spreadsheet, not in a form. */
   sheet_only?: boolean;
 };

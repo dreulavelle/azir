@@ -91,6 +91,24 @@ type Spec struct {
 	Kind    string   `json:"kind"`
 	Group   string   `json:"group"`
 	Choices []string `json:"choices,omitempty"`
+	// Labels is what to show for each choice, where the phone system's own
+	// value is not a thing to put in front of a person. A role is stored as
+	// "system_owners" and read as "System Owner".
+	//
+	// By value rather than positional, so a choice with no entry simply shows
+	// as itself and a list can grow without the two falling out of step.
+	Labels map[string]string `json:"labels,omitempty"`
+	/*
+		Unique marks a field no two extensions may share — an email address.
+
+		Published by the plugin, because which fields those are is a fact about
+		the phone system and not something Azir can know. What Azir does with
+		it is refuse to stage a bulk edit that would set one value on several
+		extensions, which is the only way that edit can end: the first
+		extension takes it and the rest are refused, one at a time, after the
+		first has already been written.
+	*/
+	Unique bool `json:"unique,omitempty"`
 	// Sheeted marks a field that belongs in a spreadsheet and not in a form.
 	//
 	// One field so far: the display name, where the phone system also offers
@@ -471,6 +489,7 @@ func Choose(want map[string]Values, now Current, specs []Spec) Plan {
 	for _, spec := range specs {
 		byField[spec.Field] = spec
 	}
+	clashes := shared(want, specs)
 
 	for _, extension := range order(want) {
 		state, known := now[extension]
@@ -488,8 +507,22 @@ func Choose(want map[string]Values, now Current, specs []Spec) Plan {
 				continue
 			}
 			raw, asked := want[extension][spec.Field]
-			if !asked || strings.TrimSpace(raw) == "" {
+			if !asked {
 				continue
+			}
+			// Unlike a sheet, where a blank cell is a column somebody did not
+			// fill in, a field is here only because somebody set it. So an
+			// empty one is an answer — clear it — for the kinds that can hold
+			// nothing. A picker cannot produce an empty choice or an empty
+			// yes-or-no, so for those it still means "leave it alone".
+			if strings.TrimSpace(raw) == "" && spec.Kind != KindText {
+				continue
+			}
+			if clashes[spec.Field] && strings.TrimSpace(raw) != "" {
+				row.Problem = fmt.Sprintf(
+					"%s has to be different on every extension, so it cannot be set to one value across several",
+					spec.Label)
+				break
 			}
 			after, err := Normalise(spec, raw)
 			if err != nil {
@@ -517,6 +550,55 @@ func Choose(want map[string]Values, now Current, specs []Spec) Plan {
 
 	plan.Sort()
 	return plan
+}
+
+/*
+shared finds the fields a batch would give the same value to and may not.
+
+An email address belongs to one extension, and the phone system enforces that.
+Setting one across five is not a change that half works — the first extension
+takes it and the other four are refused, individually, after the write to the
+first has already happened. That is what somebody sees as "it only edited the
+first one", and no amount of reading the error afterwards puts the first one
+back.
+
+So it is caught here, before anything is written, and reported against the rows
+it would have broken. Only values that repeat: setting a different address on
+each of five extensions is an ordinary bulk edit and stays one.
+*/
+func shared(want map[string]Values, specs []Spec) map[Field]bool {
+	unique := map[Field]bool{}
+	for _, spec := range specs {
+		if spec.Unique && Comparable(spec) {
+			unique[spec.Field] = true
+		}
+	}
+	if len(unique) == 0 || len(want) < 2 {
+		return nil
+	}
+
+	seen := map[Field]map[string]int{}
+	clashes := map[Field]bool{}
+	for _, values := range want {
+		for field := range unique {
+			value := strings.TrimSpace(values[field])
+			if value == "" {
+				continue
+			}
+			// Compared case-insensitively: a phone system that will not take
+			// two of the same address will not take two spellings of it
+			// either.
+			value = strings.ToLower(value)
+			if seen[field] == nil {
+				seen[field] = map[string]int{}
+			}
+			seen[field][value]++
+			if seen[field][value] > 1 {
+				clashes[field] = true
+			}
+		}
+	}
+	return clashes
 }
 
 // order lists extension numbers the way somebody reads them, so 100 comes
