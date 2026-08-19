@@ -1104,6 +1104,22 @@ export const api = {
 
   customers: () => request<Customer[]>("/api/customers"),
 
+  /**
+   * Customers matching what somebody typed.
+   *
+   * A real search rather than a filter over what happens to be loaded: it runs
+   * against Postgres trigram similarity, so a name half-remembered off a
+   * ticket still finds the customer. An empty term is the state a picker opens
+   * in and answers with the first screenful.
+   */
+  findCustomers: (q: string, limit = 20) =>
+    request<Customer[]>(
+      `/api/customers?q=${encodeURIComponent(q)}&limit=${encodeURIComponent(String(limit))}`,
+    ),
+
+  /** One customer, for putting a name to an id somebody arrived holding. */
+  customer: (id: string) => request<Customer>(`/api/customers/${encodeURIComponent(id)}`),
+
   createCustomer: (displayName: string) =>
     request<Customer>("/api/customers", {
       method: "POST",

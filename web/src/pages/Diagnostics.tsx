@@ -4,7 +4,6 @@ import {
   Perm,
   snapshots,
   type Actor,
-  type Customer,
   type Finding,
   type Snapshot,
   type SnapshotReport,
@@ -20,13 +19,13 @@ import {
   Label,
   Loading,
   Panel,
-  Picker,
   Problem,
   ago,
   absolute,
   until,
   TextInput,
 } from "../ui";
+import { CustomerSearch } from "../CustomerSearch";
 
 /**
  * Diagnostics: what a phone system looked like at one moment.
@@ -178,7 +177,6 @@ export function Diagnostics({
  * than leaving somebody watching a spinner wondering whether it has hung.
  */
 function Collect({ onDone }: { onDone: () => void }) {
-  const [customers, setCustomers] = useState<Customer[] | null>(null);
   const [customerId, setCustomerId] = useState("");
   const [busy, setBusy] = useState<"upload" | "pull" | null>(null);
   // Assumed ready until the registry says otherwise, so a slow load never
@@ -187,18 +185,12 @@ function Collect({ onDone }: { onDone: () => void }) {
   const picker = useRef<HTMLInputElement>(null);
   const toast = useToast();
 
+  // The picker below searches Azir's own customers, not the helpdesk's. A
+  // snapshot hangs off the customer record here, which is keyed by Azir's id —
+  // and the helpdesk's list is keyed by the helpdesk's. Reading the wrong one
+  // puts a number where a uuid belongs and every upload is refused by a
+  // customer that does exist.
   useEffect(() => {
-    // Azir's own customers, not the helpdesk's.
-    //
-    // A snapshot hangs off the customer record here, which is keyed by Azir's
-    // id — and the helpdesk's list is keyed by the helpdesk's. Reading the
-    // wrong one puts a number where a uuid belongs and every upload is refused
-    // by a customer that does exist.
-    api
-      .customers()
-      .then(setCustomers)
-      .catch(() => setCustomers([]));
-
     /*
       Whether collecting is switched on at all.
 
@@ -296,21 +288,14 @@ function Collect({ onDone }: { onDone: () => void }) {
 
       <span className="text-xs text-ink-faint">or</span>
 
-      <label className="flex items-center gap-2">
-        <Picker
-          className="w-auto"
+      <div className="w-[240px]">
+        <CustomerSearch
           value={customerId}
-          aria-label="Which customer's phone system to collect from"
-          onChange={(e) => setCustomerId(e.target.value)}
-        >
-          <option value="">Choose a customer…</option>
-          {(customers ?? []).map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.display_name}
-            </option>
-          ))}
-        </Picker>
-      </label>
+          ariaLabel="Which customer's phone system to collect from"
+          placeholder="Type a customer's name"
+          onChange={(id) => setCustomerId(id)}
+        />
+      </div>
       <Button
         disabled={busy !== null || !customerId || collecting !== "ready"}
         onClick={() => void pull()}
@@ -864,7 +849,6 @@ function Attach({
   actor: Actor;
   onDone: () => void;
 }) {
-  const [customers, setCustomers] = useState<Customer[] | null>(null);
   const [chosen, setChosen] = useState("");
   const [named, setNamed] = useState("");
   const [busy, setBusy] = useState(false);
@@ -872,13 +856,6 @@ function Attach({
   // Offering to create one to somebody who cannot is a button that only ever
   // fails; they can still attach the capture to a customer that exists.
   const mayCreate = actor.permissions.includes(Perm.customerManage);
-
-  useEffect(() => {
-    api
-      .customers()
-      .then(setCustomers)
-      .catch(() => setCustomers([]));
-  }, []);
 
   async function attach(customerId: string) {
     try {
@@ -942,19 +919,14 @@ function Attach({
           "This capture is not attached to a customer."
         )}
       </span>
-      <Picker
-        className="w-auto"
-        value={chosen}
-        aria-label="Attach this capture to a customer"
-        onChange={(e) => setChosen(e.target.value)}
-      >
-        <option value="">Choose a customer…</option>
-        {(customers ?? []).map((c) => (
-          <option key={c.id} value={c.id}>
-            {c.display_name}
-          </option>
-        ))}
-      </Picker>
+      <div className="w-[240px]">
+        <CustomerSearch
+          value={chosen}
+          ariaLabel="Attach this capture to a customer"
+          placeholder="Type a customer's name"
+          onChange={(id) => setChosen(id)}
+        />
+      </div>
       <Button disabled={!chosen || busy} onClick={() => void attach(chosen)}>
         Attach
       </Button>

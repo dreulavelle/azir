@@ -350,8 +350,17 @@ func (s *Server) decideCapability(w http.ResponseWriter, r *http.Request, actor 
 func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) {
 	// ?q= runs the trigram-backed fuzzy search, so a name read off a ticket
 	// resolves to a customer without anyone knowing an identifier.
-	if q := r.URL.Query().Get("q"); q != "" {
-		customers, err := s.DB.SearchCustomers(r.Context(), q, 20)
+	//
+	// Has rather than a non-empty value: a picker that has been opened but not
+	// typed into has asked to search, and the answer to that is the first
+	// screenful of customers rather than every one of them.
+	if r.URL.Query().Has("q") {
+		q := r.URL.Query().Get("q")
+		limit := 20
+		if asked, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && asked > 0 {
+			limit = asked
+		}
+		customers, err := s.DB.SearchCustomers(r.Context(), q, limit)
 		if err != nil {
 			s.fail(w, err, "could not search customers")
 			return

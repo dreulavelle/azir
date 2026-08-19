@@ -127,13 +127,38 @@ func (db *DB) ListCustomers(ctx context.Context) ([]Customer, error) {
 // SearchCustomers finds customers by fuzzy name, backed by the trigram index.
 // The agent resolves a name it read in a ticket to a customer this way, so it
 // never needs to be told an identifier.
+// firstCustomers is the start of the list, by name, for a picker nobody has
+// typed into yet.
+func (db *DB) firstCustomers(ctx context.Context, limit int) ([]Customer, error) {
+	rows, err := db.pool.Query(ctx,
+		`SELECT id, display_name, created_at FROM customers ORDER BY display_name LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("store: first customers: %w", err)
+	}
+	defer rows.Close()
+
+	out := []Customer{}
+	for rows.Next() {
+		c := Customer{Identities: []Identity{}}
+		if err := rows.Scan(&c.ID, &c.DisplayName, &c.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
 func (db *DB) SearchCustomers(ctx context.Context, query string, limit int) ([]Customer, error) {
 	query = strings.TrimSpace(query)
-	if query == "" {
-		return db.ListCustomers(ctx)
-	}
 	if limit <= 0 || limit > 100 {
 		limit = 20
+	}
+
+	// Nothing typed yet is a real state, not a request for the whole table.
+	// A picker opens on it, and an MSP with two thousand customers should get
+	// the first screenful rather than all of them.
+	if query == "" {
+		return db.firstCustomers(ctx, limit)
 	}
 
 	rows, err := db.pool.Query(ctx, `

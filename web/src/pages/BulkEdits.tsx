@@ -10,7 +10,8 @@ import {
 } from "../api";
 import { Dialog } from "../components";
 import { useToast } from "../Toast";
-import { Button, Chip, Empty, Label, Panel, PanelHead, Picker, Problem } from "../ui";
+import { Button, Chip, Empty, Label, Panel, PanelHead, Problem } from "../ui";
+import { CustomerSearch } from "../CustomerSearch";
 import { Chooser } from "./bulk/Chooser";
 import { Diff } from "./bulk/Diff";
 import { Mapper } from "./bulk/Mapper";
@@ -38,7 +39,7 @@ import { rowCount, saying, statusWord, upperFirst } from "./bulk/words";
  * out by asking one.
  */
 export function BulkEdits({ actor }: { actor: Actor }) {
-  const [customers, setCustomers] = useState<Customer[] | null>(null);
+  const [customer, setCustomer] = useState<Customer | null>(null);
   const [customerID, setCustomerID] = useState("");
   const [way, setWay] = useState<"" | "choose" | "sheet">("");
   const [edit, setEdit] = useState<BulkEdit | null>(null);
@@ -53,8 +54,6 @@ export function BulkEdits({ actor }: { actor: Actor }) {
   const [asking, setAsking] = useState(false);
   const [recent, setRecent] = useState<BulkEdit[]>([]);
   const toast = useToast();
-
-  const customer = (customers ?? []).find((c) => c.id === customerID);
 
   // Sheets already staged for this customer. The server holds them between the
   // upload and the decision precisely so a refresh does not lose one, and
@@ -72,14 +71,19 @@ export function BulkEdits({ actor }: { actor: Actor }) {
     void loadRecent(customerID);
   }, [customerID, loadRecent, edit]);
 
+  // One customer is not a choice. Somebody running Azir for a single business
+  // should not be asked which one every time they open this.
   useEffect(() => {
     void (async () => {
       try {
-        const list = await api.customers();
-        setCustomers(list);
-        if (list.length === 1) setCustomerID(list[0].id);
-      } catch (e) {
-        setProblem(e instanceof Error ? e.message : "Could not load your customers");
+        const first = await api.findCustomers("", 2);
+        if (first.length === 1) {
+          setCustomerID(first[0].id);
+          setCustomer(first[0]);
+        }
+      } catch {
+        // Not worth reporting: the search below is how a customer is chosen,
+        // and it reports its own failures.
       }
     })();
   }, []);
@@ -250,23 +254,19 @@ export function BulkEdits({ actor }: { actor: Actor }) {
         <>
           <Panel className="mt-5">
             <div className="flex flex-wrap items-end gap-3 px-4 py-4">
-              <div className="flex min-w-[240px] flex-col gap-1.5">
+              <div className="flex min-w-[260px] flex-col gap-1.5">
                 <Label>Whose phone system</Label>
-                <Picker
+                <CustomerSearch
                   value={customerID}
-                  onChange={(e) => {
-                    setCustomerID(e.target.value);
+                  ariaLabel="Whose phone system to change"
+                  placeholder="Type a customer's name"
+                  onChange={(id, picked) => {
+                    setCustomerID(id);
+                    setCustomer(picked ?? null);
                     setWay("");
                     setProblem(null);
                   }}
-                >
-                  <option value="">Choose a customer</option>
-                  {(customers ?? []).map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.display_name}
-                    </option>
-                  ))}
-                </Picker>
+                />
               </div>
               {customer && (
                 <p className="pb-2 text-xs text-ink-faint">
