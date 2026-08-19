@@ -55,6 +55,9 @@ export function Extensions({ actor, go }: { actor: Actor; go?: (path: string) =>
   const [find, setFind] = useState("");
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [opening, setOpening] = useState(false);
+  const [pick, setPick] = useState("");
+  const [picking, setPicking] = useState(false);
+  const [missed, setMissed] = useState<string[]>([]);
   const [mode, setMode] = useState<Mode | null>(null);
   const [plan, setPlan] = useState<{ id: string; plan: BulkPlan } | null>(null);
   const [removing, setRemoving] = useState(false);
@@ -139,6 +142,32 @@ export function Extensions({ actor, go }: { actor: Actor; go?: (path: string) =>
       }
     })();
   }, [customerID, everything]);
+
+  /**
+   * Adds whatever somebody wrote to the selection.
+   *
+   * "102-110, 119" is how a technician describes a floor of phones, and typing
+   * eleven numbers to change eleven of them is work a computer should do. It
+   * adds rather than replaces, so a selection can be built up out of several
+   * goes — and unticking a row still takes one back out, which is the "except
+   * 108" half of the same job.
+   */
+  async function addToSelection() {
+    const asked = pick.trim();
+    if (!asked) return;
+    setPicking(true);
+    setProblem(null);
+    try {
+      const got = await api.selectExtensions(customerID, asked);
+      setPicked((was) => new Set([...was, ...got.selected]));
+      setMissed(got.missing);
+      setPick("");
+    } catch (e) {
+      setProblem(e instanceof Error ? e.message : "Could not read that selection");
+    } finally {
+      setPicking(false);
+    }
+  }
 
   /**
    * Opens the editor, fetching what it needs first.
@@ -367,6 +396,28 @@ export function Extensions({ actor, go }: { actor: Actor; go?: (path: string) =>
               />
             </div>
           )}
+          {customerID && (
+            <div className="flex min-w-[240px] flex-col gap-1.5">
+              <Label>Select for a bulk edit</Label>
+              <div className="flex gap-2">
+                <TextInput
+                  value={pick}
+                  placeholder="102-110, 119"
+                  aria-label="Extensions to select, as numbers and ranges"
+                  onChange={(e) => setPick(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      void addToSelection();
+                    }
+                  }}
+                />
+                <Button disabled={picking || !pick.trim()} onClick={() => void addToSelection()}>
+                  {picking ? "…" : "Add"}
+                </Button>
+              </div>
+            </div>
+          )}
           {customerID && rows && (
             <Button weight="primary" onClick={() => setMode({ kind: "new" })}>
               <Icon.plus />
@@ -375,17 +426,38 @@ export function Extensions({ actor, go }: { actor: Actor; go?: (path: string) =>
           )}
         </div>
 
+        {missed.length > 0 && (
+          <p className="border-t border-edge bg-attention/10 px-4 py-2 text-xs text-attention">
+            Not on this phone system, so not selected: {missed.join(", ")}
+            <button
+              className="ml-2 rounded px-1.5 py-0.5 text-2xs underline"
+              onClick={() => setMissed([])}
+            >
+              dismiss
+            </button>
+          </p>
+        )}
+
         {picked.size > 0 && (
           <div className="flex flex-wrap items-center justify-between gap-3 border-t border-edge bg-sunken/50 px-4 py-2.5">
-            <span className="text-sm font-medium">
-              {picked.size} selected
-              <button
-                className="ml-2 rounded-md px-1.5 py-0.5 text-xs font-normal text-ink-dim transition-colors hover:bg-panel hover:text-ink"
-                onClick={() => setPicked(new Set())}
-              >
-                Clear
-              </button>
-            </span>
+            <div className="min-w-0">
+              <span className="text-sm font-medium">
+                {picked.size} selected
+                <button
+                  className="ml-2 rounded-md px-1.5 py-0.5 text-xs font-normal text-ink-dim transition-colors hover:bg-panel hover:text-ink"
+                  onClick={() => {
+                    setPicked(new Set());
+                    setMissed([]);
+                  }}
+                >
+                  Clear
+                </button>
+              </span>
+              {/* The selection is not the page. Something chosen by a range
+                  can sit forty rows further down, and unticking its row is
+                  only possible if you can find its row. */}
+              <Chosen picked={picked} onDrop={(n) => tick(n, false)} />
+            </div>
             <div className="flex gap-2">
               <Button disabled={opening} onClick={() => void open([...picked])}>
                 {opening ? "Opening…" : "Edit together"}
@@ -614,6 +686,36 @@ export function Extensions({ actor, go }: { actor: Actor; go?: (path: string) =>
  * scans a list for is "which of these is set up differently", and a mark that
  * is only there when it is true answers that without being counted.
  */
+/**
+ * What is selected, as removable chips.
+ *
+ * Runs are written as ranges, because "102–110, 119" is what somebody typed
+ * and reading ten separate chips back is worse than reading what they meant.
+ * Long selections are cut off with a count rather than filling the screen.
+ */
+function Chosen({ picked, onDrop }: { picked: Set<string>; onDrop: (extension: string) => void }) {
+  const numbers = [...picked].sort((a, b) => Number(a) - Number(b) || a.localeCompare(b));
+  const shown = numbers.slice(0, 24);
+  return (
+    <span className="mt-1 flex flex-wrap items-center gap-1">
+      {shown.map((n) => (
+        <button
+          key={n}
+          className="inline-flex items-center gap-1 rounded border border-edge bg-panel px-1.5 py-px font-mono text-2xs text-ink-dim transition-colors hover:border-critical/40 hover:text-critical"
+          title={`Take ${n} out of the selection`}
+          onClick={() => onDrop(n)}
+        >
+          {n}
+          <span aria-hidden="true">×</span>
+        </button>
+      ))}
+      {numbers.length > shown.length && (
+        <span className="text-2xs text-ink-faint">and {numbers.length - shown.length} more</span>
+      )}
+    </span>
+  );
+}
+
 function Marks({ row }: { row: ExtensionRow }) {
   const marks: { label: string; tone: "good" | "warn" | "urgent" | "accent" | ""; title: string }[] = [];
   if (!row.enabled) marks.push({ label: "off", tone: "urgent", title: "This extension is disabled" });

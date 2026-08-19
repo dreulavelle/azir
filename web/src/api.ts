@@ -1085,6 +1085,20 @@ export const api = {
         `&q=${encodeURIComponent(q)}&limit=${limit}&offset=${offset}`,
     ),
 
+  /**
+   * Resolves a written selection — "102-110, 119" — into extensions that
+   * exist.
+   *
+   * Parsed on the server because that is where what exists is known, and
+   * because a range that quietly selects the wrong extensions is the mistake
+   * this whole screen is built to prevent.
+   */
+  selectExtensions: (customerID: string, select: string) =>
+    request<{ selected: string[]; missing: string[]; asked: string }>(
+      `/api/extensions/numbers?customer_id=${encodeURIComponent(customerID)}` +
+        `&select=${encodeURIComponent(select)}`,
+    ),
+
   /** Everything about the extensions named, for the editor. */
   extensionValues: (customerID: string, extensions: string[]) =>
     request<{
