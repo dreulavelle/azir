@@ -1205,11 +1205,22 @@ func extensionSettings(ctx context.Context, req plugin.Request) (any, error) {
 	sort.Strings(fields)
 	selected := append([]string{"Number", "DisplayName"}, fields...)
 
-	out := make([]map[string]any, 0, pageSize)
-	for skip := 0; skip < maxExtensions; skip += pageSize {
+	// The same page as everything else here. A larger one would mean fewer
+	// round trips on a big system, and 3CX answers 400 to $top=500 — the
+	// schema documents no maximum, so the ceiling is whatever the runtime
+	// decides and not something to guess at from here.
+	//
+	// It costs less than it looks. The loop stops on the first short page, so
+	// a thousand extensions is eleven requests, and the result is cached for
+	// two minutes rather than fetched on every screen that reads it.
+	const settingsPage = pageSize
+
+	out := make([]map[string]any, 0, settingsPage)
+	complete := true
+	for skip := 0; skip < maxExtensions; skip += settingsPage {
 		q := url.Values{}
 		q.Set("$select", strings.Join(selected, ","))
-		q.Set("$top", fmt.Sprint(pageSize))
+		q.Set("$top", fmt.Sprint(settingsPage))
 		q.Set("$skip", fmt.Sprint(skip))
 		q.Set("$orderby", "Number")
 
@@ -1232,15 +1243,24 @@ func extensionSettings(ctx context.Context, req plugin.Request) (any, error) {
 				"settings":  settings,
 			})
 		}
-		if len(page.Value) < pageSize {
+		if len(page.Value) < settingsPage {
 			break
+		}
+		if skip+settingsPage >= maxExtensions {
+			// Stopped at the ceiling with more to come. Saying so is the whole
+			// point: a list that quietly ends is read as the whole list, and
+			// somebody changing "all of them" would miss whatever was past the
+			// cut without ever knowing there was a cut.
+			complete = false
 		}
 	}
 
 	// The field list travels with the values, so whatever reads this can offer
 	// them as columns or as a form without keeping its own copy of what 3CX
 	// will accept.
-	return map[string]any{"extensions": out, "count": len(out), "fields": editable}, nil
+	return map[string]any{
+		"extensions": out, "count": len(out), "fields": editable, "complete": complete,
+	}, nil
 }
 
 // asText reads a JSON value as a string without caring which shape it arrived

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -227,14 +228,34 @@ func (s *Server) removeExtensions(w http.ResponseWriter, r *http.Request, actor 
 		writeJSON(w, http.StatusForbidden, errBody(err.Error()))
 		return
 	}
-	encoded, err := json.Marshal(map[string]any{"extensions": body.Extensions})
-	if err != nil {
-		s.fail(w, err, "could not ask for that")
-		return
-	}
-	if _, err := s.performTool(r.Context(), actor, tool, encoded, &customerID, byHand); err != nil {
-		writeJSON(w, http.StatusBadGateway, errBody(err.Error()))
-		return
+
+	// The same fifty at a time the options path uses, and for the same reason:
+	// the plugin will not take "every extension" in one call, and Azir is
+	// naming them explicitly. Removing a hundred and twenty should not fail
+	// because it is more than fifty.
+	removed := 0
+	for _, batch := range inBatches(body.Extensions, atOnce) {
+		encoded, err := json.Marshal(map[string]any{"extensions": batch})
+		if err != nil {
+			s.fail(w, err, "could not ask for that")
+			return
+		}
+		if _, err := s.performTool(r.Context(), actor, tool, encoded, &customerID, byHand); err != nil {
+			// Whatever went before this is gone. Reporting a clean failure
+			// would send somebody looking for extensions that no longer exist.
+			s.Audit.Record(r.Context(), audit.Event{
+				ActorUserID: actor.Email,
+				Action:      "extension.remove",
+				Outcome:     audit.OutcomeFailed,
+				CustomerID:  &customerID,
+				Detail:      fmt.Sprintf("%d removed before this failed", removed),
+			})
+			writeJSON(w, http.StatusBadGateway, map[string]any{
+				"error": err.Error(), "removed": removed,
+			})
+			return
+		}
+		removed += len(batch)
 	}
 
 	s.Audit.Record(r.Context(), audit.Event{
@@ -244,7 +265,7 @@ func (s *Server) removeExtensions(w http.ResponseWriter, r *http.Request, actor 
 		CustomerID:  &customerID,
 		Detail:      strings.Join(body.Extensions, ", "),
 	})
-	writeJSON(w, http.StatusOK, map[string]any{"removed": len(body.Extensions)})
+	writeJSON(w, http.StatusOK, map[string]any{"removed": removed})
 }
 
 /*
@@ -345,4 +366,175 @@ func (s *Server) customerOf(w http.ResponseWriter, r *http.Request) (uuid.UUID, 
 		return uuid.UUID{}, false
 	}
 	return customerID, true
+}
+
+/*
+listExtensionsPage answers the table: a page of it, searched, with a count.
+
+A thousand-extension deployment is 1.7MB of JSON and a thousand rows of DOM if
+the whole thing is sent, on every navigation, for a screen that shows twenty of
+them at a time. The search and the paging happen here so the browser is handed
+what it draws and nothing else.
+
+Slim rows on purpose. The table shows a number, a name, an email and a handful
+of marks; the other twenty-nine fields are what the editor asks for about one
+extension when somebody opens it.
+*/
+func (s *Server) listExtensionsPage(w http.ResponseWriter, r *http.Request, actor identity.Actor) {
+	customerID, ok := s.customerOf(w, r)
+	if !ok {
+		return
+	}
+	now, specs, complete, err := s.currentWithCompleteness(r.Context(), actor, customerID)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, errBody("could not read the phone system: "+err.Error()))
+		return
+	}
+
+	find := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
+	limit, offset := paging(r)
+
+	// Matched here rather than in the browser, because the browser is not
+	// going to be holding the rows that do not match.
+	numbers := inOrder(now)
+	matched := make([]string, 0, len(numbers))
+	for _, number := range numbers {
+		if find == "" ||
+			strings.Contains(number, find) ||
+			strings.Contains(strings.ToLower(now[number][bulk.FieldName]), find) ||
+			strings.Contains(strings.ToLower(now[number]["EmailAddress"]), find) {
+			matched = append(matched, number)
+		}
+	}
+
+	page := matched
+	if offset < len(page) {
+		page = page[offset:]
+	} else {
+		page = nil
+	}
+	if len(page) > limit {
+		page = page[:limit]
+	}
+
+	// What the table draws, and nothing else.
+	type row struct {
+		Extension string `json:"extension"`
+		Name      string `json:"name"`
+		Email     string `json:"email"`
+		Enabled   bool   `json:"enabled"`
+		Recording bool   `json:"recording"`
+		Voicemail bool   `json:"voicemail"`
+		Tunnel    bool   `json:"tunnel_blocked"`
+		NoAudio   bool   `json:"no_audio"`
+	}
+	rows := make([]row, 0, len(page))
+	for _, number := range page {
+		v := now[number]
+		rows = append(rows, row{
+			Extension: number,
+			Name:      v[bulk.FieldName],
+			Email:     v["EmailAddress"],
+			Enabled:   v[bulk.FieldEnabled] != "no",
+			Recording: v["RecordCalls"] == "yes",
+			Voicemail: v["VMEnabled"] == "yes",
+			Tunnel:    v["BlockTunnel"] == "yes",
+			NoAudio:   v["PbxDeliversAudio"] == "no",
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"extensions": rows,
+		"total":      len(matched),
+		"all":        len(numbers),
+		"fields":     specs,
+		"complete":   complete,
+		"offset":     offset,
+	})
+}
+
+/*
+extensionValues answers the editor: everything about the extensions named.
+
+One when somebody opens a row, several when they edit a selection together —
+and never the whole system, which is what the table is for. Named explicitly
+so the size of the answer is the size of the question.
+*/
+func (s *Server) extensionValues(w http.ResponseWriter, r *http.Request, actor identity.Actor) {
+	customerID, ok := s.customerOf(w, r)
+	if !ok {
+		return
+	}
+	asked := strings.Split(r.URL.Query().Get("extensions"), ",")
+	wantOne := strings.TrimSpace(r.PathValue("number"))
+	if wantOne != "" {
+		asked = []string{wantOne}
+	}
+
+	names := make([]string, 0, len(asked))
+	for _, number := range asked {
+		if trimmed := strings.TrimSpace(number); trimmed != "" {
+			names = append(names, trimmed)
+		}
+	}
+	if len(names) == 0 {
+		writeJSON(w, http.StatusBadRequest, errBody("say which extensions"))
+		return
+	}
+	if len(names) > bulk.MaxRows {
+		writeJSON(w, http.StatusBadRequest, errBody("that is more extensions than this will read at once"))
+		return
+	}
+
+	now, specs, _, err := s.currentWithCompleteness(r.Context(), actor, customerID)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, errBody("could not read the phone system: "+err.Error()))
+		return
+	}
+
+	type one struct {
+		Extension string            `json:"extension"`
+		Name      string            `json:"name"`
+		Enabled   bool              `json:"enabled"`
+		Values    map[string]string `json:"values"`
+	}
+	out := make([]one, 0, len(names))
+	missing := []string{}
+	for _, number := range names {
+		v, known := now[number]
+		if !known {
+			missing = append(missing, number)
+			continue
+		}
+		values := make(map[string]string, len(v))
+		for field, text := range v {
+			values[string(field)] = text
+		}
+		out = append(out, one{
+			Extension: number,
+			Name:      v[bulk.FieldName],
+			Enabled:   v[bulk.FieldEnabled] != "no",
+			Values:    values,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"extensions": out, "fields": specs, "missing": missing,
+	})
+}
+
+// paging reads how much of a list to send, with a ceiling so a caller cannot
+// ask for a thousand rows by leaving the parameter off.
+func paging(r *http.Request) (limit, offset int) {
+	limit, offset = 50, 0
+	if asked, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && asked > 0 {
+		limit = asked
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	if asked, err := strconv.Atoi(r.URL.Query().Get("offset")); err == nil && asked > 0 {
+		offset = asked
+	}
+	return limit, offset
 }

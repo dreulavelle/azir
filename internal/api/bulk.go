@@ -462,7 +462,7 @@ func (s *Server) currentExtensions(ctx context.Context, actor identity.Actor, cu
 	if err != nil {
 		return nil, nil, err
 	}
-	raw, err := s.performTool(ctx, actor, tool, json.RawMessage(`{}`), &customer, fromSheet)
+	raw, err := s.readTool(ctx, actor, tool, json.RawMessage(`{}`), &customer)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -501,13 +501,34 @@ and the columns of the sheet, the choices in the form and the allowlist on the
 way back out are all built from the one list.
 */
 func (s *Server) extensionSettings(ctx context.Context, actor identity.Actor, customer uuid.UUID) (bulk.Current, []bulk.Spec, error) {
+	now, specs, _, err := s.extensionSettingsFull(ctx, actor, customer)
+	return now, specs, err
+}
+
+/*
+currentWithCompleteness is currentExtensions, plus whether the phone system had
+more extensions than it was willing to hand over in one sweep.
+
+Worth carrying separately because it changes what a screen may claim. A list
+that quietly ends is read as the whole list, and somebody changing "all of
+them" from a truncated one would miss whatever was past the cut.
+*/
+func (s *Server) currentWithCompleteness(ctx context.Context, actor identity.Actor, customer uuid.UUID) (bulk.Current, []bulk.Spec, bool, error) {
+	if now, specs, complete, err := s.extensionSettingsFull(ctx, actor, customer); err == nil {
+		return now, specs, complete, nil
+	}
+	now, specs, err := s.currentExtensions(ctx, actor, customer)
+	return now, specs, true, err
+}
+
+func (s *Server) extensionSettingsFull(ctx context.Context, actor identity.Actor, customer uuid.UUID) (bulk.Current, []bulk.Spec, bool, error) {
 	tool, err := s.approvedTool(ctx, plugin.CapPhoneExtensionSettings, false)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, false, err
 	}
-	raw, err := s.performTool(ctx, actor, tool, json.RawMessage(`{}`), &customer, fromSheet)
+	raw, err := s.readTool(ctx, actor, tool, json.RawMessage(`{}`), &customer)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, false, err
 	}
 
 	var answer struct {
@@ -516,14 +537,17 @@ func (s *Server) extensionSettings(ctx context.Context, actor identity.Actor, cu
 			Name      string         `json:"name"`
 			Settings  map[string]any `json:"settings"`
 		} `json:"extensions"`
-		Fields []bulk.Spec `json:"fields"`
+		Fields   []bulk.Spec `json:"fields"`
+		Complete *bool       `json:"complete"`
 	}
 	if err := json.Unmarshal(raw, &answer); err != nil {
-		return nil, nil, errors.New("the phone system returned settings that could not be read")
+		return nil, nil, false, errors.New("the phone system returned settings that could not be read")
 	}
 	if len(answer.Extensions) == 0 {
-		return nil, nil, errors.New("the phone system reported no extensions")
+		return nil, nil, false, errors.New("the phone system reported no extensions")
 	}
+	// A plugin that says nothing about completeness is taken at its word.
+	complete := answer.Complete == nil || *answer.Complete
 
 	specs := bulk.Merge(bulk.Core, answer.Fields)
 	byField := make(map[bulk.Field]bulk.Spec, len(specs))
@@ -557,7 +581,7 @@ func (s *Server) extensionSettings(ctx context.Context, actor identity.Actor, cu
 		}
 		now[e.Extension] = values
 	}
-	return now, specs, nil
+	return now, specs, complete, nil
 }
 
 /*
@@ -659,43 +683,81 @@ func (s *Server) setOptions(ctx context.Context, actor identity.Actor, customer 
 	if err != nil {
 		return nil, err
 	}
-	encoded, err := json.Marshal(map[string]any{
-		"extensions": extensions,
-		"options":    settings,
-	})
-	if err != nil {
-		return nil, err
-	}
-	raw, err := s.performTool(ctx, actor, tool, encoded, &customer, fromSheet)
-	if err != nil {
-		return nil, err
-	}
-
-	var answer struct {
-		Results []struct {
-			Extension string `json:"extension"`
-			Changed   bool   `json:"changed"`
-			Reason    string `json:"reason"`
-		} `json:"results"`
-	}
-	if err := json.Unmarshal(raw, &answer); err != nil {
-		return nil, errors.New("the phone system answered in a way that could not be read")
-	}
 
 	said := make(map[string]string, len(extensions))
-	mentioned := map[string]bool{}
-	for _, r := range answer.Results {
-		mentioned[r.Extension] = true
-		if !r.Changed {
-			said[r.Extension] = reasonOr(r.Reason, "the phone system did not change it")
+	for _, batch := range inBatches(extensions, atOnce) {
+		encoded, err := json.Marshal(map[string]any{
+			"extensions": batch,
+			"options":    settings,
+		})
+		if err != nil {
+			return nil, err
 		}
-	}
-	for _, extension := range extensions {
-		if !mentioned[extension] {
-			said[extension] = "the phone system did not say what happened to it"
+		raw, err := s.performTool(ctx, actor, tool, encoded, &customer, fromSheet)
+		if err != nil {
+			// The batches before this one went through. Saying so beats
+			// reporting a clean failure for a change that half happened.
+			for _, extension := range batch {
+				said[extension] = err.Error()
+			}
+			for _, rest := range extensions {
+				if _, known := said[rest]; !known {
+					said[rest] = "not attempted, because an earlier batch failed"
+				}
+			}
+			return said, nil
+		}
+
+		var answer struct {
+			Results []struct {
+				Extension string `json:"extension"`
+				Changed   bool   `json:"changed"`
+				Reason    string `json:"reason"`
+			} `json:"results"`
+		}
+		if err := json.Unmarshal(raw, &answer); err != nil {
+			return nil, errors.New("the phone system answered in a way that could not be read")
+		}
+
+		mentioned := map[string]bool{}
+		for _, r := range answer.Results {
+			mentioned[r.Extension] = true
+			if !r.Changed {
+				said[r.Extension] = reasonOr(r.Reason, "the phone system did not change it")
+			}
+		}
+		for _, extension := range batch {
+			if !mentioned[extension] {
+				said[extension] = "the phone system did not say what happened to it"
+			}
 		}
 	}
 	return said, nil
+}
+
+/*
+atOnce is how many extensions go in one request to the phone system.
+
+The plugin refuses more than fifty, deliberately: "every extension" should not
+be something a single call can express by accident. Azir names them explicitly
+from a plan somebody approved, so the guard is not protecting it from anything
+— but removing the guard would remove it for everyone. Splitting here keeps
+both: fifty at a time, and no ceiling on how many a change can cover.
+*/
+const atOnce = 50
+
+// inBatches cuts a list into runs of at most n, keeping the order so a partly
+// applied change is a prefix rather than a scatter.
+func inBatches(all []string, n int) [][]string {
+	var out [][]string
+	for start := 0; start < len(all); start += n {
+		end := start + n
+		if end > len(all) {
+			end = len(all)
+		}
+		out = append(out, all[start:end])
+	}
+	return out
 }
 
 func reasonOr(reason, fallback string) string {

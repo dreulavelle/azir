@@ -190,27 +190,9 @@ func (s *Server) performTool(
 		return nil, err
 	}
 
-	payload, err := json.Marshal(plugin.Request{
-		CustomerID: customerRef(derefCustomer(customer)),
-		Actor:      plugin.Actor{UserID: actor.Email, Role: actor.Role},
-		Args:       args,
-	})
+	answer, err := s.askPlugin(ctx, actor, tool, args, customer)
 	if err != nil {
-		return nil, errors.New("that change could not be encoded")
-	}
-
-	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	msg, err := s.NC.RequestWithContext(callCtx, tool.Subject, payload)
-	if err != nil {
-		s.recordInvoke(ctx, actor, tool.Plugin, tool.Name, "", audit.OutcomeFailed, "approved")
-		return nil, errors.New("the connected system did not respond")
-	}
-	if code := msg.Header.Get("Nats-Service-Error-Code"); code != "" {
-		reason := msg.Header.Get("Nats-Service-Error")
-		s.recordInvoke(ctx, actor, tool.Plugin, tool.Name, "", audit.OutcomeFailed, reason)
-		return nil, errors.New(reason)
+		return nil, err
 	}
 
 	// Recorded against the person who approved it, which is the answer to
@@ -234,14 +216,93 @@ func (s *Server) performTool(
 
 	// What was just changed is stale wherever it was cached, and every open
 	// browser should be told the same way a webhook would tell them.
-	if s.Cache != nil {
-		if _, err := s.DB.InvalidateCache(ctx, tool.Plugin, tool.Name, nil); err != nil {
+	//
+	// The whole plugin, not the tool that did the writing. A write tool has no
+	// cache of its own — what has gone stale is the read that would now answer
+	// differently, which is a different tool. Invalidating only the writer left
+	// the extension list showing what it said before the change.
+	if s.Cache != nil && tool.Mutates {
+		if _, err := s.DB.InvalidateCache(ctx, tool.Plugin, "", nil); err != nil {
 			s.Log.Warn("could not invalidate after a change", "error", err)
 		}
 	}
 	s.announce("ticket")
 
+	return answer, nil
+}
+
+/*
+askPlugin makes the request and reads the answer. No gate, no audit, no cache —
+those belong to whoever is asking and differ between a read and a change.
+*/
+func (s *Server) askPlugin(
+	ctx context.Context,
+	actor identity.Actor,
+	tool registry.Tool,
+	args json.RawMessage,
+	customer *uuid.UUID,
+) (json.RawMessage, error) {
+	payload, err := json.Marshal(plugin.Request{
+		CustomerID: customerRef(derefCustomer(customer)),
+		Actor:      plugin.Actor{UserID: actor.Email, Role: actor.Role},
+		Args:       args,
+	})
+	if err != nil {
+		return nil, errors.New("that request could not be encoded")
+	}
+
+	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	msg, err := s.NC.RequestWithContext(callCtx, tool.Subject, payload)
+	if err != nil {
+		s.recordInvoke(ctx, actor, tool.Plugin, tool.Name, "", audit.OutcomeFailed, "approved")
+		return nil, errors.New("the connected system did not respond")
+	}
+	if code := msg.Header.Get("Nats-Service-Error-Code"); code != "" {
+		reason := msg.Header.Get("Nats-Service-Error")
+		s.recordInvoke(ctx, actor, tool.Plugin, tool.Name, "", audit.OutcomeFailed, reason)
+		return nil, errors.New(reason)
+	}
 	return msg.Data, nil
+}
+
+/*
+readTool answers a read, from the cache when the tool declares a freshness
+budget.
+
+Screens that read a phone system used to go through performTool, which calls
+out every single time. Reading every extension's settings off a thousand-
+extension system is twenty sequential requests to somebody's PBX, and it was
+happening on every navigation — the tool declares two minutes soft and thirty
+hard precisely so that it does not have to.
+
+A change invalidates the whole plugin, so what comes back after an edit is
+what the edit made.
+*/
+func (s *Server) readTool(
+	ctx context.Context,
+	actor identity.Actor,
+	tool registry.Tool,
+	args json.RawMessage,
+	customer *uuid.UUID,
+) (json.RawMessage, error) {
+	if err := s.mayUse(ctx, actor, tool); err != nil {
+		return nil, err
+	}
+	if s.Cache == nil {
+		return s.askPlugin(ctx, actor, tool, args, customer)
+	}
+
+	result, err := s.Cache.Do(ctx, tool, customer, args, false,
+		func(ctx context.Context) (json.RawMessage, error) {
+			return s.askPlugin(ctx, actor, tool, args, customer)
+		})
+	if err != nil {
+		return nil, err
+	}
+	s.recordInvoke(ctx, actor, tool.Plugin, tool.Name, "", audit.OutcomeOK, result.Source)
+	return result.Payload, nil
 }
 
 func derefCustomer(id *uuid.UUID) uuid.UUID {

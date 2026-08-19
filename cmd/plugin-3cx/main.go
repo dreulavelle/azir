@@ -549,7 +549,7 @@ const (
 	// thirteen to forty megabytes; a hundred leaves room for a bigger site
 	// without letting one phone system spend all the memory this process has.
 	maxBundle     = 100 << 20
-	maxExtensions = 2000
+	maxExtensions = 10000
 )
 
 // --- connection --------------------------------------------------------------

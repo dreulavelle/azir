@@ -866,6 +866,24 @@ export type BulkSpec = {
   choices?: string[];
 };
 
+/**
+ * One row of the extensions table.
+ *
+ * Deliberately small. A thousand-extension deployment is megabytes of JSON if
+ * every field comes with every row, for a screen that shows fifty at a time —
+ * the rest is what the editor asks for about one extension when it opens.
+ */
+export type ExtensionRow = {
+  extension: string;
+  name: string;
+  email: string;
+  enabled: boolean;
+  recording: boolean;
+  voicemail: boolean;
+  tunnel_blocked: boolean;
+  no_audio: boolean;
+};
+
 /** One extension as the phone system has it right now, field by field. */
 export type BulkExtension = {
   extension: string;
@@ -1018,6 +1036,33 @@ export const api = {
     request<{ edit: BulkEdit; plan: BulkPlan }>(
       `/api/bulk/chosen?customer_id=${encodeURIComponent(customerID)}`,
       { method: "POST", body: JSON.stringify({ wanted }) },
+    ),
+
+  /**
+   * A page of the extensions table, searched on the server.
+   *
+   * `complete` is false when the phone system had more extensions than it
+   * would hand over in one sweep — which the screen has to say, because a list
+   * that quietly ends is read as the whole list.
+   */
+  extensionPage: (customerID: string, q: string, limit: number, offset: number) =>
+    request<{
+      extensions: ExtensionRow[];
+      total: number;
+      all: number;
+      fields: BulkSpec[];
+      complete: boolean;
+      offset: number;
+    }>(
+      `/api/extensions?customer_id=${encodeURIComponent(customerID)}` +
+        `&q=${encodeURIComponent(q)}&limit=${limit}&offset=${offset}`,
+    ),
+
+  /** Everything about the extensions named, for the editor. */
+  extensionValues: (customerID: string, extensions: string[]) =>
+    request<{ extensions: BulkExtension[]; fields: BulkSpec[]; missing: string[] }>(
+      `/api/extensions/values?customer_id=${encodeURIComponent(customerID)}` +
+        `&extensions=${encodeURIComponent(extensions.join(","))}`,
     ),
 
   /** Applies a form's changes to one extension. */

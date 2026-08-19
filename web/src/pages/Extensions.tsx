@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   api,
   type Actor,
-  type BulkExtension,
   type BulkPlan,
   type BulkSpec,
   type Customer,
+  type ExtensionRow,
 } from "../api";
 import { CustomerSearch } from "../CustomerSearch";
 import { Dialog } from "../components";
@@ -37,13 +37,21 @@ import { Editor, type Mode } from "./extensions/Editor";
  * Every write still goes through the same gate: what changes is shown before
  * it is applied, and nothing here is ever handed to the assistant.
  */
+/** How many rows a page holds. Fifty is what fits without scrolling forever. */
+const PER_PAGE = 50;
+
 export function Extensions({ actor, go }: { actor: Actor; go?: (path: string) => void }) {
   const [customerID, setCustomerID] = useState("");
   const [customer, setCustomer] = useState<Customer | null>(null);
-  const [all, setAll] = useState<BulkExtension[] | null>(null);
+  const [rows, setRows] = useState<ExtensionRow[] | null>(null);
+  const [total, setTotal] = useState(0);
+  const [everything, setEverything] = useState(0);
+  const [complete, setComplete] = useState(true);
+  const [offset, setOffset] = useState(0);
   const [specs, setSpecs] = useState<BulkSpec[]>([]);
   const [find, setFind] = useState("");
   const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [opening, setOpening] = useState(false);
   const [mode, setMode] = useState<Mode | null>(null);
   const [plan, setPlan] = useState<{ id: string; plan: BulkPlan } | null>(null);
   const [removing, setRemoving] = useState(false);
@@ -54,27 +62,41 @@ export function Extensions({ actor, go }: { actor: Actor; go?: (path: string) =>
 
   const mayManage = actor.permissions.includes("phone.manage");
 
-  const load = useCallback(async (id: string) => {
+  const load = useCallback(async (id: string, q: string, at: number) => {
     if (!id) {
-      setAll(null);
+      setRows(null);
       return;
     }
     setProblem(null);
-    setAll(null);
     try {
-      const got = await api.extensions(id);
-      setAll(got.extensions);
+      const got = await api.extensionPage(id, q, PER_PAGE, at);
+      setRows(got.extensions);
+      setTotal(got.total);
+      setEverything(got.all);
+      setComplete(got.complete);
       setSpecs(got.fields);
     } catch (e) {
       setProblem(e instanceof Error ? e.message : "Could not read the phone system");
-      setAll([]);
+      setRows([]);
     }
   }, []);
 
+  // Debounced, because the search runs on the server now — it has to, since
+  // the browser is no longer holding the rows that do not match.
   useEffect(() => {
-    void load(customerID);
+    if (!customerID) return;
+    const timer = setTimeout(() => void load(customerID, find.trim(), offset), 200);
+    return () => clearTimeout(timer);
+  }, [customerID, find, offset, load]);
+
+  useEffect(() => {
     setPicked(new Set());
-  }, [customerID, load]);
+    setOffset(0);
+  }, [customerID]);
+
+  // A new search starts at the beginning; page three of the old results is not
+  // page three of the new ones.
+  useEffect(() => setOffset(0), [find]);
 
   // One customer is not a choice.
   useEffect(() => {
@@ -91,30 +113,58 @@ export function Extensions({ actor, go }: { actor: Actor; go?: (path: string) =>
     })();
   }, []);
 
-  const shown = useMemo(() => {
-    const needle = find.trim().toLowerCase();
-    if (!needle) return all ?? [];
-    return (all ?? []).filter(
-      (e) =>
-        e.extension.includes(needle) ||
-        e.name.toLowerCase().includes(needle) ||
-        (e.values.EmailAddress ?? "").toLowerCase().includes(needle),
-    );
-  }, [all, find]);
+  const shown = rows ?? [];
 
-  const chosen = useMemo(
-    () => (all ?? []).filter((e) => picked.has(e.extension)),
-    [all, picked],
-  );
+  /*
+   * The next free number, after the highest.
+   *
+   * Worked out from the whole list rather than the page on screen: page one of
+   * a thousand extensions has no idea what the highest number is, and a new
+   * extension numbered 151 because that is what page three ended on would
+   * collide with whatever is already there.
+   */
+  const [nextFree, setNextFree] = useState(100);
+  useEffect(() => {
+    if (!customerID) return;
+    void (async () => {
+      try {
+        const last = await api.extensionPage(customerID, "", 1, Math.max(0, everything - 1));
+        const top = Number(last.extensions[0]?.extension);
+        setNextFree(Number.isFinite(top) && top > 0 ? top + 1 : 100);
+      } catch {
+        // The form still asks for a number; it just starts somewhere useful.
+      }
+    })();
+  }, [customerID, everything]);
 
-  /** The next free number, after the highest — never filling a gap. */
-  const nextNumber = useMemo(() => {
-    const top = (all ?? []).reduce((high, e) => {
-      const n = Number(e.extension);
-      return Number.isFinite(n) && n > high ? n : high;
-    }, 0);
-    return top > 0 ? String(top + 1) : "100";
-  }, [all]);
+  /**
+   * Opens the editor, fetching what it needs first.
+   *
+   * The table holds eight fields per row; the form holds all of them. Asking
+   * for the rest of one extension when somebody opens it is what keeps a
+   * thousand-row list from being a thousand rows of everything.
+   */
+  async function open(numbers: string[]) {
+    setOpening(true);
+    setProblem(null);
+    try {
+      const got = await api.extensionValues(customerID, numbers);
+      if (got.extensions.length === 0) {
+        setProblem("Those extensions are no longer on the phone system.");
+        return;
+      }
+      setSpecs(got.fields);
+      setMode(
+        got.extensions.length === 1
+          ? { kind: "one", extension: got.extensions[0] }
+          : { kind: "together", extensions: got.extensions },
+      );
+    } catch (e) {
+      setProblem(e instanceof Error ? e.message : "Could not read those extensions");
+    } finally {
+      setOpening(false);
+    }
+  }
 
   function tick(extension: string, on: boolean) {
     setPicked((was) => {
@@ -133,7 +183,7 @@ export function Extensions({ actor, go }: { actor: Actor; go?: (path: string) =>
       await api.setExtension(customerID, number, draft);
       toast(`Extension ${number} saved`, { tone: "good" });
       setMode(null);
-      await load(customerID);
+      await load(customerID, find.trim(), offset);
     } catch (e) {
       setEditorProblem(e instanceof Error ? e.message : "Could not save that");
     } finally {
@@ -142,12 +192,12 @@ export function Extensions({ actor, go }: { actor: Actor; go?: (path: string) =>
   }
 
   /** Editing several goes through the before-and-after, as it always has. */
-  async function reviewMany(draft: Record<string, string>) {
+  async function reviewMany(draft: Record<string, string>, numbers: string[]) {
     setBusy(true);
     setEditorProblem(null);
     try {
       const wanted: Record<string, Record<string, string>> = {};
-      for (const e of chosen) wanted[e.extension] = draft;
+      for (const number of numbers) wanted[number] = draft;
       const got = await api.planChosen(customerID, wanted);
       setMode(null);
       setPlan({ id: got.edit.id, plan: got.plan });
@@ -165,7 +215,7 @@ export function Extensions({ actor, go }: { actor: Actor; go?: (path: string) =>
       await api.createExtension(customerID, number, draft);
       toast(`Extension ${number} created`, { tone: "good" });
       setMode(null);
-      await load(customerID);
+      await load(customerID, find.trim(), offset);
     } catch (e) {
       setEditorProblem(e instanceof Error ? e.message : "Could not create that");
     } finally {
@@ -184,7 +234,7 @@ export function Extensions({ actor, go }: { actor: Actor; go?: (path: string) =>
       );
       setPlan(null);
       setPicked(new Set());
-      await load(customerID);
+      await load(customerID, find.trim(), offset);
     } catch (e) {
       setProblem(e instanceof Error ? e.message : "Could not apply");
     } finally {
@@ -199,7 +249,7 @@ export function Extensions({ actor, go }: { actor: Actor; go?: (path: string) =>
       toast(`Removed ${picked.size}`, { tone: "good" });
       setRemoving(false);
       setPicked(new Set());
-      await load(customerID);
+      await load(customerID, find.trim(), offset);
     } catch (e) {
       setProblem(e instanceof Error ? e.message : "Could not remove those");
       setRemoving(false);
@@ -241,6 +291,13 @@ export function Extensions({ actor, go }: { actor: Actor; go?: (path: string) =>
         </div>
       )}
 
+      {!complete && (
+        <p className="mt-4 rounded-lg border border-attention/30 bg-attention/10 px-3.5 py-2.5 text-sm text-attention">
+          This phone system has more extensions than Azir will read in one go. What is below is not
+          all of them — search for the one you want rather than working from the list.
+        </p>
+      )}
+
       <Panel className="mt-5">
         <div className="flex flex-wrap items-end gap-3 px-4 py-4">
           <div className="flex min-w-[260px] flex-col gap-1.5">
@@ -265,7 +322,7 @@ export function Extensions({ actor, go }: { actor: Actor; go?: (path: string) =>
               />
             </div>
           )}
-          {customerID && all && (
+          {customerID && rows && (
             <Button weight="primary" onClick={() => setMode({ kind: "new" })}>
               <Icon.plus />
               New extension
@@ -285,8 +342,8 @@ export function Extensions({ actor, go }: { actor: Actor; go?: (path: string) =>
               </button>
             </span>
             <div className="flex gap-2">
-              <Button onClick={() => setMode({ kind: "together", extensions: chosen })}>
-                Edit together
+              <Button disabled={opening} onClick={() => void open([...picked])}>
+                {opening ? "Opening…" : "Edit together"}
               </Button>
               <Button onClick={() => setRemoving(true)}>Remove</Button>
             </div>
@@ -299,9 +356,9 @@ export function Extensions({ actor, go }: { actor: Actor; go?: (path: string) =>
           </div>
         )}
 
-        {customerID && !all && <div className="m-4 h-64 animate-pulse rounded-lg bg-sunken" />}
+        {customerID && !rows && <div className="m-4 h-64 animate-pulse rounded-lg bg-sunken" />}
 
-        {customerID && all && (
+        {customerID && rows && (
           <div className="overflow-x-auto border-t border-edge">
             <table className="w-full border-collapse text-sm">
               <thead>
@@ -342,12 +399,14 @@ export function Extensions({ actor, go }: { actor: Actor; go?: (path: string) =>
                     <td className="font-medium">
                       {e.name || <span className="italic text-ink-faint">unnamed</span>}
                     </td>
-                    <td className="text-ink-dim">{e.values.EmailAddress || "—"}</td>
+                    <td className="text-ink-dim">{e.email || "—"}</td>
                     <td>
-                      <Marks values={e.values} enabled={e.enabled} />
+                      <Marks row={e} />
                     </td>
                     <td className="text-right">
-                      <Button onClick={() => setMode({ kind: "one", extension: e })}>Edit</Button>
+                      <Button disabled={opening} onClick={() => void open([e.extension])}>
+                        Edit
+                      </Button>
                     </td>
                   </tr>
                 ))}
@@ -365,12 +424,15 @@ export function Extensions({ actor, go }: { actor: Actor; go?: (path: string) =>
           </div>
         )}
 
-        {customerID && all && shown.length > 0 && (
-          <div className="border-t border-edge px-4 py-2.5 text-xs text-ink-faint">
-            {shown.length === all.length
-              ? `${all.length} extensions`
-              : `${shown.length} of ${all.length}`}
-          </div>
+        {customerID && rows && (
+          <Pages
+            offset={offset}
+            shown={shown.length}
+            total={total}
+            everything={everything}
+            searching={find.trim() !== ""}
+            onGo={setOffset}
+          />
         )}
       </Panel>
 
@@ -381,14 +443,15 @@ export function Extensions({ actor, go }: { actor: Actor; go?: (path: string) =>
           customer={customer?.display_name ?? "this customer"}
           busy={busy}
           problem={editorProblem}
-          nextNumber={nextNumber}
+          nextNumber={String(nextFree)}
           onClose={() => {
             setMode(null);
             setEditorProblem(null);
           }}
           onSave={(draft, number) => {
             if (mode.kind === "one") void saveOne(mode.extension.extension, draft);
-            else if (mode.kind === "together") void reviewMany(draft);
+            else if (mode.kind === "together")
+              void reviewMany(draft, mode.extensions.map((e) => e.extension));
             else void create(draft, number);
           }}
         />
@@ -486,16 +549,14 @@ export function Extensions({ actor, go }: { actor: Actor; go?: (path: string) =>
  * scans a list for is "which of these is set up differently", and a mark that
  * is only there when it is true answers that without being counted.
  */
-function Marks({ values, enabled }: { values: Record<string, string>; enabled: boolean }) {
+function Marks({ row }: { row: ExtensionRow }) {
   const marks: { label: string; tone: "good" | "warn" | "urgent" | "accent" | ""; title: string }[] = [];
-  if (!enabled) marks.push({ label: "off", tone: "urgent", title: "This extension is disabled" });
-  if (values.RecordCalls === "yes")
-    marks.push({ label: "rec", tone: "accent", title: "Calls are recorded" });
-  if (values.VMEnabled === "yes")
-    marks.push({ label: "vm", tone: "", title: "Voicemail is on" });
-  if (values.BlockTunnel === "yes")
+  if (!row.enabled) marks.push({ label: "off", tone: "urgent", title: "This extension is disabled" });
+  if (row.recording) marks.push({ label: "rec", tone: "accent", title: "Calls are recorded" });
+  if (row.voicemail) marks.push({ label: "vm", tone: "", title: "Voicemail is on" });
+  if (row.tunnel_blocked)
     marks.push({ label: "tunnel", tone: "warn", title: "Blocking remote non-tunnel connections" });
-  if (values.PbxDeliversAudio === "no")
+  if (row.no_audio)
     marks.push({ label: "no audio", tone: "warn", title: "The PBX does not deliver audio" });
 
   if (marks.length === 0) return <span className="text-xs text-ink-faint">—</span>;
@@ -507,5 +568,50 @@ function Marks({ values, enabled }: { values: Record<string, string>; enabled: b
         </span>
       ))}
     </span>
+  );
+}
+
+/**
+ * Where you are in the list, and how to move.
+ *
+ * Numbers rather than "load more", because the question on a thousand-
+ * extension system is "how many are there" as often as it is "show me the
+ * next few", and an endless list never answers the first one.
+ */
+function Pages({
+  offset,
+  shown,
+  total,
+  everything,
+  searching,
+  onGo,
+}: {
+  offset: number;
+  shown: number;
+  total: number;
+  everything: number;
+  searching: boolean;
+  onGo: (next: number) => void;
+}) {
+  const from = total === 0 ? 0 : offset + 1;
+  const to = offset + shown;
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 border-t border-edge px-4 py-2.5">
+      <span className="text-xs text-ink-faint">
+        {total === 0
+          ? "Nothing to show"
+          : `${from}–${to} of ${total}${searching ? ` matching, out of ${everything}` : ""}`}
+      </span>
+      {total > shown && (
+        <div className="flex gap-2">
+          <Button disabled={offset === 0} onClick={() => onGo(Math.max(0, offset - PER_PAGE))}>
+            Back
+          </Button>
+          <Button disabled={to >= total} onClick={() => onGo(offset + PER_PAGE)}>
+            Next
+          </Button>
+        </div>
+      )}
+    </div>
   );
 }
