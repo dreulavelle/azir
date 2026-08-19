@@ -1,6 +1,6 @@
-# One image, one process tree. Core embeds NATS with JetStream, SQLite, the
-# HTTP API and the built frontend; bundled plugins run as supervised children.
-# Nothing else needs deploying.
+# One image, one process tree. Core embeds NATS with JetStream, the HTTP API
+# and the built frontend; bundled plugins run as supervised children. The one
+# thing outside it is Postgres, which is where pgvector lives.
 
 ARG GO_VERSION=1.26
 ARG NODE_VERSION=24
@@ -11,8 +11,10 @@ FROM node:${NODE_VERSION}-alpine AS web
 WORKDIR /web
 
 # Manifest first so source edits do not invalidate the dependency layer.
-COPY web/package.json ./
-RUN npm install --no-audit --no-fund
+# ci, not install: the lockfile decides what goes in, so the image is built
+# from the versions that were tested rather than whatever resolves today.
+COPY web/package.json web/package-lock.json ./
+RUN npm ci --no-audit --no-fund
 
 COPY web/ ./
 RUN npm run build
@@ -29,8 +31,8 @@ COPY . .
 # directory to lose and no second origin to authorise.
 COPY --from=web /web/dist ./web/dist
 
-# CGO off: modernc.org/sqlite is pure Go, so the result is a static binary and
-# the runtime image needs no C library.
+# CGO off: nothing here needs cgo, so the result is a static binary and the
+# runtime image needs no C library.
 ENV CGO_ENABLED=0
 RUN go build -trimpath -ldflags="-s -w" -o /out/azir ./cmd/azir-core \
  && mkdir -p /out/plugins \
@@ -48,7 +50,8 @@ RUN apk add --no-cache ca-certificates tzdata wget \
 COPY --from=build /out/azir /usr/local/bin/azir
 COPY --from=build /out/plugins/ /usr/local/lib/azir/plugins/
 
-# SQLite and JetStream both live here; it is the only thing worth backing up.
+# JetStream lives here; with Postgres holding the rest, it is what a restart
+# needs to find where it left off.
 RUN mkdir -p /var/lib/azir && chown -R azir:azir /var/lib/azir
 VOLUME /var/lib/azir
 
