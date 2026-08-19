@@ -943,13 +943,82 @@ func (c pbx) patch(ctx context.Context, path string, body any) error {
 		return plugin.Errorf("404", "that no longer exists on this phone system")
 	case res.StatusCode >= 400:
 		raw, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
-		detail := strings.TrimSpace(string(raw))
-		if len(detail) > 200 {
-			detail = detail[:200]
-		}
-		return plugin.Errorf("400", "the phone system would not accept that change: %s", detail)
+		return plugin.Errorf("400", "%s", refusal(raw))
 	}
 	return nil
+}
+
+/*
+refusal turns 3CX's error envelope into a sentence.
+
+The envelope is JSON wrapping a constant, and until this existed it went
+through to the screen whole:
+
+	the phone system would not accept that change:
+	{"error":{"code":"","message":"EmailAddress:\nWARNINGS.XAPI.ALREADY_IN_USE",…}}
+
+which names the field and the reason and manages to say neither. The two facts
+worth having — which setting it was and what was wrong with it — are both in
+there, so they are pulled out and the rest is dropped.
+
+Anything this does not recognise is passed through trimmed rather than replaced
+with something vague. A message nobody can read still beats one that says only
+that something went wrong.
+*/
+func refusal(raw []byte) string {
+	var envelope struct {
+		Error struct {
+			Message string `json:"message"`
+			Details []struct {
+				Message string `json:"message"`
+				Target  string `json:"target"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+
+	detail := strings.TrimSpace(string(raw))
+	if err := json.Unmarshal(raw, &envelope); err == nil && envelope.Error.Message != "" {
+		// The details carry the field on its own, where the message has it
+		// glued to the reason with a newline.
+		field, reason := "", envelope.Error.Message
+		if len(envelope.Error.Details) > 0 {
+			field = envelope.Error.Details[0].Target
+			reason = envelope.Error.Details[0].Message
+		}
+		if before, after, found := strings.Cut(reason, "\n"); found {
+			if field == "" {
+				field = strings.TrimSuffix(strings.TrimSpace(before), ":")
+			}
+			reason = strings.TrimSpace(after)
+		}
+		return said(field, strings.TrimSpace(reason))
+	}
+
+	if len(detail) > 200 {
+		detail = detail[:200]
+	}
+	return "the phone system would not accept that change: " + detail
+}
+
+// said puts 3CX's constants into English. The ones a bulk edit actually runs
+// into; anything else keeps the constant, which is at least searchable.
+func said(field, reason string) string {
+	what := "that setting"
+	if spec, known := editableByName[field]; known {
+		what = spec.Label
+	} else if field != "" {
+		what = field
+	}
+
+	switch {
+	case strings.Contains(reason, "ALREADY_IN_USE"):
+		return fmt.Sprintf("another extension already uses that %s", strings.ToLower(what))
+	case strings.Contains(reason, "INVALID"):
+		return fmt.Sprintf("the phone system would not take that %s", strings.ToLower(what))
+	case reason == "":
+		return fmt.Sprintf("the phone system would not accept the %s", strings.ToLower(what))
+	}
+	return fmt.Sprintf("%s: %s", what, reason)
 }
 
 // findExtension resolves an extension number to the internal id a change needs.

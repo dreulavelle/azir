@@ -1,13 +1,29 @@
 name: ci
 
+# Pushes to main and every pull request. Not every branch push: a branch with
+# no pull request open is somebody still working, and building a container
+# image for each of those is what turned a month's minutes into nothing.
 on:
   push:
     branches: [main]
+    paths-ignore: ["**.md", "docs/**", "LICENSE"]
   pull_request:
+    paths-ignore: ["**.md", "docs/**", "LICENSE"]
+
+# One run per branch. Pushing five times in ten minutes used to start five full
+# runs and let all five finish, which is five times the cost of the only answer
+# anybody was waiting for — the last one.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   go:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v5
@@ -47,6 +63,7 @@ jobs:
 
   web:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: web
@@ -55,15 +72,34 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: "24"
-      - run: npm install
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      # ci, not install: the lockfile is committed and a build that quietly
+      # resolves something else is a build that proves nothing about what ships.
+      - run: npm ci
       - run: npm run typecheck
       - run: npm run build
 
   image:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Layers are cached between runs, so a change to one Go file no longer
+      # redownloads every dependency and rebuilds the frontend from nothing.
+      # Loaded rather than pushed: this job proves the image works, and
+      # publishing one is a release's job, not every commit's.
       - name: build the single image
-        run: docker build -t azir:ci .
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: azir:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
       - name: it starts, serves the ui, and supervises its plugins
         run: ./scripts/ci-image-check.sh azir:ci

@@ -128,7 +128,7 @@ One list, because everything reading this is asking the same question — what
 can be changed — and the answer should not depend on where the phone system
 happens to keep it.
 */
-func settable(roles []string) []option {
+func settable(roles []string, roleLabels map[string]string) []published {
 	all := make([]option, 0, len(editable)+len(forwardingFields)+2)
 	all = append(all, editable...)
 	all = append(all, forwardingFields...)
@@ -141,7 +141,48 @@ func settable(roles []string) []option {
 		option{fieldRole, "Role", "choice", "General", roles},
 	)
 	all = append(all, handsetFields...)
-	return all
+
+	out := make([]published, 0, len(all))
+	for _, o := range all {
+		entry := published{option: o, Unique: uniquePerExtension[o.Field]}
+		if o.Field == fieldRole {
+			entry.Labels = roleLabels
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+/*
+published is an option on its way out to Azir: the table entry above, plus the
+two things that are true of a field's use rather than of the field.
+
+Embedded rather than added as columns to the table, which is fifty lines long
+and stays readable precisely because every row says the same five things.
+*/
+type published struct {
+	option
+	// Labels is what to show for each choice where the stored value is not
+	// something to put in front of a person — "system_owners" is a role, but
+	// it is not what anybody calls it.
+	Labels map[string]string `json:"labels,omitempty"`
+	// Unique marks a field no two extensions may share.
+	Unique bool `json:"unique,omitempty"`
+}
+
+/*
+uniquePerExtension is the fields 3CX will not let two extensions share.
+
+Published so that Azir can refuse the edit rather than discover it: setting one
+address across five extensions is refused four times by the phone system, once
+per extension, and only after the first has already been written. There is no
+undoing that from the error.
+
+An email address is the one so far. A mobile number is not — 3CX takes the same
+one on every extension, which is what a shared on-call phone is.
+*/
+var uniquePerExtension = map[string]bool{
+	"EmailAddress": true,
 }
 
 // editableByName is the same list as an allowlist to check against.
@@ -462,9 +503,10 @@ func extensionSettings(ctx context.Context, req plugin.Request) (any, error) {
 	// The field list travels with the values, so whatever reads this can offer
 	// them as columns or as a form without keeping its own copy of what 3CX
 	// will accept.
+	roles, roleLabels := rolesAvailable(ctx, conn, rolesInUse(everyRow))
 	return map[string]any{
 		"extensions": out, "count": len(out),
-		"fields": settable(rolesInUse(everyRow)), "complete": complete,
+		"fields": settable(roles, roleLabels), "complete": complete,
 	}, nil
 }
 
