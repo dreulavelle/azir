@@ -1,6 +1,8 @@
 package bulk
 
 import (
+	"encoding/csv"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -334,5 +336,138 @@ func TestEditsAndCreationsAreShownApart(t *testing.T) {
 	}
 	if !plan.Rows[1].Creates() {
 		t.Error("creations do not follow the edits")
+	}
+}
+
+/*
+The sheet Azir writes is one Azir can read back.
+
+Three lists have to agree for the round trip to work: the headers written into
+the starting sheet, the words Suggest looks for, and the column numbers
+CanonicalMapping assumes. Nothing else compares them, and when they drift the
+failure is quiet — the download works, the upload works, and the mapping
+dropdowns come back empty with no reason given.
+
+This is the third bug of this exact shape in this codebase. The other two were
+permission labels and audit action names.
+*/
+func TestAzirCanReadTheSheetItWrites(t *testing.T) {
+	columns := SheetColumns()
+	guessed := Suggest(columns)
+	want := CanonicalMapping()
+
+	if guessed.Extension != want.Extension {
+		t.Errorf("Suggest put the extension column at %d, CanonicalMapping says %d",
+			guessed.Extension, want.Extension)
+	}
+	for field, col := range want.Fields {
+		got, mapped := guessed.Fields[field]
+		if !mapped {
+			t.Errorf("Suggest does not recognise %q, the header Azir writes for %s",
+				columns[col], field)
+			continue
+		}
+		if got != col {
+			t.Errorf("Suggest put %s at column %d, CanonicalMapping says %d", field, got, col)
+		}
+	}
+	if len(guessed.Fields) != len(want.Fields) {
+		t.Errorf("Suggest mapped %d fields, CanonicalMapping has %d",
+			len(guessed.Fields), len(want.Fields))
+	}
+}
+
+// Line has a switch over the fields; a new one added to Editable and forgotten
+// there would write a short row, silently shifting every column after it.
+func TestLineFillsEveryColumn(t *testing.T) {
+	line := Line("100", Values{Name: "Reception", Enabled: true})
+	if len(line) != len(SheetColumns()) {
+		t.Fatalf("Line wrote %d cells for %d columns", len(line), len(SheetColumns()))
+	}
+	for i, cell := range line {
+		if cell == "" {
+			t.Errorf("Line left %q empty, so a field is missing from its switch",
+				SheetColumns()[i])
+		}
+	}
+}
+
+// A sheet Azir wrote, parsed back, is the same sheet. The BOM and delimiter
+// handling in Parse make this less obvious than it sounds.
+func TestTheRoundTripSurvivesParsing(t *testing.T) {
+	var out strings.Builder
+	sheet := csv.NewWriter(&out)
+	if err := sheet.Write(SheetColumns()); err != nil {
+		t.Fatal(err)
+	}
+	if err := sheet.Write(Line("100", Values{Name: "Dreu Lavelle", Enabled: true})); err != nil {
+		t.Fatal(err)
+	}
+	if err := sheet.Write(Line("101", Values{Name: "Front Desk", Enabled: false})); err != nil {
+		t.Fatal(err)
+	}
+	sheet.Flush()
+
+	parsed, err := Parse(strings.NewReader(out.String()))
+	if err != nil {
+		t.Fatalf("Azir could not parse its own sheet: %v", err)
+	}
+
+	now := Current{
+		"100": {Name: "Dreu Lavelle", Enabled: true},
+		"101": {Name: "Front Desk", Enabled: false},
+	}
+	plan, err := Build(parsed, Suggest(parsed.Columns), now)
+	if err != nil {
+		t.Fatalf("building from Azir's own sheet: %v", err)
+	}
+	// Downloaded and uploaded unedited, nothing should change.
+	if plan.Changing != 0 || plan.Skipped != 0 {
+		t.Errorf("an unedited round trip proposed %d changes and skipped %d; want none of either",
+			plan.Changing, plan.Skipped)
+	}
+	if plan.Unchanged != 2 {
+		t.Errorf("unchanged = %d, want 2", plan.Unchanged)
+	}
+}
+
+/*
+A sheet with no rows encodes as an empty list, not as null.
+
+The undo of a sheet that only created extensions has nothing to put back, so
+its sheet is genuinely empty. Encoded as null it reached the console as a value
+nothing could iterate, and the screen listing recent sheets crashed on a row
+already in the database — a crash no amount of testing the endpoints would have
+found, because the JSON was well-formed and the failure was in reading it.
+*/
+func TestEmptySheetsAndPlansEncodeAsLists(t *testing.T) {
+	sheet, err := json.Marshal(Sheet{Columns: SheetColumns()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(sheet), `"rows":[]`) {
+		t.Errorf("an empty sheet encoded as %s; want rows as []", sheet)
+	}
+
+	plan, err := json.Marshal(Plan{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(plan), `"rows":[]`) {
+		t.Errorf("an empty plan encoded as %s; want rows as []", plan)
+	}
+
+	// And the round trip still works, so the local-type trick has not quietly
+	// dropped a field.
+	full, err := json.Marshal(Sheet{Columns: []string{"Extension"}, Rows: [][]string{{"100"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back Sheet
+	if err := json.Unmarshal(full, &back); err != nil {
+		t.Fatal(err)
+	}
+	if len(back.Rows) != 1 || back.Cell(0, 0) != "100" {
+		t.Errorf("round trip lost the rows: %s -> %+v", full, back)
 	}
 }

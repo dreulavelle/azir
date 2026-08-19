@@ -1,6 +1,7 @@
 package bulk
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -38,6 +39,56 @@ var Editable = []struct {
 }{
 	{FieldName, "Display name"},
 	{FieldEnabled, "Enabled"},
+}
+
+/*
+SheetColumns is the header row Azir writes, and the one it hopes to get back.
+
+Everywhere Azir hands somebody a sheet — the starting list they download, the
+undo built from an applied plan — it writes these headers, and Suggest
+recognises every one of them. That round trip is the point: download, edit in
+Excel, upload, and the columns map themselves.
+
+Derived from Editable rather than written out, so a new field appears in the
+download, in the mapping, and in the diff together. The three used to be three
+separate lists.
+*/
+func SheetColumns() []string {
+	columns := make([]string, 0, len(Editable)+1)
+	columns = append(columns, "Extension")
+	for _, e := range Editable {
+		columns = append(columns, e.Label)
+	}
+	return columns
+}
+
+// CanonicalMapping is what SheetColumns maps to, for the sheets Azir writes
+// itself and does not need to guess at.
+func CanonicalMapping() Mapping {
+	m := Mapping{Extension: 0, Fields: make(map[Field]int, len(Editable))}
+	for i, e := range Editable {
+		m.Fields[e.Field] = i + 1
+	}
+	return m
+}
+
+// Line renders one extension as a row under SheetColumns.
+func Line(extension string, v Values) []string {
+	line := make([]string, 0, len(Editable)+1)
+	line = append(line, extension)
+	for _, e := range Editable {
+		switch e.Field {
+		case FieldName:
+			line = append(line, v.Name)
+		case FieldEnabled:
+			line = append(line, said(v.Enabled))
+		default:
+			// Unreachable while Editable and this switch agree, which is what
+			// TestLineFillsEveryColumn is for.
+			line = append(line, "")
+		}
+	}
+	return line
 }
 
 // Mapping says which sheet column carries which thing. The key column is the
@@ -81,6 +132,10 @@ type Row struct {
 	Changes   []Change `json:"changes,omitempty"`
 	// New marks a row that does not exist yet and would be created.
 	New bool `json:"new,omitempty"`
+	// Gone marks a row that would remove an extension. Only an undo makes
+	// these: a sheet has no way to say "delete this", and giving it one would
+	// mean a stray column could take a business's phones off the air.
+	Gone bool `json:"gone,omitempty"`
 	// Wanted is what a new extension would be called.
 	Wanted string `json:"wanted,omitempty"`
 	// Problem explains why a row will be skipped: no such extension, an
@@ -94,14 +149,29 @@ func (r Row) Changed() bool { return r.Problem == "" && !r.New && len(r.Changes)
 // Creates reports whether this row would make a new extension.
 func (r Row) Creates() bool { return r.Problem == "" && r.New }
 
+// Removes reports whether this row would delete an extension.
+func (r Row) Removes() bool { return r.Problem == "" && r.Gone }
+
 // Plan is the whole before-and-after, as reviewed and as applied.
 type Plan struct {
 	Rows []Row `json:"rows"`
 	// Counts, so the screen and the confirmation agree without recounting.
 	Changing  int `json:"changing"`
 	Creating  int `json:"creating"`
+	Removing  int `json:"removing"`
 	Unchanged int `json:"unchanged"`
 	Skipped   int `json:"skipped"`
+}
+
+// MarshalJSON writes the rows as an empty list rather than as null, for the
+// same reason Sheet does: a plan with nothing in it is a plan, and the screen
+// that draws one iterates its rows.
+func (p Plan) MarshalJSON() ([]byte, error) {
+	type plain Plan
+	if p.Rows == nil {
+		p.Rows = []Row{}
+	}
+	return json.Marshal(plain(p))
 }
 
 /*
@@ -203,10 +273,16 @@ func Build(sheet Sheet, mapping Mapping, now Current) (Plan, error) {
 		plan.Rows = append(plan.Rows, row)
 	}
 
-	sort.SliceStable(plan.Rows, func(a, b int) bool {
-		return order(plan.Rows[a]) < order(plan.Rows[b])
-	})
+	plan.Sort()
 	return plan, nil
+}
+
+// Sort puts the rows in the order somebody reviews them in. Exported because
+// an undo appends its removals after Build has run.
+func (p *Plan) Sort() {
+	sort.SliceStable(p.Rows, func(a, b int) bool {
+		return order(p.Rows[a]) < order(p.Rows[b])
+	})
 }
 
 // order puts the rows that do something first, then the problems, then the
@@ -218,12 +294,16 @@ func order(r Row) int {
 	switch {
 	case r.Changed():
 		return 0
-	case r.Creates():
+	case r.Removes():
+		// Above the creates because a removal is the row most worth reading
+		// twice, and the only one that cannot be undone by running this again.
 		return 1
-	case r.Problem != "":
+	case r.Creates():
 		return 2
-	default:
+	case r.Problem != "":
 		return 3
+	default:
+		return 4
 	}
 }
 

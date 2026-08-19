@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import {
+  Download,
   AtSign,
   Building2,
   Check,
@@ -55,6 +56,7 @@ export const Icon = {
   business: () => <Building2 className="size-3.5" />,
   phone: () => <Phone className="size-3.5" />,
   mail: () => <AtSign className="size-3.5" />,
+  download: () => <Download className="size-3.5" />,
 };
 
 // --- the design language -----------------------------------------------------
@@ -251,8 +253,11 @@ export function Button({
   weight?: "primary" | "standing" | "quiet";
 }) {
   const WEIGHT = {
+    // Laid out the same way as "standing", which sits next to it constantly.
+    // Without the flex, a primary button given an icon drew the icon and the
+    // label on top of each other.
     primary:
-      "h-8 rounded-md bg-azir px-3.5 text-sm font-medium text-azir-ink transition-opacity hover:opacity-90 disabled:opacity-50",
+      "flex h-8 items-center gap-1.5 rounded-md bg-azir px-3.5 text-sm font-medium text-azir-ink transition-opacity hover:opacity-90 disabled:opacity-50",
     standing:
       "flex h-8 items-center gap-1.5 rounded-md border border-edge bg-panel px-3 text-sm font-medium transition-colors hover:bg-sunken disabled:opacity-50",
     quiet:

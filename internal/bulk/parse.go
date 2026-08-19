@@ -10,6 +10,7 @@ package bulk
 
 import (
 	"encoding/csv"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -28,6 +29,27 @@ const (
 type Sheet struct {
 	Columns []string   `json:"columns"`
 	Rows    [][]string `json:"rows"`
+}
+
+/*
+MarshalJSON writes the lists as empty rather than as null.
+
+A sheet with no rows is a real thing: the undo of a sheet that only created
+extensions has nothing to put back, only things to remove. Encoded as null it
+reached the console as a value nothing could iterate, and the list of recent
+sheets crashed on a row already in the database. Fixed where the value is
+written rather than at each of the places it is read.
+*/
+func (s Sheet) MarshalJSON() ([]byte, error) {
+	// A local type so marshalling does not recurse into this method.
+	type plain Sheet
+	if s.Rows == nil {
+		s.Rows = [][]string{}
+	}
+	if s.Columns == nil {
+		s.Columns = []string{}
+	}
+	return json.Marshal(plain(s))
 }
 
 // Cell returns one value by column index, or empty when the row is short.

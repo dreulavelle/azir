@@ -203,7 +203,12 @@ func (s *Server) Routes() http.Handler {
 		s.require(identity.PermPhoneManage, ignoreActor(s.listBulk)))
 	mux.HandleFunc("GET /api/bulk/{id}",
 		s.require(identity.PermPhoneManage, ignoreActor(s.getBulk)))
+	mux.HandleFunc("GET /api/bulk/extensions",
+		s.require(identity.PermPhoneManage, s.listExtensions))
+	mux.HandleFunc("GET /api/bulk/starting-sheet",
+		s.require(identity.PermPhoneManage, s.startingSheet))
 	mux.HandleFunc("POST /api/bulk", s.require(identity.PermPhoneManage, s.uploadBulk))
+	mux.HandleFunc("POST /api/bulk/chosen", s.require(identity.PermPhoneManage, s.planChosen))
 	mux.HandleFunc("POST /api/bulk/{id}/plan", s.require(identity.PermPhoneManage, s.planBulk))
 	mux.HandleFunc("POST /api/bulk/{id}/apply", s.require(identity.PermPhoneManage, s.applyBulk))
 	mux.HandleFunc("POST /api/bulk/{id}/cancel", s.require(identity.PermPhoneManage, s.cancelBulk))

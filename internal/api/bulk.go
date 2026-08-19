@@ -2,10 +2,14 @@ package api
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -186,7 +190,12 @@ type applied struct {
 	Extension string `json:"extension"`
 	OK        bool   `json:"ok"`
 	New       bool   `json:"new,omitempty"`
-	Problem   string `json:"problem,omitempty"`
+	Gone      bool   `json:"gone,omitempty"`
+	// Left marks a row somebody unticked before approving. Recorded rather
+	// than dropped: "we left that one alone" and "that one never came up" look
+	// identical afterwards otherwise.
+	Left    bool   `json:"left,omitempty"`
+	Problem string `json:"problem,omitempty"`
 }
 
 /*
@@ -213,6 +222,10 @@ func (s *Server) applyBulk(w http.ResponseWriter, r *http.Request, actor identit
 
 	var body struct {
 		Confirm string `json:"confirm"`
+		// Skip is the extensions somebody unticked in the before-and-after.
+		// A plan is what was compared; this is what they chose to do about
+		// it, which is not always all of it.
+		Skip []string `json:"skip"`
 	}
 	if err := decode(r, &body); err != nil {
 		writeJSON(w, http.StatusBadRequest, errBody("invalid json body"))
@@ -230,10 +243,28 @@ func (s *Server) applyBulk(w http.ResponseWriter, r *http.Request, actor identit
 		return
 	}
 
-	results := make([]applied, 0, plan.Changing+plan.Creating)
-	var done, made, failed int
+	left := make(map[string]bool, len(body.Skip))
+	for _, extension := range body.Skip {
+		left[extension] = true
+	}
+
+	results := make([]applied, 0, plan.Changing+plan.Creating+plan.Removing)
+	var done, made, gone, gaveUp, failed int
 	for _, row := range plan.Rows {
+		if left[row.Extension] && (row.Changed() || row.Creates() || row.Removes()) {
+			results = append(results, applied{Extension: row.Extension, Left: true})
+			gaveUp++
+			continue
+		}
 		switch {
+		case row.Removes():
+			if err := s.removeRow(r.Context(), actor, edit.CustomerID, row); err != nil {
+				results = append(results, applied{Extension: row.Extension, Gone: true, Problem: err.Error()})
+				failed++
+				continue
+			}
+			results = append(results, applied{Extension: row.Extension, Gone: true, OK: true})
+			gone++
 		case row.Changed():
 			if err := s.applyRow(r.Context(), actor, edit.CustomerID, row); err != nil {
 				results = append(results, applied{Extension: row.Extension, Problem: err.Error()})
@@ -274,13 +305,14 @@ func (s *Server) applyBulk(w http.ResponseWriter, r *http.Request, actor identit
 		Action:      "bulk.apply",
 		Outcome:     audit.OutcomeOK,
 		CustomerID:  &customerID,
-		Detail: fmt.Sprintf("%s: %d changed, %d created, %d failed",
-			edit.Filename, done, made, failed),
+		Detail: fmt.Sprintf("%s: %d changed, %d created, %d removed, %d left alone, %d failed",
+			edit.Filename, done, made, gone, gaveUp, failed),
 	})
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"edit": saved, "results": results,
-		"changed": done, "created": made, "failed": failed,
+		"changed": done, "created": made, "removed": gone,
+		"left": gaveUp, "failed": failed,
 	})
 }
 
@@ -455,16 +487,17 @@ The before values are already recorded — they are what somebody approved — s
 undoing is a sheet whose after is the old before. What matters is that it goes
 back through the same comparison rather than being applied straight: if a
 technician has changed one of those extensions since, the revert shows that as
-a change it would make, and they can decline that row instead of quietly
+a change it would make, and they can untick that row instead of quietly
 overwriting somebody's work.
+
+Extensions this created are removed, because "did not exist" is what they were
+before and half an undo is worse than none. Their rows are built from what the
+phone system says now, not from what the sheet made, so one that has since been
+named and set up reads as a removal of that — visible, and declinable, next to
+everything else.
 
 Only the rows that actually went through. A row that failed changed nothing and
 has nothing to put back.
-
-Extensions this created are not removed. Deleting is a different power to the
-one that made them, and taking it on the way past — inside an undo, on rows
-somebody may already have configured — is not a decision to make quietly. They
-are listed as created so nobody assumes otherwise.
 */
 func (s *Server) revertBulk(w http.ResponseWriter, r *http.Request, actor identity.Actor) {
 	edit, ok := s.bulkEdit(w, r)
@@ -483,33 +516,39 @@ func (s *Server) revertBulk(w http.ResponseWriter, r *http.Request, actor identi
 	}
 	var outcome []applied
 	_ = json.Unmarshal(edit.Outcome, &outcome)
-	went := map[string]bool{}
+	went, made := map[string]bool{}, map[string]bool{}
 	for _, o := range outcome {
-		if o.OK && !o.New {
+		switch {
+		case !o.OK:
+		case o.New:
+			made[o.Extension] = true
+		case o.Gone:
+			// Undoing a deletion would mean recreating it, and what came back
+			// would be a number with a name on it rather than the extension
+			// that was there. Not offered.
+		default:
 			went[o.Extension] = true
 		}
 	}
 
 	// The undo, as a sheet: the values these extensions had before.
-	undo := bulk.Sheet{Columns: []string{"Extension", "Display name", "Enabled"}}
+	undo := bulk.Sheet{Columns: bulk.SheetColumns()}
 	for _, row := range plan.Rows {
 		if !row.Changed() || !went[row.Extension] {
 			continue
 		}
-		name, enabled := "", ""
+		was := bulk.Values{}
 		for _, change := range row.Changes {
 			switch change.Field {
 			case bulk.FieldName:
-				name = change.Before
+				was.Name = change.Before
 			case bulk.FieldEnabled:
-				enabled = change.Before
+				was.Enabled = change.Before == "yes"
 			}
 		}
-		undo.Rows = append(undo.Rows, []string{row.Extension, name, enabled})
-	}
-	if len(undo.Rows) == 0 {
-		writeJSON(w, http.StatusBadRequest, errBody("nothing in that sheet changed an extension, so there is nothing to put back"))
-		return
+		// A field this sheet never touched is left out of the undo too, so
+		// putting a rename back does not also assert what "Enabled" was.
+		undo.Rows = append(undo.Rows, blankUntouched(bulk.Line(row.Extension, was), row))
 	}
 
 	encoded, err := json.Marshal(undo)
@@ -536,10 +575,36 @@ func (s *Server) revertBulk(w http.ResponseWriter, r *http.Request, actor identi
 			"could not read the phone system, so there is nothing to compare against: "+err.Error()))
 		return
 	}
-	mapping := bulk.Mapping{Extension: 0, Fields: map[bulk.Field]int{bulk.FieldName: 1, bulk.FieldEnabled: 2}}
+	mapping := bulk.CanonicalMapping()
 	undoPlan, err := bulk.Build(undo, mapping, now)
 	if err != nil {
 		s.fail(w, err, "could not work out the undo")
+		return
+	}
+
+	// What this sheet created, as it stands today.
+	for _, row := range plan.Rows {
+		if !row.Creates() || !made[row.Extension] {
+			continue
+		}
+		state, still := now[row.Extension]
+		if !still {
+			// Already gone. Nothing to put back, and saying so would be a row
+			// that does nothing.
+			continue
+		}
+		undoPlan.Rows = append(undoPlan.Rows, bulk.Row{
+			Extension: row.Extension,
+			Name:      state.Name,
+			Gone:      true,
+		})
+		undoPlan.Removing++
+	}
+	undoPlan.Sort()
+
+	if undoPlan.Changing+undoPlan.Removing == 0 {
+		writeJSON(w, http.StatusBadRequest, errBody(
+			"there is nothing to put back — either nothing in that sheet went through, or it has already been undone"))
 		return
 	}
 
@@ -561,10 +626,284 @@ func (s *Server) revertBulk(w http.ResponseWriter, r *http.Request, actor identi
 		Action:      "bulk.revert",
 		Outcome:     audit.OutcomeOK,
 		CustomerID:  &customerID,
-		Detail:      fmt.Sprintf("%s: %d to put back", edit.Filename, undoPlan.Changing),
+		Detail: fmt.Sprintf("%s: %d to put back, %d to remove",
+			edit.Filename, undoPlan.Changing, undoPlan.Removing),
 	})
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"edit": planned, "plan": undoPlan, "created": plan.Creating,
+		"edit": planned, "plan": undoPlan,
 	})
+}
+
+/*
+blankUntouched empties the cells for fields the original sheet did not change.
+
+An undo asserts only what it is undoing. Writing every column would mean
+putting a rename back also states what Enabled was at the time — true when the
+plan was made, and quite possibly not now.
+*/
+func blankUntouched(line []string, row bulk.Row) []string {
+	touched := map[bulk.Field]bool{}
+	for _, change := range row.Changes {
+		touched[change.Field] = true
+	}
+	mapping := bulk.CanonicalMapping()
+	for field, col := range mapping.Fields {
+		if !touched[field] && col < len(line) {
+			line[col] = ""
+		}
+	}
+	return line
+}
+
+/*
+listExtensions hands back what the phone system says right now.
+
+The screen that picks extensions to change needs the same list the comparison
+uses, so it comes from the same call. Somebody choosing from a list of what is
+actually there cannot pick an extension that does not exist, mistype a number,
+or aim a sheet at the wrong customer — three of the four ways this feature
+could go wrong before it has started.
+*/
+func (s *Server) listExtensions(w http.ResponseWriter, r *http.Request, actor identity.Actor) {
+	customerID, err := uuid.Parse(strings.TrimSpace(r.URL.Query().Get("customer_id")))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errBody("say which customer"))
+		return
+	}
+	now, err := s.currentExtensions(r.Context(), actor, customerID)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, errBody("could not read the phone system: "+err.Error()))
+		return
+	}
+
+	type extension struct {
+		Extension string `json:"extension"`
+		Name      string `json:"name"`
+		Enabled   bool   `json:"enabled"`
+	}
+	list := make([]extension, 0, len(now))
+	for _, number := range inOrder(now) {
+		list = append(list, extension{number, now[number].Name, now[number].Enabled})
+	}
+	// The column names go with the list so the console can show what a sheet
+	// has to look like without keeping its own copy of the answer.
+	writeJSON(w, http.StatusOK, map[string]any{
+		"extensions": list,
+		"columns":    bulk.SheetColumns(),
+	})
+}
+
+/*
+startingSheet writes the customer's extensions as the sheet to edit.
+
+The alternative was a page that says "upload a CSV" and leaves somebody to work
+out which columns it wants. Handing them the file instead answers the question
+by construction: the headers are the ones Suggest recognises, the rows are what
+is true today, and every cell left alone means exactly that. Editing what you
+were given is also the only version of this where the extension numbers are
+guaranteed right.
+*/
+func (s *Server) startingSheet(w http.ResponseWriter, r *http.Request, actor identity.Actor) {
+	customerID, err := uuid.Parse(strings.TrimSpace(r.URL.Query().Get("customer_id")))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errBody("say which customer"))
+		return
+	}
+	customer, err := s.DB.GetCustomer(r.Context(), customerID)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, errBody("no such customer"))
+		return
+	}
+	now, err := s.currentExtensions(r.Context(), actor, customerID)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, errBody("could not read the phone system: "+err.Error()))
+		return
+	}
+
+	var out strings.Builder
+	sheet := csv.NewWriter(&out)
+	_ = sheet.Write(bulk.SheetColumns())
+	for _, number := range inOrder(now) {
+		_ = sheet.Write(bulk.Line(number, now[number]))
+	}
+	sheet.Flush()
+	if err := sheet.Error(); err != nil {
+		s.fail(w, err, "could not write that sheet")
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition",
+		fmt.Sprintf(`attachment; filename="%s-extensions.csv"`, fileWord(customer.DisplayName)))
+	// Nothing here is worth a second copy in a proxy or a browser cache: it is
+	// a customer's extension list, and it is stale the moment it is written.
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = io.WriteString(w, out.String())
+}
+
+// chosenRow is one extension somebody ticked in the console, with what they
+// want it to say.
+type chosenRow struct {
+	Extension string `json:"extension"`
+	Name      string `json:"name"`
+	Enabled   string `json:"enabled"`
+}
+
+/*
+planChosen turns extensions ticked in the console into the same reviewed plan a
+file gets.
+
+Deliberately the same road: it is written out as a sheet, stored as a sheet,
+and compared as a sheet. Renaming four people should not need a spreadsheet,
+but neither should it get a shortcut past the comparison — the diff, the
+approval, the audit line and the undo are all downstream of the plan, and there
+is one plan.
+
+No creating here. A row you ticked exists by definition, and a screen that
+picks from what is there is the wrong place to invent something that is not.
+*/
+func (s *Server) planChosen(w http.ResponseWriter, r *http.Request, actor identity.Actor) {
+	customerID, err := uuid.Parse(strings.TrimSpace(r.URL.Query().Get("customer_id")))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errBody("say which customer this is for"))
+		return
+	}
+	if _, err := s.DB.GetCustomer(r.Context(), customerID); err != nil {
+		writeJSON(w, http.StatusNotFound, errBody("no such customer"))
+		return
+	}
+
+	var body struct {
+		Rows []chosenRow `json:"rows"`
+	}
+	if err := decode(r, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, errBody("invalid json body"))
+		return
+	}
+	if len(body.Rows) == 0 {
+		writeJSON(w, http.StatusBadRequest, errBody("choose at least one extension"))
+		return
+	}
+	if len(body.Rows) > bulk.MaxRows {
+		writeJSON(w, http.StatusBadRequest, errBody("that is more extensions than this will take at once"))
+		return
+	}
+
+	sheet := bulk.Sheet{Columns: bulk.SheetColumns()}
+	for _, row := range body.Rows {
+		sheet.Rows = append(sheet.Rows, []string{
+			strings.TrimSpace(row.Extension),
+			strings.TrimSpace(row.Name),
+			strings.TrimSpace(row.Enabled),
+		})
+	}
+
+	now, err := s.currentExtensions(r.Context(), actor, customerID)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, errBody(
+			"could not read the phone system, so there is nothing to compare against: "+err.Error()))
+		return
+	}
+	mapping := bulk.CanonicalMapping()
+	plan, err := bulk.Build(sheet, mapping, now)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errBody(err.Error()))
+		return
+	}
+
+	encodedSheet, err := json.Marshal(sheet)
+	if err != nil {
+		s.fail(w, err, "could not store those changes")
+		return
+	}
+	saved, err := s.DB.AddBulkEdit(r.Context(), store.BulkEdit{
+		CustomerID: customerID,
+		Filename:   "chosen in Azir",
+		UploadedBy: actor.Email,
+		Sheet:      encodedSheet,
+	})
+	if err != nil {
+		s.fail(w, err, "could not store those changes")
+		return
+	}
+
+	encodedMapping, _ := json.Marshal(mapping)
+	encodedPlan, err := json.Marshal(plan)
+	if err != nil {
+		s.fail(w, err, "could not store that plan")
+		return
+	}
+	planned, err := s.DB.SaveBulkPlan(r.Context(), saved.ID, encodedMapping, encodedPlan)
+	if err != nil {
+		s.fail(w, err, "could not store that plan")
+		return
+	}
+
+	s.Audit.Record(r.Context(), audit.Event{
+		ActorUserID: actor.Email,
+		Action:      "bulk.chosen",
+		Outcome:     audit.OutcomeOK,
+		CustomerID:  &customerID,
+		Detail:      fmt.Sprintf("%d chosen, %d would change", len(body.Rows), plan.Changing),
+	})
+
+	writeJSON(w, http.StatusOK, map[string]any{"edit": planned, "plan": plan})
+}
+
+/*
+removeRow deletes one extension.
+
+Only ever reached from an undo. Named one at a time even though the tool takes
+a list, so a batch that half fails says which numbers are still there.
+*/
+func (s *Server) removeRow(ctx context.Context, actor identity.Actor, customer uuid.UUID, row bulk.Row) error {
+	tool, err := s.approvedTool(ctx, plugin.CapPhoneExtensionDelete, true)
+	if err != nil {
+		return err
+	}
+	encoded, err := json.Marshal(map[string]any{"extensions": []string{row.Extension}})
+	if err != nil {
+		return err
+	}
+	if _, err := s.performTool(ctx, actor, tool, encoded, &customer); err != nil {
+		return err
+	}
+	return nil
+}
+
+// inOrder sorts extension numbers the way somebody reads them, so 100 comes
+// before 1000 rather than after it.
+func inOrder(now bulk.Current) []string {
+	numbers := make([]string, 0, len(now))
+	for number := range now {
+		numbers = append(numbers, number)
+	}
+	sort.Slice(numbers, func(a, b int) bool {
+		x, errX := strconv.Atoi(numbers[a])
+		y, errY := strconv.Atoi(numbers[b])
+		if errX == nil && errY == nil {
+			return x < y
+		}
+		return numbers[a] < numbers[b]
+	})
+	return numbers
+}
+
+// fileWord turns a customer's name into something safe to put in a filename on
+// any of the three operating systems somebody might open it on.
+func fileWord(name string) string {
+	var out strings.Builder
+	dash := false
+	for _, r := range strings.ToLower(name) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			out.WriteRune(r)
+			dash = false
+		case !dash && out.Len() > 0:
+			out.WriteByte('-')
+			dash = true
+		}
+	}
+	return strings.Trim(out.String(), "-")
 }

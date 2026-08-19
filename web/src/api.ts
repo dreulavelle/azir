@@ -833,6 +833,8 @@ export type BulkRow = {
   changes?: BulkChange[];
   /** This extension does not exist and would be created. */
   new?: boolean;
+  /** This extension would be removed. Only an undo produces these. */
+  gone?: boolean;
   /** What a new extension would be called. */
   wanted?: string;
   /** Why this row will be skipped. Rows with one are never applied. */
@@ -843,9 +845,13 @@ export type BulkPlan = {
   rows: BulkRow[];
   changing: number;
   creating: number;
+  removing: number;
   unchanged: number;
   skipped: number;
 };
+
+/** One extension as the phone system has it right now. */
+export type BulkExtension = { extension: string; name: string; enabled: boolean };
 
 export type BulkEdit = {
   id: string;
@@ -855,7 +861,15 @@ export type BulkEdit = {
   sheet: { columns: string[]; rows: string[][] };
   mapping?: BulkMapping;
   plan?: BulkPlan;
-  outcome?: { extension: string; ok: boolean; problem?: string }[];
+  outcome?: {
+    extension: string;
+    ok: boolean;
+    new?: boolean;
+    gone?: boolean;
+    /** Unticked before approving, so nothing was done to it. */
+    left?: boolean;
+    problem?: string;
+  }[];
   status: "draft" | "planned" | "applied" | "cancelled";
   created_at: string;
   decided_at?: string;
@@ -933,6 +947,46 @@ export const api = {
       body: JSON.stringify({ confirm: "reset" }),
     }),
 
+  /** What the phone system says right now, to pick from. */
+  extensions: (customerID: string) =>
+    request<{ extensions: BulkExtension[]; columns: string[] }>(
+      `/api/bulk/extensions?customer_id=${encodeURIComponent(customerID)}`,
+    ),
+
+  /**
+   * Downloads the customer's extensions as the sheet to edit.
+   *
+   * Fetched rather than linked, because the thing most likely to go wrong is
+   * that the phone system cannot be reached — and a plain link would answer
+   * that by navigating the console to a page of JSON.
+   */
+  startingSheet: async (customerID: string, saveAs: (blob: Blob, name: string) => void) => {
+    const res = await fetch(
+      `/api/bulk/starting-sheet?customer_id=${encodeURIComponent(customerID)}`,
+    );
+    if (!res.ok) {
+      let message = `${res.status} ${res.statusText}`;
+      try {
+        const body = await res.json();
+        if (body?.error) message = body.error;
+      } catch {
+        // Not JSON. The status line will have to do.
+      }
+      throw new Error(message);
+    }
+    const name =
+      /filename="([^"]+)"/.exec(res.headers.get("Content-Disposition") ?? "")?.[1] ??
+      "extensions.csv";
+    saveAs(await res.blob(), name);
+  },
+
+  /** Extensions ticked in the console, compared the same way a sheet is. */
+  planChosen: (customerID: string, rows: { extension: string; name: string; enabled: string }[]) =>
+    request<{ edit: BulkEdit; plan: BulkPlan }>(
+      `/api/bulk/chosen?customer_id=${encodeURIComponent(customerID)}`,
+      { method: "POST", body: JSON.stringify({ rows }) },
+    ),
+
   bulkEdits: (customerID: string) =>
     request<{ edits: BulkEdit[] }>(`/api/bulk?customer_id=${encodeURIComponent(customerID)}`),
 
@@ -957,16 +1011,23 @@ export const api = {
     }),
 
   revertSheet: (id: string) =>
-    request<{ edit: BulkEdit; plan: BulkPlan; created: number }>(
-      `/api/bulk/${encodeURIComponent(id)}/revert`,
-      { method: "POST" },
-    ),
+    request<{ edit: BulkEdit; plan: BulkPlan }>(`/api/bulk/${encodeURIComponent(id)}/revert`, {
+      method: "POST",
+    }),
 
-  applySheet: (id: string) =>
-    request<{ edit: BulkEdit; changed: number; created: number; failed: number }>(
-      `/api/bulk/${encodeURIComponent(id)}/apply`,
-      { method: "POST", body: JSON.stringify({ confirm: "apply" }) },
-    ),
+  /** `skip` is the extensions unticked in the before-and-after. */
+  applySheet: (id: string, skip: string[] = []) =>
+    request<{
+      edit: BulkEdit;
+      changed: number;
+      created: number;
+      removed: number;
+      left: number;
+      failed: number;
+    }>(`/api/bulk/${encodeURIComponent(id)}/apply`, {
+      method: "POST",
+      body: JSON.stringify({ confirm: "apply", skip }),
+    }),
 
   cancelSheet: (id: string) =>
     request<{ edit: BulkEdit }>(`/api/bulk/${encodeURIComponent(id)}/cancel`, { method: "POST" }),

@@ -76,6 +76,10 @@ const ACTIONS: Record<string, { verb: string; note?: string }> = {
   "snapshot.delete": { verb: "Removed a capture" },
 
   "bulk.upload": { verb: "Uploaded a sheet of changes" },
+  "bulk.chosen": {
+    verb: "Chose extensions to change",
+    note: "Picked from the phone system's own list rather than a file, and compared the same way.",
+  },
   "bulk.revert": {
     verb: "Put a sheet of changes back",
     note: "Built from the values those extensions had before, and compared against the phone system again rather than applied straight.",
