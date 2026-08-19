@@ -679,10 +679,18 @@ One list, because everything reading this is asking the same question — what
 can be changed — and the answer should not depend on where the phone system
 happens to keep it.
 */
-func settable() []option {
-	all := make([]option, 0, len(editable)+len(forwardingFields))
+func settable(roles []string) []option {
+	all := make([]option, 0, len(editable)+len(forwardingFields)+2)
 	all = append(all, editable...)
 	all = append(all, forwardingFields...)
+	// The department is read and not offered. Moving somebody between groups
+	// changes who can see their calls and what they are counted in, which is
+	// more than a name on a page — and this phone system has one group, so
+	// there is nothing to check a move against.
+	all = append(all,
+		option{fieldDepartment, "Department", "readonly", "General", nil},
+		option{fieldRole, "Role", "choice", "General", roles},
+	)
 	return all
 }
 
@@ -695,6 +703,7 @@ var editableByName = func() map[string]option {
 	for _, o := range forwardingFields {
 		byName[o.Field] = o
 	}
+	byName[fieldRole] = option{fieldRole, "Role", "choice", "General", nil}
 	return byName
 }()
 
@@ -739,11 +748,16 @@ func setExtensionOptions(ctx context.Context, req plugin.Request) (any, error) {
 			refused = append(refused, key)
 			continue
 		}
-		// Forwarding lives on a profile beside the extension, so it is
-		// collected here and written separately below.
-		if forwarding(key) {
+		// Forwarding lives on a profile beside the extension, and the role
+		// on the group membership. Both are collected here and written
+		// separately below.
+		if forwarding(key) || key == fieldRole {
 			rules[key] = value
 			continue
+		}
+		if key == fieldDepartment {
+			return nil, plugin.Errorf("400",
+				"the department is where an extension's group puts it, and moving somebody between groups is not something this changes")
 		}
 		switch spec.Kind {
 		case "bool":
@@ -820,8 +834,16 @@ func setExtensionOptions(ctx context.Context, req plugin.Request) (any, error) {
 				continue
 			}
 		}
-		if len(rules) > 0 {
-			if err := setForwarding(ctx, conn, id, rules); err != nil {
+		if role, changing := rules[fieldRole]; changing {
+			if err := setRole(ctx, conn, id, asText(role)); err != nil {
+				results = append(results, map[string]any{
+					"extension": number, "changed": false, "reason": plainReason(err),
+				})
+				continue
+			}
+		}
+		if fwd := without(rules, fieldRole); len(fwd) > 0 {
+			if err := setForwarding(ctx, conn, id, fwd); err != nil {
 				results = append(results, map[string]any{
 					"extension": number, "changed": false, "reason": plainReason(err),
 				})
@@ -1255,11 +1277,12 @@ func extensionSettings(ctx context.Context, req plugin.Request) (any, error) {
 	const settingsPage = pageSize
 
 	out := make([]map[string]any, 0, settingsPage)
+	everyRow := make([]map[string]any, 0, settingsPage)
 	complete := true
 	for skip := 0; skip < maxExtensions; skip += settingsPage {
 		q := url.Values{}
 		q.Set("$select", strings.Join(selected, ","))
-		q.Set("$expand", "ForwardingProfiles")
+		q.Set("$expand", "ForwardingProfiles,Groups($expand=GroupRights)")
 		q.Set("$top", fmt.Sprint(settingsPage))
 		q.Set("$skip", fmt.Sprint(skip))
 		q.Set("$orderby", "Number")
@@ -1270,6 +1293,7 @@ func extensionSettings(ctx context.Context, req plugin.Request) (any, error) {
 		if err := conn.get(ctx, "Users", q, &page); err != nil {
 			return nil, err
 		}
+		everyRow = append(everyRow, page.Value...)
 		for _, row := range page.Value {
 			settings := map[string]any{}
 			for _, name := range fields {
@@ -1283,6 +1307,11 @@ func extensionSettings(ctx context.Context, req plugin.Request) (any, error) {
 			// changed in bulk and shown in a diff without anything else
 			// learning what a forwarding profile is.
 			for name, value := range forwardingOf(row["ForwardingProfiles"]) {
+				settings[name] = value
+			}
+			// Which department somebody is in and what they are trusted with
+			// are held on the membership rather than on the extension.
+			for name, value := range membershipOf(row["Groups"]) {
 				settings[name] = value
 			}
 			out = append(out, map[string]any{
@@ -1308,7 +1337,8 @@ func extensionSettings(ctx context.Context, req plugin.Request) (any, error) {
 	// them as columns or as a form without keeping its own copy of what 3CX
 	// will accept.
 	return map[string]any{
-		"extensions": out, "count": len(out), "fields": settable(), "complete": complete,
+		"extensions": out, "count": len(out),
+		"fields": settable(rolesInUse(everyRow)), "complete": complete,
 	}, nil
 }
 
@@ -1687,6 +1717,18 @@ func setForwarding(ctx context.Context, conn pbx, id int64, changes map[string]a
 		map[string]any{"ForwardingProfiles": user.Profiles})
 }
 
+// without copies a map minus one key, so the forwarding writer is handed only
+// forwarding.
+func without(all map[string]any, key string) map[string]any {
+	out := make(map[string]any, len(all))
+	for k, v := range all {
+		if k != key {
+			out[k] = v
+		}
+	}
+	return out
+}
+
 // forwarding reports whether a field belongs to the forwarding profile rather
 // than to the extension itself.
 func forwarding(field string) bool {
@@ -1696,4 +1738,108 @@ func forwarding(field string) bool {
 		}
 	}
 	return false
+}
+
+/*
+Department and role.
+
+Neither is a field on the extension. The phone system holds both on the
+membership joining an extension to a group: the group's name is the department,
+and the rights attached to that membership carry the role.
+
+An extension can be in several groups. The first is the one its page shows and
+the one these read, because that is the answer to the question somebody is
+asking when they look at a list of extensions.
+*/
+const (
+	fieldDepartment = "Department"
+	fieldRole       = "Role"
+)
+
+// membershipOf reads the department and role off the first group an extension
+// belongs to.
+func membershipOf(raw any) map[string]any {
+	groups, ok := raw.([]any)
+	if !ok || len(groups) == 0 {
+		return nil
+	}
+	first, ok := groups[0].(map[string]any)
+	if !ok {
+		return nil
+	}
+	out := map[string]any{fieldDepartment: asText(first["Name"])}
+	if rights, ok := first["GroupRights"].(map[string]any); ok {
+		out[fieldRole] = asText(rights["RoleName"])
+	}
+	return out
+}
+
+/*
+rolesInUse is every role this phone system has somebody in.
+
+The API documents RoleName as a plain string with no list of what it accepts,
+and there is no endpoint that will name them — so the roles that exist are
+found by looking at who has one. A role has to exist for somebody to hold it,
+which makes this sound; what it misses is a role defined and given to nobody,
+and offering a name nobody uses is a worse mistake than not offering it.
+*/
+func rolesInUse(rows []map[string]any) []string {
+	seen := map[string]bool{}
+	for _, row := range rows {
+		groups, ok := row["Groups"].([]any)
+		if !ok {
+			continue
+		}
+		for _, entry := range groups {
+			group, ok := entry.(map[string]any)
+			if !ok {
+				continue
+			}
+			rights, ok := group["GroupRights"].(map[string]any)
+			if !ok {
+				continue
+			}
+			if name := asText(rights["RoleName"]); name != "" {
+				seen[name] = true
+			}
+		}
+	}
+	roles := make([]string, 0, len(seen))
+	for name := range seen {
+		roles = append(roles, name)
+	}
+	sort.Strings(roles)
+	return roles
+}
+
+/*
+setRole changes what an extension is trusted with.
+
+Read the memberships, change the role on the first, write them all back — the
+same shape as everything else the phone system keeps as a collection on the
+extension. The department is not changed here: moving somebody between groups
+is a different act with wider effects than a name, and it is not something to
+do as a side effect of setting a role.
+*/
+func setRole(ctx context.Context, conn pbx, id int64, role string) error {
+	var user struct {
+		Groups []map[string]any `json:"Groups"`
+	}
+	q := url.Values{}
+	q.Set("$select", "Id")
+	q.Set("$expand", "Groups($expand=GroupRights)")
+	if err := conn.get(ctx, fmt.Sprintf("Users(%d)", id), q, &user); err != nil {
+		return err
+	}
+	if len(user.Groups) == 0 {
+		return plugin.Errorf("400", "this extension is not in any group, so it has no role to change")
+	}
+
+	rights, ok := user.Groups[0]["GroupRights"].(map[string]any)
+	if !ok {
+		return plugin.Errorf("400", "this extension's group carries no rights to change")
+	}
+	rights["RoleName"] = role
+	return conn.patch(ctx, fmt.Sprintf("Users(%d)", id),
+		map[string]any{"Groups": user.Groups})
 }

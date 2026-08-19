@@ -21,7 +21,8 @@ That is the fourth bug of this exact shape in this codebase. Comparing the two
 costs one test.
 */
 func TestAzirCanReadWhatThisPublishes(t *testing.T) {
-	published := settable()
+	// The roles a real system would have found in use.
+	published := settable([]string{"system_owners", "users"})
 	if len(published) == 0 {
 		t.Fatal("nothing is published, so this test checks nothing")
 	}
@@ -53,7 +54,7 @@ func TestAzirCanReadWhatThisPublishes(t *testing.T) {
 			t.Errorf("%s arrives with no group, so it lands under Other", was.Field)
 		}
 		switch spec.Kind {
-		case bulk.KindBool, bulk.KindText, bulk.KindSecret:
+		case bulk.KindBool, bulk.KindText, bulk.KindSecret, bulk.KindReadOnly:
 		case bulk.KindChoice, bulk.KindDestination:
 			if len(spec.Choices) == 0 {
 				t.Errorf("%s is a %s with nothing to choose from", was.Field, spec.Kind)
@@ -68,7 +69,7 @@ func TestAzirCanReadWhatThisPublishes(t *testing.T) {
 // own. 3CX publishes Enabled, which is the switch bulk.FieldEnabled already
 // describes, and two columns fighting over one setting is the bug.
 func TestAzirsOwnFieldsWin(t *testing.T) {
-	encoded, _ := json.Marshal(settable())
+	encoded, _ := json.Marshal(settable([]string{"system_owners", "users"}))
 	var read []bulk.Spec
 	if err := json.Unmarshal(encoded, &read); err != nil {
 		t.Fatal(err)

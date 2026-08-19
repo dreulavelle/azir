@@ -55,6 +55,16 @@ const (
 		they are out" is the same machinery as any other change.
 	*/
 	KindDestination = "destination"
+	/*
+		KindReadOnly is something worth seeing and not something Azir will
+		change — a department, which the phone system holds as group
+		membership rather than as a value on the extension.
+
+		Shown in the form and left out of sheets and comparisons, because a
+		column somebody can fill in and Azir will ignore is worse than no
+		column at all.
+	*/
+	KindReadOnly = "readonly"
 	// KindSecret is a credential — a voicemail PIN. Written, never read.
 	//
 	// Deliberately outside everything in this package. A plan is stored in the
@@ -67,7 +77,11 @@ const (
 )
 
 // Comparable reports whether a field can take part in a before-and-after.
-func Comparable(spec Spec) bool { return spec.Kind != KindSecret }
+// A secret has nothing to compare against and a read-only field has nothing to
+// change, so neither belongs in a sheet or a diff.
+func Comparable(spec Spec) bool {
+	return spec.Kind != KindSecret && spec.Kind != KindReadOnly
+}
 
 // Spec describes one field: what it is called, how it reads, and what it will
 // accept.
