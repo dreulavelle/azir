@@ -98,6 +98,10 @@ type Spec struct {
 	// By value rather than positional, so a choice with no entry simply shows
 	// as itself and a list can grow without the two falling out of step.
 	Labels map[string]string `json:"labels,omitempty"`
+	// States is how each choice is doing, where that is a thing a choice can
+	// be. A routing device that is not connected is still a choice; it is one
+	// somebody should make on purpose rather than by accident.
+	States map[string]string `json:"states,omitempty"`
 	/*
 		Unique marks a field no two extensions may share — an email address.
 

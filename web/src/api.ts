@@ -871,6 +871,13 @@ export type BulkSpec = {
    */
   labels?: Record<string, string>;
   /**
+   * How each choice is doing, where that is a thing a choice can be: "up",
+   * "down", or absent when the phone system does not track it. A routing
+   * device that is not connected is still a choice, and still one worth
+   * making deliberately.
+   */
+  states?: Record<string, string>;
+  /**
    * No two extensions may hold the same value — an email address. Set on one
    * at a time; a bulk edit that gave one value to several would be taken by
    * the first and refused by the rest.

@@ -164,6 +164,9 @@ func settable(lists fieldLists) []published {
 		}
 		entry := published{option: o, Unique: uniquePerExtension[o.Field]}
 		entry.Labels = labelled[o.Field]
+		if o.Field == fieldInterface {
+			entry.States = lists.Routing.States
+		}
 		out = append(out, entry)
 	}
 	return out
@@ -190,6 +193,10 @@ type published struct {
 	// something to put in front of a person — "system_owners" is a role, but
 	// it is not what anybody calls it.
 	Labels map[string]string `json:"labels,omitempty"`
+	// States is how each choice is doing, where a choice is a thing that can
+	// be up or down — a routing device that is not connected is still a
+	// choice, and still one worth making deliberately.
+	States map[string]string `json:"states,omitempty"`
 	// Unique marks a field no two extensions may share.
 	Unique bool `json:"unique,omitempty"`
 }

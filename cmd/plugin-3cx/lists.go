@@ -27,6 +27,25 @@ role dropdown did for as long as its list came from looking at who held one.
 type choices struct {
 	Values []string
 	Labels map[string]string
+	// States is how a choice is doing, where that is a thing a choice can be:
+	// a routing device is reachable or it is not, and picking the one that is
+	// not is a decision somebody should make on purpose.
+	States map[string]string
+}
+
+// What a choice's state can be. Deliberately words rather than a boolean —
+// "unknown" is a real answer, and the phone system gives it for anything it
+// does not track.
+const (
+	stateUp   = "up"
+	stateDown = "down"
+)
+
+func state(up bool) string {
+	if up {
+		return stateUp
+	}
+	return stateDown
 }
 
 /*
@@ -102,7 +121,7 @@ on the same network as the phone system, which is most of them, and it is the
 one value that cannot be got wrong.
 */
 func routingDevices(ctx context.Context, conn pbx, fqdn string) choices {
-	out := choices{Labels: map[string]string{}}
+	out := choices{Labels: map[string]string{}, States: map[string]string{}}
 	seen := map[string]bool{}
 	add := func(value, label string) {
 		value = strings.TrimSpace(value)
@@ -116,15 +135,19 @@ func routingDevices(ctx context.Context, conn pbx, fqdn string) choices {
 		}
 	}
 
+	// The phone system itself is up by definition: this list was fetched from
+	// it.
 	add(fqdn, fqdn+" (the phone system)")
+	out.States[fqdn] = stateUp
 
 	var answer struct {
 		Value []struct {
-			Name        string `json:"Name"`
-			DisplayName string `json:"DisplayName"`
+			Name          string `json:"Name"`
+			DisplayName   string `json:"DisplayName"`
+			HasConnection *bool  `json:"HasConnection"`
 		} `json:"value"`
 	}
-	query := url.Values{"$select": {"Name,DisplayName"}, "$top": {"100"}}
+	query := url.Values{}
 	if err := conn.get(ctx, "Sbcs", query, &answer); err != nil {
 		// Not worth a raised voice. Most deployments have no SBC, and the
 		// phone system itself is already in the list.
@@ -133,6 +156,13 @@ func routingDevices(ctx context.Context, conn pbx, fqdn string) choices {
 	}
 	for _, s := range answer.Value {
 		add(s.Name, s.DisplayName)
+		// Whether it is actually up, as a fact rather than as words glued to
+		// the label. One of these is a session border controller somebody
+		// added and has not set up yet, and pointing a floor of handsets at it
+		// is a morning spent working out why none of them came back.
+		if s.HasConnection != nil {
+			out.States[s.Name] = state(*s.HasConnection)
+		}
 	}
 	slog.Info("the phone system named its routing devices", "devices", out.Values)
 	return out
