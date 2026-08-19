@@ -517,10 +517,12 @@ export function Extensions({ actor, go }: { actor: Actor; go?: (path: string) =>
                       }
                     />
                   </th>
-                  <th className="w-[90px]">Ext</th>
-                  <th>Name</th>
+                  <th className="w-[80px]">Ext</th>
+                  <th className="w-[190px]">Name</th>
                   <th className="w-[220px]">Email</th>
-                  <th className="w-[200px]">Set up</th>
+                  <th className="w-[150px]">Department</th>
+                  <th>Phone</th>
+                  <th className="w-[170px]">Set up</th>
                   <th className="w-[80px]" />
                 </tr>
               </thead>
@@ -541,6 +543,10 @@ export function Extensions({ actor, go }: { actor: Actor; go?: (path: string) =>
                       {e.name || <span className="italic text-ink-faint">unnamed</span>}
                     </td>
                     <td className="text-ink-dim">{e.email || "—"}</td>
+                    <td className="text-ink-dim">{e.department || "—"}</td>
+                    <td className="text-ink-dim">
+                      {e.phone || <span className="text-ink-faint">no handset</span>}
+                    </td>
                     <td>
                       <Marks row={e} />
                     </td>
@@ -553,7 +559,7 @@ export function Extensions({ actor, go }: { actor: Actor; go?: (path: string) =>
                 ))}
                 {shown.length === 0 && (
                   <tr>
-                    <td colSpan={6} className="py-8 text-center text-sm text-ink-faint">
+                    <td colSpan={8} className="py-8 text-center text-sm text-ink-faint">
                       {find.trim()
                         ? `Nothing matches "${find.trim()}".`
                         : "This phone system has no extensions."}
@@ -783,7 +789,11 @@ function Marks({ row }: { row: ExtensionRow }) {
   const marks: { label: string; tone: "good" | "warn" | "urgent" | "accent" | ""; title: string }[] = [];
   if (!row.enabled) marks.push({ label: "off", tone: "urgent", title: "This extension is disabled" });
   if (row.recording) marks.push({ label: "rec", tone: "accent", title: "Calls are recorded" });
-  if (row.voicemail) marks.push({ label: "vm", tone: "", title: "Voicemail is on" });
+  // The exception, not the rule. Voicemail is on almost everywhere, so a chip
+  // for it sat on every row of every list and distinguished nothing — which is
+  // the opposite of what this column is for.
+  if (!row.voicemail)
+    marks.push({ label: "no vm", tone: "warn", title: "Voicemail is off" });
   if (row.tunnel_blocked)
     marks.push({ label: "tunnel", tone: "warn", title: "Blocking remote non-tunnel connections" });
   if (row.no_audio)

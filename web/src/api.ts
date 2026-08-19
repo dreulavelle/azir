@@ -926,6 +926,9 @@ export type ExtensionRow = {
   voicemail: boolean;
   tunnel_blocked: boolean;
   no_audio: boolean;
+  /** Where they are filed, and what is on the desk. Either may be empty. */
+  department: string;
+  phone: string;
 };
 
 /** One extension as the phone system has it right now, field by field. */

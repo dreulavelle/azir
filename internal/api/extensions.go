@@ -439,19 +439,26 @@ func (s *Server) listExtensionsPage(w http.ResponseWriter, r *http.Request, acto
 		Voicemail bool   `json:"voicemail"`
 		Tunnel    bool   `json:"tunnel_blocked"`
 		NoAudio   bool   `json:"no_audio"`
+		// Which department somebody is in, and what is on their desk. Both
+		// are things a technician scans a list for, and both became worth
+		// showing when they became things this can change.
+		Department string `json:"department"`
+		Phone      string `json:"phone"`
 	}
 	rows := make([]row, 0, len(page))
 	for _, number := range page {
 		v := now[number]
 		rows = append(rows, row{
-			Extension: number,
-			Name:      v[bulk.FieldName],
-			Email:     v[bulk.FieldEmail],
-			Enabled:   v[bulk.FieldEnabled] != "no",
-			Recording: v[bulk.FieldRecording] == "yes",
-			Voicemail: v[bulk.FieldVoicemail] == "yes",
-			Tunnel:    v[bulk.FieldTunnel] == "yes",
-			NoAudio:   v[bulk.FieldAudio] == "no",
+			Extension:  number,
+			Name:       v[bulk.FieldName],
+			Email:      v[bulk.FieldEmail],
+			Enabled:    v[bulk.FieldEnabled] != "no",
+			Recording:  v[bulk.FieldRecording] == "yes",
+			Voicemail:  v[bulk.FieldVoicemail] == "yes",
+			Tunnel:     v[bulk.FieldTunnel] == "yes",
+			NoAudio:    v[bulk.FieldAudio] == "no",
+			Department: v[bulk.FieldDepartment],
+			Phone:      v[bulk.FieldPhoneName],
 		})
 	}
 
