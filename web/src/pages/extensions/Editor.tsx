@@ -302,8 +302,7 @@ export function Editor({
  */
 function NotYet({ tab }: { tab: string }) {
   const why: Record<string, string> = {
-    "IP phone":
-      "The handset, its model and where it routes are held on a phone record beside the extension rather than on it. No handset on this phone system has been provisioned, so there is nothing to read the shape from and nothing to check a change against.",
+    "IP phone": "No handset has been provisioned on this extension.",
   };
   return (
     <div className="rounded-lg border border-dashed border-edge px-5 py-8 text-center">

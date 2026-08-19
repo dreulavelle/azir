@@ -691,6 +691,7 @@ func settable(roles []string) []option {
 		option{fieldDepartment, "Department", "readonly", "General", nil},
 		option{fieldRole, "Role", "choice", "General", roles},
 	)
+	all = append(all, handsetFields...)
 	return all
 }
 
@@ -1282,7 +1283,7 @@ func extensionSettings(ctx context.Context, req plugin.Request) (any, error) {
 	for skip := 0; skip < maxExtensions; skip += settingsPage {
 		q := url.Values{}
 		q.Set("$select", strings.Join(selected, ","))
-		q.Set("$expand", "ForwardingProfiles,Groups($expand=GroupRights)")
+		q.Set("$expand", "ForwardingProfiles,Groups($expand=GroupRights),Phones")
 		q.Set("$top", fmt.Sprint(settingsPage))
 		q.Set("$skip", fmt.Sprint(skip))
 		q.Set("$orderby", "Number")
@@ -1312,6 +1313,11 @@ func extensionSettings(ctx context.Context, req plugin.Request) (any, error) {
 			// Which department somebody is in and what they are trusted with
 			// are held on the membership rather than on the extension.
 			for name, value := range membershipOf(row["Groups"]) {
+				settings[name] = value
+			}
+			// The handset, which is a record beside the extension rather than
+			// anything on it.
+			for name, value := range handsetOf(row["Phones"]) {
 				settings[name] = value
 			}
 			out = append(out, map[string]any{
@@ -1842,4 +1848,42 @@ func setRole(ctx context.Context, conn pbx, id int64, role string) error {
 	rights["RoleName"] = role
 	return conn.patch(ctx, fmt.Sprintf("Users(%d)", id),
 		map[string]any{"Groups": user.Groups})
+}
+
+/*
+The handset.
+
+A phone is its own record beside the extension, not a value on it, and one
+extension can have several. The first is the one its page shows.
+
+Read and not written. Assigning a MAC address is what provisions a phone — the
+phone system builds a configuration, the handset fetches it, and getting it
+wrong is a desk phone that does not come back. No handset on the system this
+was built against has ever been provisioned, so there is no shape to check a
+write against and nothing to try one on. Reading it is still worth having:
+"what phone is on this extension" is a question asked constantly.
+*/
+var handsetFields = []option{
+	{"PhoneModel", "Phone model", "readonly", "IP phone", nil},
+	{"PhoneMac", "MAC address", "readonly", "IP phone", nil},
+	{"PhoneName", "Phone name", "readonly", "IP phone", nil},
+	{"PhoneInterface", "Routing device", "readonly", "IP phone", nil},
+}
+
+// handsetOf reads the first phone on an extension.
+func handsetOf(raw any) map[string]any {
+	phones, ok := raw.([]any)
+	if !ok || len(phones) == 0 {
+		return nil
+	}
+	phone, ok := phones[0].(map[string]any)
+	if !ok {
+		return nil
+	}
+	return map[string]any{
+		"PhoneModel":     asText(phone["TemplateName"]),
+		"PhoneMac":       asText(phone["MacAddress"]),
+		"PhoneName":      asText(phone["Name"]),
+		"PhoneInterface": asText(phone["Interface"]),
+	}
 }
