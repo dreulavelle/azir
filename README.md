@@ -1,424 +1,117 @@
 # Azir
 
-A read-only AI troubleshooting assistant for MSP work, and a platform for the
-systems that work touches. Syncro and 3CX are the first two plugins, not the
-product.
+**The helpdesk copilot that already knows your customers.**
 
-The job Azir replaces is opening ChatGPT, pasting in a ticket thread,
-explaining the customer's setup, and asking for help. It does that job by
-already knowing all of it.
+Your technician opens a ticket that says "phones are down at the Ellis office."
+Answering it means four tabs: the PSA for the ticket and its history, the PBX
+for whether anything is actually registered, the documentation for what was
+installed, and someone's memory for who to call. Azir answers it in one place,
+because it is already connected to all four.
 
-## Status
+---
 
-Working, on real tickets. Two integrations — Syncro and 3CX — and an assistant
-that reads across both: a ticket and its history, the customer and who to
-actually call, extensions and handsets, call quality, and a 3CX support bundle
-read without anyone unzipping it. Writes exist, and every one of them stays
-behind a person — either a technician acts, or the model proposes and a
-technician approves.
+## The job it replaces
 
-The foundation is still the point, because everything above it depends on the
-foundation being true: a credential vault, the customer spine, the capability
-approval gate, an audit trail, and redaction that is tested rather than
-asserted. No credential reaches a model. That is a property of where
-credentials live, not of how the prompt is worded.
+Open ChatGPT. Paste the ticket thread. Explain the customer's setup, their
+phone system, what was tried last time. Ask for help. Redact the bits you
+should not have pasted — after you have already pasted them.
 
-## Two containers
+Azir does that job by knowing all of it already, and by never sending the parts
+that should not leave.
 
-Azir is a single binary — it embeds a NATS server with JetStream, the HTTP API,
-the built frontend, and a supervisor that runs bundled plugins as child
-processes. Postgres is the one external service.
+## What it does today
 
-Plugins are still separate processes speaking NATS, so crash isolation is
-unchanged and a third-party plugin can run as its own container against the
-same server. Setting `NATS_URL` points everything at an external cluster.
+Working, on real tickets, against real customer systems.
 
-Three choices worth knowing about:
+**Answers questions across systems.** A ticket and its full history, the
+customer and who to actually call, their extensions and handsets, call quality,
+what their invoices look like. One question, several systems, one answer.
 
-**Postgres 18 with pgvector, not SQLite.** Semantic recall over tickets,
-conversations and memory is the feature a general chat tool cannot match, and
-it needs an ANN index. `sqlite-vec` is brute-force only and degrades past
-roughly a million vectors; pgvector's HNSW answers in 5–20ms at 95%+ recall well
-past ten million. Call records alone add on the order of a million rows a year.
-Postgres also gives real write concurrency for ingest that runs while backfill
-does, `tsvector` alongside vectors for hybrid retrieval in one query, and
-partitioning as the high-churn tables grow.
+**Reads a 3CX support bundle without anyone unzipping it.** Point it at a
+customer's phone system and it pulls the capture itself, reads the whole thing,
+and tells you what is wrong with it.
 
-Turso was evaluated and rejected: the Rust rewrite is in beta and its own
-maintainers advise caution for mission-critical use, which this is — Azir holds
-System Owner credentials for every customer PBX.
+**Manages extensions properly.** The screen a 3CX technician actually needs:
+every setting across six tabs, search and range selection, the desk-phone key
+layout with copy between phones, and bulk edits that show you a
+before-and-after before anything is written. Built for the customers with a
+thousand extensions, not the ones with six.
 
-**A Go supervisor, not s6.** A child's stdout is piped through the same
-redacting log handler core uses, so a plugin that logs carelessly still cannot
-put a credential on the container's stdout. An external init system would write
-those bytes straight out and silently undo the guarantee the rest of the system
-is built around. It also needs no root and no second init.
+**Remembers.** Semantic recall over tickets and past conversations, so "didn't
+we see this at Ellis last spring?" is a question with an answer.
 
-**No entrypoint script.** The binary validates its own configuration, creates
-its own directories, and fails with real errors. A shell wrapper would add a
-moving part to a design whose point is having fewer of them.
+## Why it is safe to point at customer data
 
-## Design rules
+Three properties, each enforced by the system rather than promised by a prompt.
 
-Three constraints shape every decision here.
+**No credential reaches a model.** Not redacted from the output — never in the
+input. Credentials are resolved inside the plugin, server-side, and every
+value a handler returns passes a redactor before it reaches the wire. A
+deliberately hostile test plugin tries every route out — returning a secret,
+burying it in a nested structure, hiding it in prose, using it as an object
+key, wrapping it in an error — and a sentinel is asserted absent from every
+one. It found two real holes the first time it ran.
 
-**Read-only, system-wide.** No write path to Syncro or 3CX exists in any
-component. This is a property of the system, not a restriction on the model.
-The SDK refuses to register a tool declaring `Mutates: true` — such a plugin
-fails to boot rather than failing quietly. Azir writes only its own data:
-conversations, drafts, memory, audit.
+**Reads are free; writes are not.** Every write names the permission it
+requires, or the plugin does not start. Nothing writes without a person: either
+a technician acts on a screen, or the assistant proposes and a technician
+approves the exact change. Bulk edits are staged and diffed first — you approve
+a before-and-after, not an intention.
 
-**The model gets facts, never keys.** It names what and where; it never learns
-how. Customers are addressed by opaque ID. Credentials are resolved inside the
-plugin, server-side, and every handler return value passes the SDK redactor
-before reaching the wire.
+**Nothing is capable until someone says so.** A plugin appearing on the bus
+becomes a *candidate*, not a granted capability: it lands as pending and can do
+nothing until an administrator activates it. Restarting a plugin cannot launder
+a rejection back into pending.
 
-**Discovery proposes; an administrator approves.** A plugin appearing in `$SRV`
-becomes a candidate capability, not a granted one — it lands as `pending` and
-is unusable until someone activates it. Without this, anyone able to start a
-container could extend what Azir can do. Rediscovery never overwrites a
-decision, so restarting a plugin cannot launder a rejection back into pending.
+The data stays yours in the ordinary sense too: self-hosted, single
+organisation, your own Postgres. Web search runs through your own SearXNG, so
+looking up a vendor advisory does not tell a search provider what your
+customers are having trouble with.
 
-## Layout
-
-```
-cmd/azir-core/        the whole application
-cmd/plugin-echo/      diagnostic plugin proving the transport
-cmd/plugin-syncro/    Syncro MSP: tickets, customers, assets (read-only)
-internal/api/         HTTP surface and SPA serving
-internal/audit/       append-only trail, JetStream to SQLite
-internal/logging/     the redacting slog handler
-internal/natsd/       embedded NATS server
-internal/registry/    service discovery and the capability index
-internal/store/       Postgres: spine, credentials, capabilities, audit
-internal/syncro/      Syncro API client
-internal/supervisor/  bundled plugins as supervised children
-internal/vault/       envelope encryption and key rotation
-pkg/plugin/           the SDK — importable from outside this module
-web/                  React + TypeScript, embedded into the binary
-```
-
-`pkg/` rather than `internal/` for the SDK is deliberate: it is the one package
-that must be importable from a plugin living in another repository.
-
-## Running it
+## Run it
 
 ```sh
-make keygen              # generate a master key
-export AZIR_MASTER_KEY=…
-make up                  # build and start azir + postgres
-make smoke               # twelve checks against the running stack
-make psql                # a session against the running database
+make init          # generate the secrets it needs, into .env
+make up            # build and start the stack
+```
+
+Then open <http://localhost:8080>. API and UI on the same port.
+
+`docker compose up -d` works on its own too — `compose.yaml` and `.env` are
+both at the root.
+
+```sh
+make smoke         # sixteen checks against the running stack
+make logs
 make down
 ```
 
-Then open <http://localhost:8080> — API and UI on the same port.
-
-Two things to back up: the Postgres volume, and `/var/lib/azir` for JetStream.
-
-Postgres publishes on **5433** by default so it does not collide with one
-already running on the host. Override with `AZIR_PG_PORT`.
-
-### Tuning
-
-`deploy/postgres/postgresql.conf` targets PostgreSQL 18 and is a commented,
-checked-in config rather than an autotuner — a generated config makes behaviour depend on the machine a
-container landed on, which turns "the query got slow" into archaeology. The
-baseline assumes ~4GB for the container; scale the memory settings with the
-limit. `jit = off` is deliberate: JIT regularly costs more than it saves on
-short pgvector queries and is a known source of latency spikes.
-
-`effective_io_concurrency` now counts I/Os the executor keeps in flight rather
-than being a device-parallelism hint, so the pre-18 advice to set it in the
-hundreds no longer applies.
-
-#### On asynchronous I/O
-
-Azir already runs PostgreSQL 18's async I/O. `io_method = worker` is the async
-implementation using worker processes; it is not the old synchronous path. In
-published cold-cache benchmarks the large jump is sync → worker, with io_uring
-adding a further increment — and for high-bandwidth sequential scans worker can
-beat io_uring outright, because it spreads CPU load across processes.
-
-io_uring stays off for two reasons.
-
-It **bypasses seccomp filtering** rather than merely needing a wider profile:
-operations are submitted through the ring instead of as syscalls, so a filter
-cannot see them. Docker blocks it by default for exactly this reason, and
-Google attributed a majority of the kernel exploits in one bug-bounty year to
-it. The container in question holds envelope-encrypted System Owner credentials
-for every customer PBX.
-
-And it would buy little today. Async I/O accelerates reads that reach the disk;
-HNSW traversal against an index resident in `shared_buffers` does not reach the
-disk at all. The threshold worth watching is when the working set outgrows
-shared memory — at 1536 dimensions a float32 embedding is ~6KB, so 1GB holds
-roughly 170k vectors. At that point **raise `shared_buffers` first**:
-eliminating the I/O beats making it faster. io_uring becomes interesting only
-once the working set exceeds the RAM you are willing to buy for it, and it
-should be enabled against a measurement rather than a hunch.
-
-#### Autovacuum
-
-The global settings are a floor; each table tightens further in
-`0002_autovacuum.sql`, because a setting that suits `audit_log` is wasteful on
-`customers`. `audit_log` is append-only and churns constantly, so it vacuums
-aggressively and freezes early — un-frozen pages otherwise accumulate until an
-anti-wraparound vacuum has to read the whole table in one stall. `capabilities`
-is tiny but rewritten every discovery sweep, which produces dead tuples out of
-all proportion to its size.
-
-Two global values matter more than they look. `autovacuum_vacuum_cost_limit` is
-raised well above the default throttle, which was calibrated for spinning disks
-and is the usual reason autovacuum cannot keep up. And `autovacuum_work_mem` is
-set **explicitly**: its `-1` default inherits `maintenance_work_mem`, which is
-1GB here for HNSW builds — so each of several autovacuum workers could claim
-that, on a container sized for 4GB total. A test asserts it is not `-1`.
-
-The Postgres volume mounts at `/var/lib/postgresql`, not `.../data`. The 18+
-images expect this: the cluster lives in a version-named subdirectory so a
-future major upgrade can use `pg_upgrade --link` without straddling a mount
-boundary.
-
-### Configuration
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `AZIR_MASTER_KEY` | — | base64 32-byte key sealing the vault. Required. |
-| `AZIR_MASTER_KEYS` | — | `1:<b64>,2:<b64>` when more than one key version is loaded |
-| `DATABASE_URL` | — | Postgres connection string. Required. |
-| `AZIR_DATA_DIR` | `/var/lib/azir` | JetStream storage |
-| `AZIR_HTTP_ADDR` | `:8080` | API and UI listener |
-| `NATS_URL` | embedded | set to use an external NATS instead |
-| `AZIR_PLUGIN_DIR` | `/usr/local/lib/azir/plugins` | bundled plugins to supervise |
-| `AZIR_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
-
-## Development
-
-```sh
-make check     # gofmt, go vet, go test -race
-make build     # binaries into bin/
-make test-db   # optional: reuse the running Postgres instead of a container
-```
-
-`go test ./...` needs no setup. Two different tools, for two different reasons:
-
-**NATS runs in-process.** `nats-server` is a Go library, so tests get the real
-protocol in milliseconds with no Docker. A container here would be strictly
-worse — slower, and no more faithful.
-
-**Postgres runs in a container**, started by `testcontainers` from the same
-pgvector image the deployment uses, with `deploy/postgres/postgresql.conf`
-mounted. Mocking a store proves nothing about the SQL, which is the part that
-actually breaks; and mounting the real config means a typo in our tuning fails
-the suite rather than surfacing later as mysterious production behaviour.
-
-Set `AZIR_TEST_DATABASE_URL` to point at an existing database instead — faster
-for a repeated local loop. Tuning assertions skip in that mode, since an
-externally supplied database has whatever configuration its operator gave it.
-
-The suite previously skipped store tests when no database was configured, which
-was a mistake worth naming: a skipped test looks exactly like a passing one.
-
-### Migrations
-
-The migrator is hand-rolled but not naive. Each migration runs in its own
-transaction under a Postgres advisory lock, so concurrent replica starts
-serialise rather than race. Every file is checksummed: editing an applied
-migration is a fatal error, not a silent no-op, because that is precisely how
-environments diverge. A database carrying a migration this binary does not know
-about is also refused, so an accidental rollback cannot run against a future
-schema. A migration needing `CREATE INDEX CONCURRENTLY` opts out of its
-transaction with an `-- azir:no-transaction` marker, and must then be written
-idempotently.
-
-One fixture earns special mention. `pkg/plugin/adversarial_test.go` is a
-deliberately hostile plugin that attempts every route a careless or malicious
-author might use to get a credential out: returning it, burying it in a nested
-structure, embedding it in prose, using it as an object key, wrapping it in an
-error, and reaching for another plugin's. It exists because the credential
-firewall was otherwise tested one component at a time, and a firewall is only
-meaningful end to end.
-
-It earned its place immediately by finding two real holes: the redactor walked
-map values but never map keys, so a secret used as an object key escaped
-whole; and `plugin.Errorf` messages went to the caller unredacted, because the
-contract said they were caller-safe and nothing enforced it.
-
-The canary tests are the ones that matter. A sentinel credential is pushed
-through every route that could leak it — messages, attributes, errors, groups,
-derived loggers, the database file — and asserted absent. One test deliberately
-proves the *detector* works, so a green suite means redaction ran rather than
-that the check was vacuous.
-
-## Writing a plugin
-
-A plugin is a NATS micro service. Nothing in the SDK's surface mentions NATS —
-`plugin.Serve` is the entire transport boundary.
-
-```go
-p := plugin.Plugin{
-    Name:     "syncro",
-    Version:  "0.1.0",
-    Category: plugin.CategoryPSA,
-    Tools: []plugin.Tool{{
-        Name:        "tickets.search",
-        Description: "Search tickets by customer, status or free text.",
-        Provides:    []plugin.Capability{plugin.CapWorkItemsSearch},
-        Schema:      schema,
-        Handler:     searchTickets,
-    }},
-}
-return plugin.Serve(ctx, p, plugin.WithSecrets(apiKey))
-```
-
-Two rules that are enforced rather than documented:
-
-- **Return `plugin.Errorf` for failures.** Any other error is logged locally
-  and reported to the caller as a generic failure, because wrapped vendor
-  errors routinely carry request URLs and auth headers.
-- **Register every resolved credential via `WithSecrets`.** The redactor scrubs
-  those literals wherever they appear, including inside prose that key-name
-  rules would never inspect.
-
-### Configuring a plugin
-
-A plugin publishes a JSON Schema for its own settings, and the console renders
-the form from it — there is no per-integration frontend code. Fields marked
-`x-azir-secret` are sealed into the vault; everything else lands in
-`plugin_config`. An administrator types a subdomain and an API token into the
-same panel without needing to know they are stored entirely differently.
-
-Handlers read both back at request time, so a rotated key or a changed
-subdomain takes effect without restarting anything:
-
-```go
-cfg, _ := plugin.ConfigFrom(ctx)
-subdomain, err := cfg.String(ctx, req.CustomerID, "subdomain")
-
-v, _ := plugin.VaultFrom(ctx)
-token, err := v.For(ctx, "", "api_key")
-
-// Azir customer id -> this plugin's identifier, through the spine.
-ident, _ := plugin.IdentityFrom(ctx)
-external, err := ident.External(ctx, req.CustomerID)
-```
-
-That last one is why handlers receive an opaque Azir customer id rather than a
-vendor one: memory and context hang off the spine, so switching PSA later does
-not orphan them.
-
-### Syncro permissions
-
-Azir needs exactly three: `ticket.read`, `customer.read`, `asset.read`. Nothing
-else — it never writes, never deletes, and never executes scripts.
-
-`syncro.access.check` reports what a configured token actually grants and names
-anything beyond that set, so least privilege is verifiable from inside Azir
-rather than by squinting at checkboxes in another product. Run against a full
-admin token it reports 21 excessive grants, including `script.execute`, which
-would let a compromised Azir run code on customer machines.
-
-### Freshness, not mirroring
-
-Azir caches tool results; it does not mirror Syncro. Nothing is stored that
-nobody asked for, and the vendor stays the source of truth.
-
-Each tool declares a two-level staleness budget, because only the plugin knows
-how volatile its own data is — a ticket changes while you are reading it, a
-customer's phone number does not:
-
-| tool | serve instantly | must refresh |
-|---|---|---|
-| `tickets.get`, `tickets.timeline` | 30s | 2m |
-| `tickets.search` | 60s | 5m |
-| `time.entries` | 5m | 30m |
-| `invoices.list`, `customers.standing` | 10m | 1h |
-| `customers.*` | 30m | 4h |
-| `assets.list` | 1h | 12h |
-| `docs.search` | 6h | 24h |
-| `access.check` | never cached |  |
-
-Below the first threshold a cached answer is returned as-is. Between the two it
-is still returned immediately while a refresh runs behind it, so this caller is
-fast and the next is current. Beyond the second, the caller waits. Concurrent
-refreshes of the same entry collapse into one, because twenty callers arriving
-at an expired entry must not become twenty vendor requests.
-
-Two things make this honest rather than merely fast. Every response carries
-`X-Azir-Source` and `X-Azir-Age-Seconds`, so a reader — person or model — knows
-whether a figure is live or four minutes old. And `{"refresh": true}` bypasses
-the cache entirely, which is what the UI sends when a technician opens a ticket
-they are about to act on.
-
-When the vendor is unreachable, a stale entry is served with
-`X-Azir-Source: cache-stale-vendor-unavailable` rather than an error. Something
-old and labelled beats nothing.
-
-### Permissions across heterogeneous plugins
-
-Azir has no permission table, deliberately. Every vendor models permissions
-differently — Syncro has a read/write/delete matrix, 3CX has roles, the next
-one will have something else — so a central table would either be
-Syncro-shaped and wrong, or abstract enough to mean nothing.
-
-Instead a plugin reports what it can currently do, and core interprets none of
-it. `Preflight` returns per-tool availability with a human-readable reason;
-core merges that into the registry and drops unavailable tools from the
-capability index. The vendor-specific mapping lives entirely inside the plugin,
-which is where vendor knowledge belongs.
-
-**Probe, do not ask.** The Syncro plugin originally read `/me` to learn what
-its token could do. Testing against three tokens on one account — full admin,
-partially restricted, and ticket-only — showed `/me` returns *identical*
-permissions for all three: it reports the **user's** permissions, not the
-**token's**. The self-report was confidently wrong, so availability is now
-determined by issuing a cheap single-item read against each resource and
-observing what comes back. Measured beats claimed, and every report says which
-one it is.
-
-Two details that only appear under a real restricted token. Syncro answers a
-permission denial with **401, not 403**, so a refusal is indistinguishable from
-a bad credential by status alone — the SDK's message names both causes rather
-than asserting the wrong one. And the permission precondition is applied at
-registration by a wrapper, not called inside each handler: a forgotten guard is
-invisible until someone meets a bare 401, and "remember to call this" is not a
-mechanism.
-
-This mirrors how Airbyte handles the same problem across hundreds of connectors:
-`check` that credentials work at all, `discover` what is actually available with
-them, and fail at read time for anything else. The platform receives a catalog,
-never a permission model.
-
-A test asserts every tool has a permission entry and that no entry names a tool
-that no longer exists, because the failure mode of that map drifting is a tool
-that reports itself available and then returns 401.
-
-### On MCP
-
-Syncro publishes an MCP server, and the temptation is to wire MCP into core.
-That would be a mistake: every guarantee Azir makes — the read-only invariant,
-the credential firewall, outbound redaction, capability tags — is enforced in
-`pkg/plugin`. An MCP server is a third-party tool surface that will have write
-tools, returns content we do not shape, and holds its own credentials.
-
-The right shape is an MCP *bridge plugin*, which inherits those guarantees:
-refusing to register any MCP tool that advertises mutation, drawing server
-credentials from the vault, and landing its tools as pending capabilities.
-
-Worth being clear that a bridge is strictly worse than a native plugin where
-one exists. This plugin trims responses, paces to Syncro's documented limit and
-curates its tool surface; their MCP would give us their shapes and their
-verbosity. MCP earns its place on the long tail — systems that will never
-justify a plugin of their own.
-
-### Capability tags
-
-Tools declare what they provide from a vocabulary Azir owns
-(`pkg/plugin/capability.go`). Core never asks whether a plugin "is a PSA"; it
-asks whether anything provides `customers.list`. Features declare the
-capabilities they need and report themselves unavailable, with a reason, when
-nothing supplies them — so a partial integration is still useful.
-
-The vocabulary is deliberately small. Tags are added when a real integration
-shows genuine overlap, never in anticipation of one.
+## What is in the box
+
+Azir is **one binary**: it embeds a NATS server with JetStream, the HTTP API,
+the built frontend, and a supervisor running the bundled plugins as child
+processes. Beside it run **Postgres** — because semantic recall needs a real
+vector index — and **SearXNG**, for private web search.
+
+Four integrations ship with it:
+
+| | |
+|---|---|
+| **Syncro** | tickets, timelines, customers, contacts, assets, time entries, invoices |
+| **3CX** | system health, extensions, handsets, call history and quality, logs, support bundles, and the full extension editor |
+| **SearXNG** | web search that stays on your infrastructure |
+| **echo** | a diagnostic plugin that proves the transport and the credential firewall |
+
+Plugins are ordinary processes speaking NATS, so a third-party one runs as its
+own container against the same bus. Drop an executable named `plugin-<name>`
+into `plugins/` and it is supervised on the next start — nothing to register,
+nothing to rebuild. It still has to be approved before it can do anything.
+
+## Documentation
+
+| | |
+|---|---|
+| [Architecture](docs/architecture.md) | how it is put together, and the three rules that shaped it |
+| [Operations](docs/operations.md) | configuration, Postgres tuning, backups |
+| [Writing a plugin](docs/plugins.md) | the SDK, credentials, caching, permissions |
+| [Development](docs/development.md) | tests, migrations, and the canary suite |

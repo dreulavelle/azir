@@ -118,12 +118,12 @@ listing=$(get "$BASE/api/credentials")
 echo "$listing" | grep -q "$CANARY" && fail "credential value returned by the API"
 
 step 11 "the canary never appears in the container's logs"
-if docker compose -f deploy/compose.yaml logs 2>/dev/null | grep -q "$CANARY"; then
+if docker compose logs 2>/dev/null | grep -q "$CANARY"; then
   fail "canary credential reached the container logs"
 fi
 
 step 12 "pgvector is present and indexable"
-docker compose -f deploy/compose.yaml exec -T postgres \
+docker compose exec -T postgres \
   psql -U azir -d azir -qtAc "SELECT '[1,2,3]'::vector <=> '[1,2,4]'::vector" >/dev/null \
   || fail "pgvector is not usable in the running database"
 
