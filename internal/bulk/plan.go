@@ -44,7 +44,19 @@ const (
 	KindText   = "text"
 	KindBool   = "bool"
 	KindChoice = "choice"
+	// KindSecret is a credential — a voicemail PIN. Written, never read.
+	//
+	// Deliberately outside everything in this package. A plan is stored in the
+	// database, shown on a screen, kept in the activity log and handed back as
+	// an undo, and a value that goes through all of that is a credential at
+	// rest in four places. There is also nothing to compare it against, since
+	// nothing reads it: every "change" would be a change. Secrets are set as
+	// their own action on one extension, not staged in a batch.
+	KindSecret = "secret"
 )
+
+// Comparable reports whether a field can take part in a before-and-after.
+func Comparable(spec Spec) bool { return spec.Kind != KindSecret }
 
 // Spec describes one field: what it is called, how it reads, and what it will
 // accept.
@@ -67,8 +79,26 @@ why they are kept apart rather than merged into whatever the plugin happens to
 call them.
 */
 var Core = []Spec{
-	{Field: FieldName, Label: "Display name", Kind: KindText, Group: "Basics"},
-	{Field: FieldEnabled, Label: "Enabled", Kind: KindBool, Group: "Basics"},
+	{Field: FieldName, Label: "Display name", Kind: KindText, Group: "General"},
+	{Field: FieldEnabled, Label: "Enabled", Kind: KindBool, Group: "General"},
+}
+
+/*
+Splits reports whether a phone system offers the parts of a name separately.
+
+Where it does, the display name is the two of them joined and setting both is a
+contradiction — so a form offers the parts and the display name stays for the
+sheet, which has always had one column for it. Answered from the published
+fields rather than assumed, because a phone system that only has a display name
+is a phone system where the display name is the field.
+*/
+func Splits(specs []Spec) bool {
+	for _, spec := range specs {
+		if spec.Field == "FirstName" {
+			return true
+		}
+	}
+	return false
 }
 
 /*
@@ -116,16 +146,32 @@ func SheetColumns(specs []Spec) []string {
 	columns := make([]string, 0, len(specs)+1)
 	columns = append(columns, "Extension")
 	for _, spec := range specs {
+		if !Comparable(spec) {
+			continue
+		}
 		columns = append(columns, spec.Label)
 	}
 	return columns
+}
+
+// Sheeted is the fields a sheet can carry, which is every field but the
+// secrets. Exported because the mapping and the download both need the same
+// answer as SheetColumns.
+func Sheeted(specs []Spec) []Spec {
+	kept := make([]Spec, 0, len(specs))
+	for _, spec := range specs {
+		if Comparable(spec) {
+			kept = append(kept, spec)
+		}
+	}
+	return kept
 }
 
 // CanonicalMapping is what SheetColumns maps to, for the sheets Azir writes
 // itself and does not need to guess at.
 func CanonicalMapping(specs []Spec) Mapping {
 	m := Mapping{Extension: 0, Fields: make(map[Field]int, len(specs))}
-	for i, spec := range specs {
+	for i, spec := range Sheeted(specs) {
 		m.Fields[spec.Field] = i + 1
 	}
 	return m
@@ -133,9 +179,10 @@ func CanonicalMapping(specs []Spec) Mapping {
 
 // Line renders one extension as a row under SheetColumns.
 func Line(extension string, v Values, specs []Spec) []string {
-	line := make([]string, 0, len(specs)+1)
+	sheeted := Sheeted(specs)
+	line := make([]string, 0, len(sheeted)+1)
 	line = append(line, extension)
-	for _, spec := range specs {
+	for _, spec := range sheeted {
 		line = append(line, v[spec.Field])
 	}
 	return line
@@ -388,6 +435,9 @@ func Choose(want map[string]Values, now Current, specs []Spec) Plan {
 		row.Name = state[FieldName]
 
 		for _, spec := range specs {
+			if !Comparable(spec) {
+				continue
+			}
 			raw, asked := want[extension][spec.Field]
 			if !asked || strings.TrimSpace(raw) == "" {
 				continue
@@ -491,6 +541,9 @@ func compare(sheet Sheet, i int, mapping Mapping, state Values, specs []Spec) ([
 	var changes []Change
 
 	for _, spec := range specs {
+		if !Comparable(spec) {
+			continue
+		}
 		col, mapped := mapping.Fields[spec.Field]
 		if !mapped {
 			continue
@@ -569,6 +622,9 @@ func Suggest(columns []string, specs []Spec) Mapping {
 			continue
 		}
 		for _, spec := range specs {
+			if !Comparable(spec) {
+				continue
+			}
 			if _, already := m.Fields[spec.Field]; already {
 				continue
 			}

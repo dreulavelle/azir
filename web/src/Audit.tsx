@@ -75,6 +75,13 @@ const ACTIONS: Record<string, { verb: string; note?: string }> = {
   "snapshot.keep": { verb: "Changed how long a capture is kept" },
   "snapshot.delete": { verb: "Removed a capture" },
 
+  "extension.change": {
+    verb: "Changed an extension",
+    note: "Which settings were changed is recorded. What they were changed to is not — one of them is a voicemail PIN.",
+  },
+  "extension.create": { verb: "Added an extension" },
+  "extension.remove": { verb: "Removed an extension" },
+
   "bulk.upload": { verb: "Uploaded a sheet of changes" },
   "bulk.chosen": {
     verb: "Chose extensions to change",

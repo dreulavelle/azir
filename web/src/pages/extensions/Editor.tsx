@@ -1,0 +1,277 @@
+import { useMemo, useState } from "react";
+import type { BulkExtension, BulkSpec } from "../../api";
+import { Sheet, Tabs } from "../../components";
+import { Button, Chip, Problem, TextInput } from "../../ui";
+import { Field, LEAVE, MIXED } from "./Fields";
+
+/**
+ * The extension editor: one form, three jobs.
+ *
+ * Editing one extension, editing several together, and making a new one are
+ * the same fields with the same rules, so they are the same form. Three
+ * screens would drift — a field added to one, worded differently in another —
+ * and the drift would be invisible until somebody set the wrong thing.
+ *
+ * The tabs are 3CX's own, in 3CX's order, because a technician arrives already
+ * knowing where things live. Making them find Voicemail somewhere new is a
+ * cost with nothing on the other side of it.
+ *
+ * Nothing is sent that was not touched. The form starts from what is true and
+ * submits the difference, so a field somebody scrolled past is not a field
+ * they set.
+ */
+
+/** The tabs, in the order the phone system puts them. */
+const TABS = [
+  { id: "General", label: "General" },
+  { id: "Call forwarding", label: "Call forwarding" },
+  { id: "IP phone", label: "IP phone" },
+  { id: "BLF", label: "BLF" },
+  { id: "Voicemail", label: "Voicemail" },
+  { id: "Options", label: "Options" },
+  { id: "Apps and sign-in", label: "Apps" },
+];
+
+/**
+ * What a new extension gets before anybody touches it.
+ *
+ * Both of these ship the wrong way round for a hosted deployment: 3CX blocks
+ * remote non-tunnel connections and leaves audio to the endpoints, and the
+ * first thing anybody does to a new extension is turn both around. Doing it
+ * here means it is right by default and visible in the form rather than
+ * remembered.
+ */
+const NEW_DEFAULTS: Record<string, string> = {
+  PbxDeliversAudio: "yes",
+  BlockTunnel: "no",
+  Enabled: "yes",
+  VMEnabled: "yes",
+};
+
+export type Mode =
+  | { kind: "one"; extension: BulkExtension }
+  | { kind: "together"; extensions: BulkExtension[] }
+  | { kind: "new" };
+
+export function Editor({
+  mode,
+  specs,
+  customer,
+  busy,
+  problem,
+  nextNumber,
+  onSave,
+  onClose,
+}: {
+  mode: Mode;
+  specs: BulkSpec[];
+  customer: string;
+  busy: boolean;
+  problem: string | null;
+  /** The number a new extension would get. */
+  nextNumber: string;
+  onSave: (draft: Record<string, string>, number: string) => void;
+  onClose: () => void;
+}) {
+  const together = mode.kind === "together";
+  const making = mode.kind === "new";
+
+  // What each field says now. For several at once, a field they do not agree
+  // on reads as mixed rather than as whichever one happened to be first.
+  const now = useMemo(() => {
+    if (mode.kind === "one") return mode.extension.values;
+    if (mode.kind === "new") return NEW_DEFAULTS;
+    const [first, ...rest] = mode.extensions;
+    const shared: Record<string, string> = {};
+    for (const [field, value] of Object.entries(first?.values ?? {})) {
+      shared[field] = rest.every((e) => e.values[field] === value) ? value : MIXED;
+    }
+    return shared;
+  }, [mode]);
+
+  // Only what somebody actually set. Starting empty rather than from `now` is
+  // what makes "submit the difference" true by construction.
+  const [draft, setDraft] = useState<Record<string, string>>({});
+  const [number, setNumber] = useState(nextNumber);
+  const [tab, setTab] = useState("General");
+
+  const valueOf = (spec: BulkSpec) => {
+    if (draft[spec.field] !== undefined) return draft[spec.field];
+    if (together) return now[spec.field] === MIXED ? MIXED : LEAVE;
+    return now[spec.field] ?? "";
+  };
+
+  const set = (field: string, next: string) =>
+    setDraft((was) => ({ ...was, [field]: next }));
+
+  // A field is being set if it was touched and says something other than
+  // "leave alone" or "mixed".
+  const setting = Object.entries(draft).filter(
+    ([field, value]) =>
+      value !== MIXED && (together || making ? value !== LEAVE || now[field] !== undefined : true) &&
+      value !== (together ? LEAVE : (now[field] ?? "")),
+  );
+
+  const byTab = useMemo(() => {
+    const groups = new Map<string, BulkSpec[]>();
+    // Where the phone system has the parts of a name, the form offers the
+    // parts. The display name is what it builds from them, so offering both
+    // would be two controls fighting over one setting — it stays for the
+    // spreadsheet, which has always had one column for it.
+    const splits = specs.some((s) => s.field === "FirstName");
+    for (const spec of specs) {
+      if (splits && spec.field === "name") continue;
+      const list = groups.get(spec.group) ?? [];
+      list.push(spec);
+      groups.set(spec.group, list);
+    }
+    return groups;
+  }, [specs]);
+
+  // How many changes sit on each tab, so a tab somebody edited and scrolled
+  // away from is not lost behind another one.
+  const counts = useMemo(() => {
+    const per: Record<string, number> = {};
+    for (const [field] of setting) {
+      const group = specs.find((s) => s.field === field)?.group;
+      if (group) per[group] = (per[group] ?? 0) + 1;
+    }
+    return per;
+  }, [setting, specs]);
+
+  const shown = byTab.get(tab) ?? [];
+  const title = making
+    ? "New extension"
+    : together
+      ? `${(mode as { extensions: BulkExtension[] }).extensions.length} extensions`
+      : `Extension ${(mode as { extension: BulkExtension }).extension.extension}`;
+
+  const subtitle = making
+    ? `On ${customer}. It will be created as ${number || "—"}.`
+    : together
+      ? `On ${customer}. Anything left alone stays as it is.`
+      : `${(mode as { extension: BulkExtension }).extension.name || "unnamed"} · ${customer}`;
+
+  return (
+    <Sheet
+      open
+      wide
+      onOpenChange={(next) => {
+        if (!next && !busy) onClose();
+      }}
+      title={title}
+      description={subtitle}
+      footer={
+        <>
+          <span className="text-xs text-ink-faint">
+            {setting.length === 0
+              ? making
+                ? "Give it a name to continue."
+                : "Nothing changed yet."
+              : `${setting.length} ${setting.length === 1 ? "change" : "changes"}`}
+          </span>
+          <div className="flex gap-2">
+            <Button onClick={onClose} disabled={busy}>
+              Cancel
+            </Button>
+            <Button
+              weight="primary"
+              disabled={busy || (making ? !draft.FirstName && !draft.LastName : setting.length === 0)}
+              onClick={() => onSave(Object.fromEntries(setting), number)}
+            >
+              {busy
+                ? "Saving…"
+                : making
+                  ? "Create"
+                  : setting.length === 0
+                    ? "Save"
+                    : together
+                      ? `Review ${setting.length}`
+                      : `Save ${setting.length}`}
+            </Button>
+          </div>
+        </>
+      }
+    >
+      {problem && (
+        <div className="mb-4">
+          <Problem>{problem}</Problem>
+        </div>
+      )}
+
+      {making && (
+        <div className="mb-4 flex items-start justify-between gap-4 rounded-lg border border-edge bg-sunken/60 px-3 py-3">
+          <label htmlFor="new-number" className="pt-1.5 text-sm">
+            Extension number
+            <span className="mt-0.5 block text-2xs text-ink-faint">
+              The next one free after the highest. Numbers of deleted extensions are not reused —
+              their old routing can still point at them.
+            </span>
+          </label>
+          <div className="w-[190px] shrink-0">
+            <TextInput
+              id="new-number"
+              value={number}
+              onChange={(e) => setNumber(e.target.value)}
+            />
+          </div>
+        </div>
+      )}
+
+      <Tabs
+        value={tab}
+        onChange={setTab}
+        tabs={TABS.filter((t) => byTab.has(t.id) || t.id === "Call forwarding" || t.id === "IP phone" || t.id === "BLF").map((t) => ({
+          ...t,
+          count: counts[t.id],
+        }))}
+      />
+
+      {shown.length > 0 ? (
+        <div className="divide-y divide-edge/60">
+          {shown.map((spec) => (
+            <Field
+              key={spec.field}
+              spec={spec}
+              value={valueOf(spec)}
+              was={together || making ? undefined : (now[spec.field] ?? "")}
+              together={together}
+              disabled={busy || (together && spec.kind === "secret")}
+              onChange={(next) => set(spec.field, next)}
+            />
+          ))}
+        </div>
+      ) : (
+        <NotYet tab={tab} />
+      )}
+    </Sheet>
+  );
+}
+
+/**
+ * A tab whose fields Azir cannot set yet, said plainly.
+ *
+ * These are on the phone system's page and not on this one, and a tab that
+ * silently showed nothing would read as a bug. What each one is waiting on is
+ * specific, because "coming soon" is not information.
+ */
+function NotYet({ tab }: { tab: string }) {
+  const why: Record<string, string> = {
+    "Call forwarding":
+      "Forwarding lives in profiles — Available, Away, Out of office — and each one holds its own rules for busy and no-answer calls. Reading them works; writing one back means replacing the whole profile, which is not something to get half right.",
+    "IP phone":
+      "The handset, its MAC address and where it routes are held on the phone record rather than the extension. No handset on this phone system has been provisioned yet, so there is nothing here to change against.",
+    BLF: "The phone system keeps BLF keys as one blob of XML rather than as a list. No extension here has any set, so there is no example of the format to build an editor against.",
+  };
+  return (
+    <div className="rounded-lg border border-dashed border-edge px-5 py-8 text-center">
+      <div className="text-sm font-medium">Not editable from Azir yet</div>
+      <p className="mx-auto mt-1.5 max-w-[52ch] text-xs text-ink-dim">
+        {why[tab] ?? "Nothing on this tab can be set yet."}
+      </p>
+      <p className="mt-2 text-xs text-ink-faint">
+        Change it on the phone system for now. <Chip>{tab}</Chip>
+      </p>
+    </div>
+  );
+}

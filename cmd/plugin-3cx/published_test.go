@@ -52,7 +52,7 @@ func TestAzirCanReadWhatThisPublishes(t *testing.T) {
 			t.Errorf("%s arrives with no group, so it lands under Other", was.Field)
 		}
 		switch spec.Kind {
-		case bulk.KindBool, bulk.KindText:
+		case bulk.KindBool, bulk.KindText, bulk.KindSecret:
 		case bulk.KindChoice:
 			if len(spec.Choices) == 0 {
 				t.Errorf("%s is a choice with nothing to choose from", was.Field)

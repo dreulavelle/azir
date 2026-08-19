@@ -1020,6 +1020,27 @@ export const api = {
       { method: "POST", body: JSON.stringify({ wanted }) },
     ),
 
+  /** Applies a form's changes to one extension. */
+  setExtension: (customerID: string, number: string, values: Record<string, string>) =>
+    request<{ extension: string; changed: number }>(
+      `/api/extensions/${encodeURIComponent(number)}?customer_id=${encodeURIComponent(customerID)}`,
+      { method: "PATCH", body: JSON.stringify({ values }) },
+    ),
+
+  /** Makes one, then sets everything else on it. */
+  createExtension: (customerID: string, number: string, values: Record<string, string>) =>
+    request<{ extension: string; settings_problem?: string }>(
+      `/api/extensions?customer_id=${encodeURIComponent(customerID)}`,
+      { method: "POST", body: JSON.stringify({ number, values }) },
+    ),
+
+  /** Deletes the ones named, and only the ones named. */
+  removeExtensions: (customerID: string, extensions: string[]) =>
+    request<{ removed: number }>(
+      `/api/extensions/remove?customer_id=${encodeURIComponent(customerID)}`,
+      { method: "POST", body: JSON.stringify({ extensions }) },
+    ),
+
   bulkEdits: (customerID: string) =>
     request<{ edits: BulkEdit[] }>(`/api/bulk?customer_id=${encodeURIComponent(customerID)}`),
 

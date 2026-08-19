@@ -592,3 +592,50 @@ func TestChoosingIsTheSameComparison(t *testing.T) {
 		t.Errorf("choosing one option proposed %+v", got.Changes)
 	}
 }
+
+/*
+A secret never reaches a sheet, a plan or a diff.
+
+A voicemail PIN is a credential. A plan is stored in the database, drawn on a
+screen, kept in the activity log and handed back as an undo, so a value that
+went through it would be a credential at rest in four places — and there is
+nothing to compare it against anyway, since nothing reads it back, so every
+row would report a change forever.
+*/
+func TestSecretsStayOutOfEverything(t *testing.T) {
+	specs := Merge(Core, []Spec{
+		{Field: "VMPIN", Label: "Voicemail PIN", Kind: KindSecret, Group: "Voicemail"},
+		{Field: "VMEnabled", Label: "Voicemail", Kind: KindBool, Group: "Voicemail"},
+	})
+
+	for _, column := range SheetColumns(specs) {
+		if strings.Contains(strings.ToLower(column), "pin") {
+			t.Errorf("a sheet carries %q, so a PIN can be exported", column)
+		}
+	}
+	if _, mapped := CanonicalMapping(specs).Fields["VMPIN"]; mapped {
+		t.Error("a sheet column maps to the PIN")
+	}
+	if got := Suggest([]string{"Extension", "Voicemail PIN"}, specs); len(got.Fields) != 0 {
+		t.Errorf("Suggest mapped a PIN column: %+v", got.Fields)
+	}
+
+	// Line writes one cell per sheeted column, so a secret must not shift the
+	// row by one and quietly put the PIN under the next heading.
+	line := Line("100", Values{FieldName: "Reception", "VMPIN": "1234", "VMEnabled": "yes"}, specs)
+	if len(line) != len(SheetColumns(specs)) {
+		t.Fatalf("Line wrote %d cells for %d columns", len(line), len(SheetColumns(specs)))
+	}
+	for _, cell := range line {
+		if cell == "1234" {
+			t.Error("the PIN was written into the sheet")
+		}
+	}
+
+	// And it is never a change, however it is asked for.
+	now := Current{"100": {FieldName: "Reception", "VMPIN": "", "VMEnabled": "yes"}}
+	plan := Choose(map[string]Values{"100": {"VMPIN": "9999"}}, now, specs)
+	if plan.Changing != 0 {
+		t.Errorf("setting a PIN produced a comparable change: %+v", plan.Rows)
+	}
+}

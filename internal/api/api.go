@@ -213,6 +213,13 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/bulk/{id}/cancel", s.require(identity.PermPhoneManage, s.cancelBulk))
 	mux.HandleFunc("POST /api/bulk/{id}/revert", s.require(identity.PermPhoneManage, s.revertBulk))
 
+	// One extension at a time: the form, rather than the sheet. Same
+	// capabilities, same approvals, same audit — a different number of
+	// extensions and no separate screen for the difference.
+	mux.HandleFunc("POST /api/extensions", s.require(identity.PermPhoneManage, s.createExtension))
+	mux.HandleFunc("PATCH /api/extensions/{number}", s.require(identity.PermPhoneManage, s.setExtension))
+	mux.HandleFunc("POST /api/extensions/remove", s.require(identity.PermPhoneManage, s.removeExtensions))
+
 	// Diagnostic snapshots: a phone system's support bundle, read.
 	mux.HandleFunc("GET /api/snapshots", s.require(p, ignoreActor(s.listSnapshots)))
 	mux.HandleFunc("GET /api/snapshots/{id}", s.require(p, ignoreActor(s.getSnapshot)))

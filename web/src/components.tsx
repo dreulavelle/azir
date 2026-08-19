@@ -225,6 +225,75 @@ export function Dialog({
   );
 }
 
+// --- sheet -------------------------------------------------------------------
+
+/**
+ * A panel that slides in from the right.
+ *
+ * A dialog in the middle of the screen is right for a question and wrong for a
+ * form: it covers what you were looking at, and editing an extension is work
+ * you do while reading the list you picked it from. This keeps the list
+ * visible and gives the form a full column of height, which a centred dialog
+ * cannot without becoming a page of its own.
+ */
+export function Sheet({
+  open,
+  onOpenChange,
+  title,
+  description,
+  children,
+  footer,
+  wide,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  title: ReactNode;
+  description?: ReactNode;
+  children?: ReactNode;
+  footer?: ReactNode;
+  /** For a form with two columns rather than one. */
+  wide?: boolean;
+}) {
+  return (
+    <RDialog.Root open={open} onOpenChange={onOpenChange}>
+      <RDialog.Portal>
+        <RDialog.Overlay className="fixed inset-0 z-40 bg-black/40 backdrop-blur-[1px]" />
+        <RDialog.Content
+          className={cn(
+            "fixed inset-y-0 right-0 z-50 flex w-full flex-col border-l border-edge bg-raised shadow-e3",
+            wide ? "max-w-[720px]" : "max-w-[520px]",
+          )}
+        >
+          <div className="flex items-start justify-between gap-3 border-b border-edge px-5 py-4">
+            <div className="min-w-0">
+              <RDialog.Title className="text-base font-semibold">{title}</RDialog.Title>
+              {description && (
+                <RDialog.Description className="mt-0.5 text-xs text-ink-dim">
+                  {description}
+                </RDialog.Description>
+              )}
+            </div>
+            <RDialog.Close
+              className="shrink-0 rounded-md px-2 py-1 text-sm text-ink-faint transition-colors hover:bg-sunken hover:text-ink"
+              aria-label="Close"
+            >
+              ✕
+            </RDialog.Close>
+          </div>
+
+          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">{children}</div>
+
+          {footer && (
+            <div className="flex items-center justify-between gap-3 border-t border-edge px-5 py-3">
+              {footer}
+            </div>
+          )}
+        </RDialog.Content>
+      </RDialog.Portal>
+    </RDialog.Root>
+  );
+}
+
 // --- collapsible -------------------------------------------------------------
 
 export function Collapsible({

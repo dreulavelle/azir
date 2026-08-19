@@ -607,43 +607,57 @@ type option struct {
 	Field string `json:"field"`
 	// Label is the console's wording, which is not always the same thing.
 	Label string `json:"label"`
-	// Kind is "bool" or "choice"; a choice carries its Choices.
+	// Kind is "bool", "text", "choice" or "secret". A choice carries its
+	// Choices. A secret can be written and is never read back — a voicemail
+	// PIN is a credential, and the rule here is that Azir sets them and never
+	// shows them.
 	Kind    string   `json:"kind"`
 	Group   string   `json:"group"`
 	Choices []string `json:"choices,omitempty"`
 }
 
 var editable = []option{
-	{"Enabled", "Enabled", "bool", "Basics", nil},
-	{"Internal", "May only call internally", "bool", "Basics", nil},
-	{"HideInPhonebook", "Hide from the company phonebook", "bool", "Basics", nil},
-	{"EnableHotdesking", "Hot desking", "bool", "Basics", nil},
-	{"SendEmailMissedCalls", "Email on a missed call", "bool", "Basics", nil},
-
-	// The two on every MSP's list.
-	{"PbxDeliversAudio", "PBX delivers audio", "bool", "Network and audio", nil},
-	{"BlockTunnel", "Block remote non-tunnel connections", "bool", "Network and audio", nil},
-	{"AllowLanOnly", "Allow only from the local network", "bool", "Network and audio", nil},
-	{"SRTPMode", "Encrypt the audio (SRTP)", "choice", "Network and audio",
-		[]string{"SRTPDisabled", "SRTPEnabled", "SRTPEnforced"}},
-
-	// Recording.
-	{"RecordCalls", "Record calls", "bool", "Recording", nil},
-	{"RecordExternalCallsOnly", "Record external calls only", "bool", "Recording", nil},
-	{"RecordEmailNotify", "Email when a call is recorded", "bool", "Recording", nil},
-	{"AllowOwnRecordings", "Let them hear their own recordings", "bool", "Recording", nil},
+	// General — who the extension is.
+	{"FirstName", "First name", "text", "General", nil},
+	{"LastName", "Last name", "text", "General", nil},
+	{"EmailAddress", "Email", "text", "General", nil},
+	{"Mobile", "Mobile number", "text", "General", nil},
+	{"OutboundCallerID", "Outbound caller ID", "text", "General", nil},
+	{"Enable2FA", "Two-factor authentication", "bool", "General", nil},
+	{"Enabled", "Enabled", "bool", "General", nil},
+	{"Internal", "May only call internally", "bool", "General", nil},
+	{"HideInPhonebook", "Hide from the company phonebook", "bool", "General", nil},
+	{"EnableHotdesking", "Hot desking", "bool", "General", nil},
+	{"SendEmailMissedCalls", "Email on a missed call", "bool", "General", nil},
 
 	// Voicemail.
 	{"VMEnabled", "Voicemail", "bool", "Voicemail", nil},
+	{"VMPIN", "Voicemail PIN", "secret", "Voicemail", nil},
 	{"VMDisablePinAuth", "No PIN needed for voicemail", "bool", "Voicemail", nil},
-	{"VMPlayCallerID", "Read out the caller's number", "bool", "Voicemail", nil},
-	{"PinProtected", "PIN protected", "bool", "Voicemail", nil},
-	{"VMPlayMsgDateTime", "Read out the time of the message", "choice", "Voicemail",
-		[]string{"None", "Play12Hr", "Play24Hr"}},
 	{"VMEmailOptions", "What to email about voicemail", "choice", "Voicemail",
 		[]string{"None", "Notification", "Attachment", "AttachmentAndDelete", "VmailToMembers", "EmailToExtrasOnly"}},
+	{"VMPlayMsgDateTime", "Read out the time of the message", "choice", "Voicemail",
+		[]string{"None", "Play12Hr", "Play24Hr"}},
+	{"VMPlayCallerID", "Read out the caller's number", "bool", "Voicemail", nil},
+	{"PinProtected", "PIN protected", "bool", "Voicemail", nil},
 
-	// Apps and sign-in.
+	// Options — the three every MSP checks, and the recording set.
+	{"PbxDeliversAudio", "PBX delivers audio", "bool", "Options", nil},
+	{"BlockTunnel", "Block remote non-tunnel connections", "bool", "Options", nil},
+	{"AllowLanOnly", "Allow only from the local network", "bool", "Options", nil},
+	{"RecordCalls", "Record calls", "bool", "Options", nil},
+	{"RecordExternalCallsOnly", "Record external calls only", "bool", "Options", nil},
+	{"RecordEmailNotify", "Email when a call is recorded", "bool", "Options", nil},
+	{"AllowOwnRecordings", "Let them hear their own recordings", "bool", "Options", nil},
+	{"SRTPMode", "Encrypt the audio (SRTP)", "choice", "Options",
+		[]string{"SRTPDisabled", "SRTPEnabled", "SRTPEnforced"}},
+	{"CallScreening", "Ask callers to say who they are", "bool", "Options", nil},
+	{"TranscriptionMode", "Transcribe", "choice", "Options",
+		[]string{"Nothing", "Voicemail", "Recordings", "Both", "Inherit"}},
+	{"PromptSet", "Prompt set", "text", "Options", nil},
+
+	// Apps and sign-in. Not on the list of what has to be editable, but it was
+	// already here and taking it away would be a regression somebody notices.
 	{"MyPhoneShowRecordings", "Show recordings in the app", "bool", "Apps and sign-in", nil},
 	{"MyPhoneHideForwardings", "Hide forwarding rules in the app", "bool", "Apps and sign-in", nil},
 	{"MyPhoneAllowDeleteRecordings", "Let them delete recordings", "bool", "Apps and sign-in", nil},
@@ -654,11 +668,6 @@ var editable = []option{
 	{"MS365CalendarEnabled", "Microsoft 365 Calendar", "bool", "Apps and sign-in", nil},
 	{"MS365ContactsEnabled", "Microsoft 365 Contacts", "bool", "Apps and sign-in", nil},
 	{"MS365TeamsEnabled", "Microsoft Teams", "bool", "Apps and sign-in", nil},
-
-	{"CallScreening", "Ask callers to say who they are", "bool", "Calls", nil},
-	{"TranscriptionMode", "Transcribe", "choice", "Calls",
-		[]string{"Nothing", "Voicemail", "Recordings", "Both", "Inherit"}},
-	{"PromptSet", "Prompt set", "text", "Calls", nil},
 }
 
 // editableByName is the same list as an allowlist to check against.
@@ -721,6 +730,10 @@ func setExtensionOptions(ctx context.Context, req plugin.Request) (any, error) {
 			// A choice is checked against what 3CX accepts, so a typo is
 			// refused by name here rather than as an opaque 400 from the PBX
 			// halfway through a batch.
+			//
+			// A secret goes through unchecked and unlogged. It is write-only
+			// by construction: nothing reads it back, so there is nothing to
+			// compare it against.
 			if len(spec.Choices) > 0 {
 				text, _ := value.(string)
 				if !slices.Contains(spec.Choices, text) {
@@ -1179,8 +1192,14 @@ func extensionSettings(ctx context.Context, req plugin.Request) (any, error) {
 
 	// Sorted so the request is identical between calls, which keeps it
 	// cacheable and keeps a diff of two runs readable.
+	// Secrets are never asked for. Leaving them out of the $select is the
+	// boundary itself: a value that is never fetched cannot be logged, cached,
+	// returned or exported by some later mistake.
 	fields := make([]string, 0, len(editable))
 	for _, o := range editable {
+		if o.Kind == "secret" {
+			continue
+		}
 		fields = append(fields, o.Field)
 	}
 	sort.Strings(fields)

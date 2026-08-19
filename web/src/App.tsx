@@ -35,6 +35,9 @@ import { settingsTabsFor } from "./pages/settingsTabs";
  * carry through a shift in the queue.
  */
 const Settings = lazy(() => import("./pages/Settings").then((m) => ({ default: m.Settings })));
+const Extensions = lazy(() =>
+  import("./pages/Extensions").then((m) => ({ default: m.Extensions })),
+);
 const BulkEdits = lazy(() => import("./pages/BulkEdits").then((m) => ({ default: m.BulkEdits })));
 
 /**
@@ -243,10 +246,10 @@ function Console() {
         />
         {actor.permissions.includes(Perm.phoneManage) && (
           <NavItem
-            icon={<Icon.people />}
-            label="Bulk edits"
-            active={route.name === "bulk"}
-            onClick={() => go({ name: "bulk" })}
+            icon={<Icon.phone />}
+            label="Extensions"
+            active={route.name === "extensions" || route.name === "bulk"}
+            onClick={() => go({ name: "extensions" })}
           />
         )}
 
@@ -388,6 +391,11 @@ function Console() {
         {route.name === "customers" && <Customers query={route.query} go={go} />}
         {route.name === "customer" && <CustomerDetail id={route.id} go={go} actor={actor} />}
         {route.name === "chats" && <Chats go={go} />}
+        {route.name === "extensions" && (
+          <Suspense fallback={<div className="mx-auto max-w-[1180px] px-6 py-6"><div className="h-40 animate-pulse rounded-lg bg-sunken" /></div>}>
+            <Extensions actor={actor} go={(path) => go(path === "/bulk" ? { name: "bulk" } : { name: "extensions" })} />
+          </Suspense>
+        )}
         {route.name === "bulk" && (
           <Suspense fallback={<div className="mx-auto max-w-[1180px] px-6 py-6"><div className="h-40 animate-pulse rounded-lg bg-sunken" /></div>}>
             <BulkEdits actor={actor} />
