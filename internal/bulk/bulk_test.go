@@ -639,3 +639,50 @@ func TestSecretsStayOutOfEverything(t *testing.T) {
 		t.Errorf("setting a PIN produced a comparable change: %+v", plan.Rows)
 	}
 }
+
+/*
+A destination is a field like any other.
+
+Written as one string so a forwarding rule can sit in a sheet, in a diff and in
+a bulk edit without any of them learning what a destination is. Everything
+below is what somebody would actually type.
+*/
+func TestWhereACallGoes(t *testing.T) {
+	spec := Spec{
+		Field: "NoAnswerExternal", Label: "No answer", Kind: KindDestination,
+		Choices: []string{"None", "VoiceMail", "Extension", "External", "Queue", "RingGroup"},
+	}
+
+	for _, c := range []struct{ in, want string }{
+		{"VoiceMail", "VoiceMail"},
+		{"voicemail", "VoiceMail"},
+		// The phone system keeps the extension's own number beside a voicemail
+		// rule. It is whose voicemail it is, not where the call goes.
+		{"VoiceMail:100", "VoiceMail"},
+		{"None:100", "None"},
+		{"None", "None"},
+		{"Extension:101", "Extension:101"},
+		{"extension: 101", "Extension:101"},
+		{"External:5551234", "External:5551234"},
+	} {
+		got, err := Normalise(spec, c.in)
+		if err != nil || got != c.want {
+			t.Errorf("Normalise(%q) = %q, %v; want %q", c.in, got, err, c.want)
+		}
+	}
+
+	// A place with no address sends calls into silence, which is worse than
+	// refusing the change.
+	for _, bad := range []string{"Extension", "External", "Queue", "Somewhere", "Extension:"} {
+		if got, err := Normalise(spec, bad); err == nil {
+			t.Errorf("Normalise(%q) = %q; want a refusal", bad, got)
+		}
+	}
+
+	if where, number := Where("Extension:101"); where != "Extension" || number != "101" {
+		t.Errorf(`Where("Extension:101") = %q, %q`, where, number)
+	}
+	if where, number := Where("VoiceMail"); where != "VoiceMail" || number != "" {
+		t.Errorf(`Where("VoiceMail") = %q, %q`, where, number)
+	}
+}

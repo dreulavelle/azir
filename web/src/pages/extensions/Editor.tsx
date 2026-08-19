@@ -236,7 +236,7 @@ export function Editor({
       <Tabs
         value={tab}
         onChange={setTab}
-        tabs={TABS.filter((t) => byTab.has(t.id) || t.id === "Call forwarding" || t.id === "IP phone" || t.id === "BLF").map((t) => ({
+        tabs={TABS.filter((t) => byTab.has(t.id) || t.id === "IP phone" || (t.id === "BLF" && !making)).map((t) => ({
           ...t,
           count: counts[t.id],
         }))}
@@ -302,11 +302,8 @@ export function Editor({
  */
 function NotYet({ tab }: { tab: string }) {
   const why: Record<string, string> = {
-    "Call forwarding":
-      "Forwarding lives in profiles — Available, Away, Out of office — and each one holds its own rules for busy and no-answer calls. Reading them works; writing one back means replacing the whole profile, which is not something to get half right.",
     "IP phone":
-      "The handset, its MAC address and where it routes are held on the phone record rather than the extension. No handset on this phone system has been provisioned yet, so there is nothing here to change against.",
-    BLF: "The phone system keeps BLF keys as one blob of XML rather than as a list. No extension here has any set, so there is no example of the format to build an editor against.",
+      "The handset, its model and where it routes are held on a phone record beside the extension rather than on it. No handset on this phone system has been provisioned, so there is nothing to read the shape from and nothing to check a change against.",
   };
   return (
     <div className="rounded-lg border border-dashed border-edge px-5 py-8 text-center">

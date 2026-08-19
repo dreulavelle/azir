@@ -44,6 +44,17 @@ const (
 	KindText   = "text"
 	KindBool   = "bool"
 	KindChoice = "choice"
+	/*
+		KindDestination is where a call goes: voicemail, an extension, an
+		outside number, nothing.
+
+		Written as one string — "VoiceMail", "Extension:101", "External:5551234"
+		— so that it is a field like any other. That is what lets a forwarding
+		rule appear in a sheet, in a diff and in a bulk edit without any of them
+		learning what a destination is; "send these forty to voicemail while
+		they are out" is the same machinery as any other change.
+	*/
+	KindDestination = "destination"
 	// KindSecret is a credential — a voicemail PIN. Written, never read.
 	//
 	// Deliberately outside everything in this package. A plan is stored in the
@@ -247,6 +258,31 @@ func Normalise(spec Spec, cell string) (string, error) {
 			return cell, nil
 		}
 		return "", fmt.Errorf("%q is not one of %s", cell, strings.Join(spec.Choices, ", "))
+	case KindDestination:
+		where, number, _ := strings.Cut(cell, ":")
+		where, number = strings.TrimSpace(where), strings.TrimSpace(number)
+		for _, choice := range spec.Choices {
+			if !strings.EqualFold(choice, where) {
+				continue
+			}
+			// Somewhere that does not take a number is written without one,
+			// whatever came with it. The phone system keeps the extension's
+			// own number beside a voicemail rule — it is whose voicemail it
+			// is, not where the call goes — and carrying it would make
+			// "VoiceMail" and "VoiceMail:100" two different answers to the
+			// same question, so every comparison would find a change.
+			if !needsNumber(choice) {
+				return choice, nil
+			}
+			// Somewhere that needs a number and has not been given one is a
+			// rule that would send a call nowhere.
+			if number == "" {
+				return "", fmt.Errorf("%s needs a number to send calls to", choice)
+			}
+			return choice + ":" + number, nil
+		}
+		return "", fmt.Errorf("%q is not somewhere calls can go: %s",
+			where, strings.Join(spec.Choices, ", "))
 	default:
 		return cell, nil
 	}
@@ -567,6 +603,26 @@ func compare(sheet Sheet, i int, mapping Mapping, state Values, specs []Spec) ([
 		}
 	}
 	return changes, nil
+}
+
+/*
+needsNumber reports whether a destination is incomplete without one.
+
+Voicemail and nothing are complete on their own; an extension or an outside
+number is a place, and a place with no address sends calls into silence.
+*/
+func needsNumber(where string) bool {
+	switch where {
+	case "Extension", "External", "Queue", "RingGroup", "IVR", "Fax", "RoutePoint":
+		return true
+	}
+	return false
+}
+
+// Where returns a destination's two halves: what kind of place, and which one.
+func Where(value string) (where, number string) {
+	where, number, _ = strings.Cut(value, ":")
+	return strings.TrimSpace(where), strings.TrimSpace(number)
 }
 
 // truth reads the many ways a sheet says yes.

@@ -671,10 +671,28 @@ var editable = []option{
 	{"MS365TeamsEnabled", "Microsoft Teams", "bool", "Apps and sign-in", nil},
 }
 
+/*
+settable is everything a form or a sheet can change: the fields on the
+extension itself, and the forwarding rules that live on a profile beside it.
+
+One list, because everything reading this is asking the same question — what
+can be changed — and the answer should not depend on where the phone system
+happens to keep it.
+*/
+func settable() []option {
+	all := make([]option, 0, len(editable)+len(forwardingFields))
+	all = append(all, editable...)
+	all = append(all, forwardingFields...)
+	return all
+}
+
 // editableByName is the same list as an allowlist to check against.
 var editableByName = func() map[string]option {
-	byName := make(map[string]option, len(editable))
+	byName := make(map[string]option, len(editable)+len(forwardingFields))
 	for _, o := range editable {
+		byName[o.Field] = o
+	}
+	for _, o := range forwardingFields {
 		byName[o.Field] = o
 	}
 	return byName
@@ -713,11 +731,18 @@ func setExtensionOptions(ctx context.Context, req plugin.Request) (any, error) {
 	// Refused by name, so a caller learns which option is not available rather
 	// than watching the change silently do nothing.
 	settings := map[string]any{}
+	rules := map[string]any{}
 	var refused []string
 	for key, value := range args.Options {
 		spec, ok := editableByName[key]
 		if !ok {
 			refused = append(refused, key)
+			continue
+		}
+		// Forwarding lives on a profile beside the extension, so it is
+		// collected here and written separately below.
+		if forwarding(key) {
+			rules[key] = value
 			continue
 		}
 		switch spec.Kind {
@@ -787,11 +812,21 @@ func setExtensionOptions(ctx context.Context, req plugin.Request) (any, error) {
 			})
 			continue
 		}
-		if err := conn.patch(ctx, fmt.Sprintf("Users(%d)", id), settings); err != nil {
-			results = append(results, map[string]any{
-				"extension": number, "changed": false, "reason": plainReason(err),
-			})
-			continue
+		if len(settings) > 0 {
+			if err := conn.patch(ctx, fmt.Sprintf("Users(%d)", id), settings); err != nil {
+				results = append(results, map[string]any{
+					"extension": number, "changed": false, "reason": plainReason(err),
+				})
+				continue
+			}
+		}
+		if len(rules) > 0 {
+			if err := setForwarding(ctx, conn, id, rules); err != nil {
+				results = append(results, map[string]any{
+					"extension": number, "changed": false, "reason": plainReason(err),
+				})
+				continue
+			}
 		}
 		changed++
 		results = append(results, map[string]any{"extension": number, "changed": true})
@@ -1224,6 +1259,7 @@ func extensionSettings(ctx context.Context, req plugin.Request) (any, error) {
 	for skip := 0; skip < maxExtensions; skip += settingsPage {
 		q := url.Values{}
 		q.Set("$select", strings.Join(selected, ","))
+		q.Set("$expand", "ForwardingProfiles")
 		q.Set("$top", fmt.Sprint(settingsPage))
 		q.Set("$skip", fmt.Sprint(skip))
 		q.Set("$orderby", "Number")
@@ -1240,6 +1276,14 @@ func extensionSettings(ctx context.Context, req plugin.Request) (any, error) {
 				if value, ok := row[name]; ok && value != nil {
 					settings[name] = value
 				}
+			}
+			// The forwarding rules live on a profile rather than on the
+			// extension, so they are flattened onto it — one field each,
+			// looking like every other field, which is what lets them be
+			// changed in bulk and shown in a diff without anything else
+			// learning what a forwarding profile is.
+			for name, value := range forwardingOf(row["ForwardingProfiles"]) {
+				settings[name] = value
 			}
 			out = append(out, map[string]any{
 				"extension": asText(row["Number"]),
@@ -1264,7 +1308,7 @@ func extensionSettings(ctx context.Context, req plugin.Request) (any, error) {
 	// them as columns or as a form without keeping its own copy of what 3CX
 	// will accept.
 	return map[string]any{
-		"extensions": out, "count": len(out), "fields": editable, "complete": complete,
+		"extensions": out, "count": len(out), "fields": settable(), "complete": complete,
 	}, nil
 }
 
@@ -1460,4 +1504,196 @@ func keysOf(ctx context.Context, conn pbx, known map[string]int64, number string
 		return nil, err
 	}
 	return blf.Parse(user.Blfs)
+}
+
+/*
+Call forwarding, as fields.
+
+The phone system keeps forwarding on a set of named profiles — Available, Away,
+Out of office and two custom ones — each holding its own rules for busy and
+unanswered calls. The one that matters for the question people actually ask is
+Available: it is what an extension does when nobody has told it otherwise.
+
+Flattened onto the extension as ordinary fields so a rule can be read in a
+list, compared in a diff and changed across forty extensions at once. Writing
+one back means reading the whole profile set, changing the one, and writing all
+of them, because that is the shape the phone system takes.
+*/
+
+// theProfile is the forwarding profile these fields read and write.
+const theProfile = "Available"
+
+// forwardingFields are the rules, in the order they read on the phone system's
+// own page.
+var forwardingFields = []option{
+	{"AcceptMultipleCalls", "Accept multiple calls", "bool", "Call forwarding", nil},
+	{"NoAnswerTimeout", "Ring for, in seconds", "text", "Call forwarding", nil},
+	{"NoAnswerExternal", "No answer, external calls", "destination", "Call forwarding", destinations},
+	{"NoAnswerInternal", "No answer, internal calls", "destination", "Call forwarding", destinations},
+	{"BusyExternal", "Busy, external calls", "destination", "Call forwarding", destinations},
+	{"BusyInternal", "Busy, internal calls", "destination", "Call forwarding", destinations},
+}
+
+// destinations is where the phone system will send a call. Its own list rather
+// than every value the API defines, because the rest are internal routing
+// states nobody sets from a forwarding rule.
+var destinations = []string{
+	"None", "VoiceMail", "Extension", "External", "Queue", "RingGroup", "IVR", "Fax",
+}
+
+/*
+forwardingOf reads the Available profile's rules as flat fields.
+
+An extension with no such profile reads as no fields rather than as empty ones,
+so nothing claims a rule is unset when it was never looked at.
+*/
+func forwardingOf(raw any) map[string]any {
+	profiles, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	for _, entry := range profiles {
+		profile, ok := entry.(map[string]any)
+		if !ok || asText(profile["Name"]) != theProfile {
+			continue
+		}
+		out := map[string]any{
+			"AcceptMultipleCalls": profile["AcceptMultipleCalls"],
+			"NoAnswerTimeout":     asText(profile["NoAnswerTimeout"]),
+		}
+		route, _ := profile["AvailableRoute"].(map[string]any)
+		for field, key := range map[string]string{
+			"NoAnswerExternal": "NoAnswerExternal",
+			"NoAnswerInternal": "NoAnswerInternal",
+			"BusyExternal":     "BusyExternal",
+			"BusyInternal":     "BusyInternal",
+		} {
+			out[field] = whereTo(route[key])
+		}
+		return out
+	}
+	return nil
+}
+
+// whereTo writes a destination as the one string the field carries.
+func whereTo(raw any) string {
+	dest, ok := raw.(map[string]any)
+	if !ok {
+		return "None"
+	}
+	where := asText(dest["To"])
+	if where == "" {
+		return "None"
+	}
+	// Only where the number means something. Voicemail carries the extension's
+	// own number in this field, which is not somewhere a rule points — it is
+	// whose voicemail it is. Including it would read as "VoiceMail:100" in
+	// every diff, and would never match what a form sends back.
+	if !wantsNumber(where) {
+		return where
+	}
+	number := asText(dest["Number"])
+	if where == "External" {
+		// An outside number is kept in its own field rather than in Number.
+		if outside := asText(dest["External"]); outside != "" {
+			number = outside
+		}
+	}
+	if number == "" {
+		return where
+	}
+	return where + ":" + number
+}
+
+/*
+wantsNumber reports whether a destination is a place that needs naming.
+
+The same answer as internal/bulk gives when it checks a written one, and it has
+to be: a rule read as "VoiceMail" and written back as "VoiceMail:100" would be
+a change on every extension, every time, forever.
+*/
+func wantsNumber(where string) bool {
+	switch where {
+	case "Extension", "External", "Queue", "RingGroup", "IVR", "Fax", "RoutePoint":
+		return true
+	}
+	return false
+}
+
+// asDestination turns the field's string back into what the phone system takes.
+func asDestination(value string) map[string]any {
+	where, number, _ := strings.Cut(value, ":")
+	where, number = strings.TrimSpace(where), strings.TrimSpace(number)
+	if where == "" || where == "None" {
+		return map[string]any{"To": "None", "Number": "", "External": ""}
+	}
+	dest := map[string]any{"To": where, "Number": number, "External": ""}
+	if where == "External" {
+		dest["Number"] = ""
+		dest["External"] = number
+	}
+	return dest
+}
+
+/*
+setForwarding writes the changed rules back onto the Available profile.
+
+Read, change, write all — the profiles are a collection on the extension and
+the phone system takes them together. Everything not named here is written back
+exactly as it was found.
+*/
+func setForwarding(ctx context.Context, conn pbx, id int64, changes map[string]any) error {
+	var user struct {
+		Profiles []map[string]any `json:"ForwardingProfiles"`
+	}
+	q := url.Values{}
+	q.Set("$select", "Id")
+	q.Set("$expand", "ForwardingProfiles")
+	if err := conn.get(ctx, fmt.Sprintf("Users(%d)", id), q, &user); err != nil {
+		return err
+	}
+
+	found := false
+	for _, profile := range user.Profiles {
+		if asText(profile["Name"]) != theProfile {
+			continue
+		}
+		found = true
+		route, ok := profile["AvailableRoute"].(map[string]any)
+		if !ok {
+			route = map[string]any{}
+			profile["AvailableRoute"] = route
+		}
+		for field, value := range changes {
+			switch field {
+			case "AcceptMultipleCalls":
+				profile[field] = value
+			case "NoAnswerTimeout":
+				seconds, err := strconv.Atoi(asText(value))
+				if err != nil || seconds < 1 || seconds > 600 {
+					return plugin.Errorf("400", "ring for is a number of seconds between 1 and 600")
+				}
+				profile[field] = seconds
+			default:
+				route[field] = asDestination(asText(value))
+			}
+		}
+	}
+	if !found {
+		return plugin.Errorf("400", "this extension has no %s forwarding profile", theProfile)
+	}
+
+	return conn.patch(ctx, fmt.Sprintf("Users(%d)", id),
+		map[string]any{"ForwardingProfiles": user.Profiles})
+}
+
+// forwarding reports whether a field belongs to the forwarding profile rather
+// than to the extension itself.
+func forwarding(field string) bool {
+	for _, f := range forwardingFields {
+		if f.Field == field {
+			return true
+		}
+	}
+	return false
 }
