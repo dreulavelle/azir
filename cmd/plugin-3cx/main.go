@@ -496,6 +496,61 @@ func main() {
 				Handler: createExtensions,
 			},
 			{
+				Name: "schedule.list",
+				Description: "When this phone system is closed: every holiday and early closing, with the " +
+					"office hours they are exceptions to. A closure is a span of dates, sometimes narrowed " +
+					"to a span of hours, sometimes repeating every year.",
+				Summary:  "Lists closures and office hours.",
+				Provides: []plugin.Capability{plugin.CapPhoneSchedule},
+				Schema:   json.RawMessage(`{"type": "object", "properties": {}}`),
+				Handler:  listSchedule,
+			},
+			{
+				Name: "schedule.add",
+				Description: "Schedules a closure: a holiday, or an early closing on a named day. Give a " +
+					"start date, an end date if it runs longer than a day, and times if it covers only " +
+					"part of the day.",
+				Summary:            "Schedules a holiday or an early closing.",
+				Provides:           []plugin.Capability{plugin.CapPhoneScheduleAdd},
+				Mutates:            true,
+				RequiresPermission: "phone.manage",
+				Schema: json.RawMessage(`{
+					"type": "object",
+					"required": ["name", "starts"],
+					"properties": {
+						"name": {"type": "string", "description": "What it is called, as somebody reading the list would name it."},
+						"starts": {
+							"type": "string",
+							"description": "The first day, as 2026-12-25. Write --12-25 for a day that repeats every year."
+						},
+						"ends": {
+							"type": "string",
+							"description": "The last day, in the same form. Left out for a closure of one day."
+						},
+						"from_time": {"type": "string", "description": "Closed from this time, as 13:30. Left out for a whole day."},
+						"to_time": {"type": "string", "description": "Open again at this time, as 17:00."},
+						"repeats": {"type": "boolean", "default": false, "description": "Every year, on the same dates."},
+						"department": {"type": "string", "description": "Only this department. Left out for the whole company."}
+					}
+				}`),
+				Handler: addSchedule,
+			},
+			{
+				Name: "schedule.remove",
+				Description: "Removes one scheduled closure, named by its id. There is no way to say all, " +
+					"and no pattern — removing the wrong one leaves a business open on a day it meant to be shut.",
+				Summary:            "Removes one scheduled closure.",
+				Provides:           []plugin.Capability{plugin.CapPhoneScheduleRemove},
+				Mutates:            true,
+				RequiresPermission: "phone.manage",
+				Schema: json.RawMessage(`{
+					"type": "object",
+					"required": ["id"],
+					"properties": {"id": {"type": "integer", "description": "The closure's id, from schedule.list."}}
+				}`),
+				Handler: removeSchedule,
+			},
+			{
 				Name:        "ringgroups.list",
 				Description: "The ring groups on this phone system: what each is called, its number, how it rings, and who is in it.",
 				Summary:     "Lists ring groups and their members.",
@@ -813,16 +868,14 @@ func (c pbx) post(ctx context.Context, path string, body any, into any) error {
 		return plugin.Errorf("403", "that extension does not have permission to create this")
 	case res.StatusCode >= 400:
 		raw, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
-		detail := strings.TrimSpace(string(raw))
-		if len(detail) > 300 {
-			detail = detail[:300]
-		}
-		if detail == "" {
+		if strings.TrimSpace(string(raw)) == "" {
 			// The status alone, rather than a sentence that says nothing. A 4xx
 			// with an empty body is a real answer and hiding it wastes an hour.
 			return plugin.Errorf("400", "the phone system refused that with HTTP %d and said nothing", res.StatusCode)
 		}
-		return plugin.Errorf("400", "the phone system would not accept that: %s", detail)
+		// Through the same reader as a change, so a refusal reads as a
+		// sentence here too rather than as the envelope it arrived in.
+		return plugin.Errorf("400", "%s", refusal(raw))
 	}
 
 	if into == nil {
