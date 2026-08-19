@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/dreulavelle/azir/internal/audit"
+	"github.com/dreulavelle/azir/internal/blf"
 	"github.com/dreulavelle/azir/internal/bulk"
 	"github.com/dreulavelle/azir/internal/identity"
 	"github.com/dreulavelle/azir/internal/registry"
@@ -501,8 +502,26 @@ and the columns of the sheet, the choices in the form and the allowlist on the
 way back out are all built from the one list.
 */
 func (s *Server) extensionSettings(ctx context.Context, actor identity.Actor, customer uuid.UUID) (bulk.Current, []bulk.Spec, error) {
-	now, specs, _, err := s.extensionSettingsFull(ctx, actor, customer)
-	return now, specs, err
+	got, err := s.phoneNow(ctx, actor, customer)
+	return got.Now, got.Specs, err
+}
+
+/*
+phoneState is everything one read of a phone system tells Azir.
+
+A struct rather than a handful of return values, because the read grew: what
+every extension is set to, what the phone system will let anybody change, the
+key layout on each desk phone, and whether the list is all of them. Four things
+that arrive together and are useful together.
+*/
+type phoneState struct {
+	Now   bulk.Current
+	Specs []bulk.Spec
+	// Keys is each extension's phone buttons, by extension number.
+	Keys map[string][]blf.Key
+	// Complete is false when the phone system had more extensions than it
+	// would hand over in one sweep.
+	Complete bool
 }
 
 /*
@@ -514,21 +533,34 @@ that quietly ends is read as the whole list, and somebody changing "all of
 them" from a truncated one would miss whatever was past the cut.
 */
 func (s *Server) currentWithCompleteness(ctx context.Context, actor identity.Actor, customer uuid.UUID) (bulk.Current, []bulk.Spec, bool, error) {
-	if now, specs, complete, err := s.extensionSettingsFull(ctx, actor, customer); err == nil {
-		return now, specs, complete, nil
-	}
-	now, specs, err := s.currentExtensions(ctx, actor, customer)
-	return now, specs, true, err
+	got, err := s.phoneNow(ctx, actor, customer)
+	return got.Now, got.Specs, got.Complete, err
 }
 
-func (s *Server) extensionSettingsFull(ctx context.Context, actor identity.Actor, customer uuid.UUID) (bulk.Current, []bulk.Spec, bool, error) {
+/*
+phoneNow reads a phone system, falling back to the plain extension list when
+the settings capability is not available.
+
+The fallback is worth having rather than refusing: a deployment that has not
+approved the settings tool can still rename forty extensions, it just cannot
+see or change the other thirty fields.
+*/
+func (s *Server) phoneNow(ctx context.Context, actor identity.Actor, customer uuid.UUID) (phoneState, error) {
+	if got, err := s.readSettings(ctx, actor, customer); err == nil {
+		return got, nil
+	}
+	now, specs, err := s.currentExtensions(ctx, actor, customer)
+	return phoneState{Now: now, Specs: specs, Keys: map[string][]blf.Key{}, Complete: true}, err
+}
+
+func (s *Server) readSettings(ctx context.Context, actor identity.Actor, customer uuid.UUID) (phoneState, error) {
 	tool, err := s.approvedTool(ctx, plugin.CapPhoneExtensionSettings, false)
 	if err != nil {
-		return nil, nil, false, err
+		return phoneState{}, err
 	}
 	raw, err := s.readTool(ctx, actor, tool, json.RawMessage(`{}`), &customer)
 	if err != nil {
-		return nil, nil, false, err
+		return phoneState{}, err
 	}
 
 	var answer struct {
@@ -536,15 +568,16 @@ func (s *Server) extensionSettingsFull(ctx context.Context, actor identity.Actor
 			Extension string         `json:"extension"`
 			Name      string         `json:"name"`
 			Settings  map[string]any `json:"settings"`
+			Keys      []blf.Key      `json:"keys"`
 		} `json:"extensions"`
 		Fields   []bulk.Spec `json:"fields"`
 		Complete *bool       `json:"complete"`
 	}
 	if err := json.Unmarshal(raw, &answer); err != nil {
-		return nil, nil, false, errors.New("the phone system returned settings that could not be read")
+		return phoneState{}, errors.New("the phone system returned settings that could not be read")
 	}
 	if len(answer.Extensions) == 0 {
-		return nil, nil, false, errors.New("the phone system reported no extensions")
+		return phoneState{}, errors.New("the phone system reported no extensions")
 	}
 	// A plugin that says nothing about completeness is taken at its word.
 	complete := answer.Complete == nil || *answer.Complete
@@ -556,7 +589,9 @@ func (s *Server) extensionSettingsFull(ctx context.Context, actor identity.Actor
 	}
 
 	now := make(bulk.Current, len(answer.Extensions))
+	keys := make(map[string][]blf.Key, len(answer.Extensions))
 	for _, e := range answer.Extensions {
+		keys[e.Extension] = e.Keys
 		values := bulk.Values{bulk.FieldName: e.Name}
 		for name, value := range e.Settings {
 			spec, wanted := byField[bulk.Field(name)]
@@ -581,7 +616,7 @@ func (s *Server) extensionSettingsFull(ctx context.Context, actor identity.Actor
 		}
 		now[e.Extension] = values
 	}
-	return now, specs, complete, nil
+	return phoneState{Now: now, Specs: specs, Keys: keys, Complete: complete}, nil
 }
 
 /*

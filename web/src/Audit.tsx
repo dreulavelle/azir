@@ -80,6 +80,10 @@ const ACTIONS: Record<string, { verb: string; note?: string }> = {
     note: "Which settings were changed is recorded. What they were changed to is not — one of them is a voicemail PIN.",
   },
   "extension.create": { verb: "Added an extension" },
+  "extension.keys": {
+    verb: "Changed a phone's buttons",
+    note: "The whole key layout is written at once — the phone system keeps it as one value, so there is no changing a single button.",
+  },
   "extension.remove": { verb: "Removed an extension" },
 
   "bulk.upload": { verb: "Uploaded a sheet of changes" },

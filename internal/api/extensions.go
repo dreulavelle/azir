@@ -2,8 +2,10 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -11,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/dreulavelle/azir/internal/audit"
+	"github.com/dreulavelle/azir/internal/blf"
 	"github.com/dreulavelle/azir/internal/bulk"
 	"github.com/dreulavelle/azir/internal/identity"
 	"github.com/dreulavelle/azir/pkg/plugin"
@@ -486,17 +489,19 @@ func (s *Server) extensionValues(w http.ResponseWriter, r *http.Request, actor i
 		return
 	}
 
-	now, specs, _, err := s.currentWithCompleteness(r.Context(), actor, customerID)
+	got, err := s.phoneNow(r.Context(), actor, customerID)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, errBody("could not read the phone system: "+err.Error()))
 		return
 	}
+	now := got.Now
 
 	type one struct {
 		Extension string            `json:"extension"`
 		Name      string            `json:"name"`
 		Enabled   bool              `json:"enabled"`
 		Values    map[string]string `json:"values"`
+		Keys      []blf.Key         `json:"keys"`
 	}
 	out := make([]one, 0, len(names))
 	missing := []string{}
@@ -510,16 +515,22 @@ func (s *Server) extensionValues(w http.ResponseWriter, r *http.Request, actor i
 		for field, text := range v {
 			values[string(field)] = text
 		}
+		layout := got.Keys[number]
+		if layout == nil {
+			layout = []blf.Key{}
+		}
 		out = append(out, one{
 			Extension: number,
 			Name:      v[bulk.FieldName],
 			Enabled:   v[bulk.FieldEnabled] != "no",
 			Values:    values,
+			Keys:      layout,
 		})
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"extensions": out, "fields": specs, "missing": missing,
+		"extensions": out, "fields": got.Specs, "missing": missing,
+		"kinds": blf.Kinds,
 	})
 }
 
@@ -537,4 +548,258 @@ func paging(r *http.Request) (limit, offset int) {
 		offset = asked
 	}
 	return limit, offset
+}
+
+/*
+extensionNumbers resolves a written selection into extensions that exist.
+
+"102-110, 119" is how somebody describes a floor of phones, and typing eleven
+numbers to change eleven of them is work a computer should be doing. Resolved
+here rather than in the browser for two reasons: what exists is known here, and
+a range that quietly selects the wrong extensions is the kind of mistake this
+whole feature is built to prevent — so it is parsed somewhere it can be tested.
+
+Numbers that are not on the phone system come back named. A range typed from
+memory usually has a gap in it, and finding out at the diff is later than
+finding out while choosing.
+*/
+func (s *Server) extensionNumbers(w http.ResponseWriter, r *http.Request, actor identity.Actor) {
+	customerID, ok := s.customerOf(w, r)
+	if !ok {
+		return
+	}
+	now, _, _, err := s.currentWithCompleteness(r.Context(), actor, customerID)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, errBody("could not read the phone system: "+err.Error()))
+		return
+	}
+
+	asked := strings.TrimSpace(r.URL.Query().Get("select"))
+	if asked == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"numbers": inOrder(now)})
+		return
+	}
+
+	wanted, err := parseSelection(asked)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errBody(err.Error()))
+		return
+	}
+
+	selected, missing := []string{}, []string{}
+	seen := map[string]bool{}
+	for _, number := range wanted {
+		if seen[number] {
+			continue
+		}
+		seen[number] = true
+		if _, exists := now[number]; exists {
+			selected = append(selected, number)
+			continue
+		}
+		missing = append(missing, number)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"selected": selected, "missing": missing, "asked": asked,
+	})
+}
+
+/*
+parseSelection reads "102-110, 119" as the extensions somebody means.
+
+Commas, spaces and newlines all separate, because a list pasted out of a
+spreadsheet or a ticket arrives however it arrives. A range runs low to high
+whichever way round it was typed — 110-102 is somebody describing the same
+floor backwards, not an empty selection.
+
+Bounded, so a typo cannot ask for a hundred thousand extensions. The limit is
+the same one the sheet path uses.
+*/
+func parseSelection(text string) ([]string, error) {
+	// Space around a dash is somebody writing a range, not two things. Closed
+	// up before splitting, because splitting first turns "102 - 104" into a
+	// number, a dash and a number and refuses all three.
+	text = spacedDash.ReplaceAllString(text, "-")
+
+	fields := strings.FieldsFunc(text, func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\n' || r == '\t' || r == ';'
+	})
+	if len(fields) == 0 {
+		return nil, errors.New("nothing to select")
+	}
+
+	var out []string
+	for _, field := range fields {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			continue
+		}
+
+		// A range, written with any of the dashes a keyboard or a paste
+		// produces.
+		low, high, isRange := cutRange(field)
+		if !isRange {
+			if !onlyDigits(field) {
+				return nil, fmt.Errorf("%q is not an extension number or a range", field)
+			}
+			out = append(out, field)
+			continue
+		}
+		from, err := strconv.Atoi(low)
+		if err != nil || !onlyDigits(low) {
+			return nil, fmt.Errorf("%q is not a range of extension numbers", field)
+		}
+		to, err := strconv.Atoi(high)
+		if err != nil || !onlyDigits(high) {
+			return nil, fmt.Errorf("%q is not a range of extension numbers", field)
+		}
+		if from > to {
+			from, to = to, from
+		}
+		if to-from+1 > bulk.MaxRows {
+			return nil, fmt.Errorf("%q covers more than %d extensions", field, bulk.MaxRows)
+		}
+		// Rendered at the width it was written, so a system numbering its
+		// extensions 0100 upwards selects 0100 and not 100.
+		width := len(low)
+		for n := from; n <= to; n++ {
+			out = append(out, fmt.Sprintf("%0*d", width, n))
+		}
+		if len(out) > bulk.MaxRows {
+			return nil, fmt.Errorf("that selects more than %d extensions", bulk.MaxRows)
+		}
+	}
+	if len(out) == 0 {
+		return nil, errors.New("nothing to select")
+	}
+	return out, nil
+}
+
+var spacedDash = regexp.MustCompile(`\s*(-|–|—|\.\.)\s*`)
+
+// cutRange splits "102-110" on whichever dash was typed. Not a plain Cut,
+// because a pasted range often carries an en dash rather than a hyphen.
+func cutRange(field string) (low, high string, ok bool) {
+	for _, dash := range []string{"-", "–", "—", ".."} {
+		if before, after, found := strings.Cut(field, dash); found && before != "" && after != "" {
+			return before, after, true
+		}
+	}
+	return "", "", false
+}
+
+func onlyDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+/*
+setExtensionKeys writes a phone's key layout, or copies one between phones.
+
+Copying is the job this mostly exists for. "Give these twelve phones the layout
+that one has" is an afternoon of clicking in a phone system's own console and
+one request here — and a key that watches extension 101 points at 101 by the
+phone system's own id, so the same layout means the same thing on every phone
+it lands on.
+
+Its own capability, because the phone system keeps the layout as one value and
+writes it whole. There is no such thing as changing one button, so approving
+this is approving replacing somebody's entire key layout.
+*/
+func (s *Server) setExtensionKeys(w http.ResponseWriter, r *http.Request, actor identity.Actor) {
+	customerID, ok := s.customerOf(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		Extensions []string  `json:"extensions"`
+		Keys       []blf.Key `json:"keys"`
+		From       string    `json:"from"`
+	}
+	if err := decode(r, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, errBody("invalid json body"))
+		return
+	}
+	if len(body.Extensions) == 0 {
+		writeJSON(w, http.StatusBadRequest, errBody("say which extensions to set the keys on"))
+		return
+	}
+	if body.From != "" && len(body.Keys) > 0 {
+		writeJSON(w, http.StatusBadRequest, errBody(
+			"give the keys, or an extension to copy them from, not both"))
+		return
+	}
+	// Copying an extension's keys onto itself is somebody's mistake, and doing
+	// it would be a write that changes nothing while reading as a success.
+	for _, number := range body.Extensions {
+		if body.From != "" && number == body.From {
+			writeJSON(w, http.StatusBadRequest, errBody(
+				"extension "+number+" is the one being copied from"))
+			return
+		}
+	}
+
+	tool, err := s.approvedTool(r.Context(), plugin.CapPhoneExtensionKeys, true)
+	if err != nil {
+		writeJSON(w, http.StatusForbidden, errBody(err.Error()))
+		return
+	}
+
+	// The same fifty at a time as everything else that writes many.
+	done, problems := 0, map[string]string{}
+	for _, batch := range inBatches(body.Extensions, atOnce) {
+		encoded, err := json.Marshal(map[string]any{
+			"extensions": batch, "keys": body.Keys, "from": body.From,
+		})
+		if err != nil {
+			s.fail(w, err, "could not ask for that")
+			return
+		}
+		raw, err := s.performTool(r.Context(), actor, tool, encoded, &customerID, byHand)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]any{
+				"error": err.Error(), "changed": done,
+			})
+			return
+		}
+		var answer struct {
+			Results []struct {
+				Extension string `json:"extension"`
+				Changed   bool   `json:"changed"`
+				Reason    string `json:"reason"`
+			} `json:"results"`
+		}
+		if err := json.Unmarshal(raw, &answer); err != nil {
+			s.fail(w, err, "the phone system answered in a way that could not be read")
+			return
+		}
+		for _, result := range answer.Results {
+			if result.Changed {
+				done++
+				continue
+			}
+			problems[result.Extension] = reasonOr(result.Reason, "the phone system did not change it")
+		}
+	}
+
+	what := fmt.Sprintf("%d phones", done)
+	if body.From != "" {
+		what = fmt.Sprintf("copied from %s to %d phones", body.From, done)
+	}
+	s.Audit.Record(r.Context(), audit.Event{
+		ActorUserID: actor.Email,
+		Action:      "extension.keys",
+		Outcome:     audit.OutcomeOK,
+		CustomerID:  &customerID,
+		Detail:      what,
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"changed": done, "problems": problems})
 }

@@ -217,10 +217,12 @@ func (s *Server) Routes() http.Handler {
 	// capabilities, same approvals, same audit — a different number of
 	// extensions and no separate screen for the difference.
 	mux.HandleFunc("GET /api/extensions", s.require(identity.PermPhoneManage, s.listExtensionsPage))
+	mux.HandleFunc("GET /api/extensions/numbers", s.require(identity.PermPhoneManage, s.extensionNumbers))
 	mux.HandleFunc("GET /api/extensions/values", s.require(identity.PermPhoneManage, s.extensionValues))
 	mux.HandleFunc("GET /api/extensions/{number}", s.require(identity.PermPhoneManage, s.extensionValues))
 	mux.HandleFunc("POST /api/extensions", s.require(identity.PermPhoneManage, s.createExtension))
 	mux.HandleFunc("PATCH /api/extensions/{number}", s.require(identity.PermPhoneManage, s.setExtension))
+	mux.HandleFunc("POST /api/extensions/keys", s.require(identity.PermPhoneManage, s.setExtensionKeys))
 	mux.HandleFunc("POST /api/extensions/remove", s.require(identity.PermPhoneManage, s.removeExtensions))
 
 	// Diagnostic snapshots: a phone system's support bundle, read.

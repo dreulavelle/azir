@@ -85,8 +85,14 @@ const (
 	// before-and-after: comparing a sheet of forty extensions against the
 	// system cannot mean forty requests to somebody's PBX.
 	CapPhoneExtensionSettings Capability = "phone_system.extension_settings"
-	CapPhoneHandsetAction     Capability = "phone_system.handset_action"
-	CapPhoneReview            Capability = "phone_system.review"
+	// CapPhoneExtensionKeys is the layout of buttons on a desk phone: which
+	// one watches which extension, speed dials, parks a call. Its own
+	// capability rather than part of extension_change, because the phone
+	// system keeps it as one value that is written whole — approving it means
+	// approving replacing somebody's entire key layout.
+	CapPhoneExtensionKeys Capability = "phone_system.extension_keys"
+	CapPhoneHandsetAction Capability = "phone_system.handset_action"
+	CapPhoneReview        Capability = "phone_system.review"
 	// CapPhoneCapture is a diagnostic capture pulled from a live phone system
 	// rather than uploaded as a file. Distinct from CapPhoneEvents, which is
 	// the last few events for a screen: this is the whole log, paged, for
@@ -152,6 +158,7 @@ var vocabulary = map[Capability]struct{}{
 	CapPhoneCallHistory:       {},
 	CapPhoneExtensionDetail:   {},
 	CapPhoneExtensionSettings: {},
+	CapPhoneExtensionKeys:     {},
 	CapPhoneDevices:           {},
 	CapPhoneServices:          {},
 	CapPhoneLogSearch:         {},

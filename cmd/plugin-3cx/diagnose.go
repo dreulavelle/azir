@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/dreulavelle/azir/internal/blf"
 	"io"
 	"net/url"
 	"regexp"
@@ -1203,7 +1204,10 @@ func extensionSettings(ctx context.Context, req plugin.Request) (any, error) {
 		fields = append(fields, o.Field)
 	}
 	sort.Strings(fields)
-	selected := append([]string{"Number", "DisplayName"}, fields...)
+	// Blfs comes along but is not a field: it is one blob of XML holding the
+	// whole key layout, so it is returned as its own thing rather than as a
+	// setting somebody could put in a spreadsheet column.
+	selected := append([]string{"Number", "DisplayName", "Blfs"}, fields...)
 
 	// The same page as everything else here. A larger one would mean fewer
 	// round trips on a big system, and 3CX answers 400 to $top=500 — the
@@ -1241,6 +1245,7 @@ func extensionSettings(ctx context.Context, req plugin.Request) (any, error) {
 				"extension": asText(row["Number"]),
 				"name":      asText(row["DisplayName"]),
 				"settings":  settings,
+				"keys":      parsedKeys(asText(row["Blfs"])),
 			})
 		}
 		if len(page.Value) < settingsPage {
@@ -1277,4 +1282,182 @@ func asText(v any) string {
 	default:
 		return fmt.Sprint(t)
 	}
+}
+
+/*
+parsedKeys reads a layout, and answers an unreadable one with no keys.
+
+A layout this cannot parse is a screen that cannot draw, and one extension with
+something unexpected on it should not take the list down with it. What it does
+mean is that Azir will not offer to change that extension's keys, which is the
+right way for this to fail.
+*/
+func parsedKeys(raw string) []blf.Key {
+	keys, err := blf.Parse(raw)
+	if err != nil {
+		return nil
+	}
+	if keys == nil {
+		return []blf.Key{}
+	}
+	return keys
+}
+
+// blfArgs sets the key layout on one or more extensions.
+type blfArgs struct {
+	Extensions []string  `json:"extensions"`
+	Keys       []blf.Key `json:"keys"`
+	// From copies the layout off another extension instead of giving one.
+	From string `json:"from"`
+}
+
+/*
+setExtensionKeys writes a phone's key layout.
+
+Many extensions at once, because the job this exists for is usually "give these
+twelve phones the layout that one has". A key that watches extension 101 points
+at 101 by the phone system's own id, so the same layout means the same thing on
+every phone it lands on — copying is a copy, not a translation.
+
+The whole layout goes every time. The phone system keeps it as one string, so
+there is no such thing as changing one button, and pretending otherwise would
+mean reading, editing and writing on every keystroke.
+
+Numbering is taken from what is already there. A layout that starts at button
+two stays starting at button two: the phone system does not write out a key
+left at its default, and renumbering from one would take that button over.
+*/
+func setExtensionKeys(ctx context.Context, req plugin.Request) (any, error) {
+	var args blfArgs
+	if len(req.Args) > 0 {
+		if err := json.Unmarshal(req.Args, &args); err != nil {
+			return nil, plugin.Errorf("400", "those arguments could not be read")
+		}
+	}
+	if len(args.Extensions) == 0 {
+		return nil, plugin.Errorf("400", "say which extensions to set the keys on")
+	}
+	if len(args.Extensions) > howManyAtOnce {
+		return nil, plugin.Errorf("400", "that is more than %d at once", howManyAtOnce)
+	}
+	if args.From != "" && len(args.Keys) > 0 {
+		return nil, plugin.Errorf("400", "give the keys, or an extension to copy them from, not both")
+	}
+
+	conn, err := connect(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	known, err := extensionIDs(ctx, conn)
+	if err != nil {
+		return nil, err
+	}
+
+	// Where the layout sits on the physical phone.
+	//
+	// Copying keeps the source's first button. The phone system does not write
+	// out a key left at its default, so a layout that starts at button two is
+	// one where button one was left alone — and landing it on button one of
+	// another phone would shift every key up by one and take over a button
+	// nobody mentioned. Two phones that were copied should have the same
+	// buttons in the same places, which is the entire point.
+	//
+	// Setting keys outright keeps whatever the target already started at.
+	keys := args.Keys
+	from := 0
+	if args.From != "" {
+		keys, err = keysOf(ctx, conn, known, args.From)
+		if err != nil {
+			return nil, err
+		}
+		from = blf.StartsAt(keys)
+	}
+
+	// A key that watches or dials an extension points at it by the phone
+	// system's own id. Resolved here, from the number somebody wrote, because
+	// nothing outside this plugin should have to know those ids exist.
+	for i, key := range keys {
+		if !blf.Known(key.Kind) {
+			return nil, plugin.Errorf("400", "this does not know how to write a %q key", key.Kind)
+		}
+		switch key.Kind {
+		case blf.KindBLF, blf.KindSpeedDial:
+			number := strings.TrimSpace(key.Value)
+			id, there := known[number]
+			if !there {
+				return nil, plugin.Errorf("400",
+					"key %d watches extension %s, and there is no such extension here", i+1, number)
+			}
+			keys[i].ID = fmt.Sprint(id)
+			keys[i].Value = number
+		case blf.KindQueueLogin:
+			if key.ID != blf.LoggedIn && key.ID != blf.LoggedOut {
+				return nil, plugin.Errorf("400",
+					"a queue login key is either %s or %s", blf.LoggedIn, blf.LoggedOut)
+			}
+			keys[i].Value = blf.ByID
+		default:
+			if key.ID == "" {
+				keys[i].ID = blf.Nothing
+			}
+		}
+	}
+
+	results := make([]map[string]any, 0, len(args.Extensions))
+	changed := 0
+	for _, number := range args.Extensions {
+		id, there := known[number]
+		if !there {
+			results = append(results, map[string]any{
+				"extension": number, "changed": false, "reason": "no extension here has that number",
+			})
+			continue
+		}
+		// Read what is there to keep the layout on the same buttons.
+		was, err := keysOf(ctx, conn, known, number)
+		if err != nil {
+			results = append(results, map[string]any{
+				"extension": number, "changed": false, "reason": plainReason(err),
+			})
+			continue
+		}
+		first := from
+		if first == 0 {
+			first = blf.StartsAt(was)
+		}
+		laid := blf.Renumber(keys, first)
+		if err := conn.patch(ctx, fmt.Sprintf("Users(%d)", id),
+			map[string]any{"Blfs": blf.Render(laid)}); err != nil {
+			results = append(results, map[string]any{
+				"extension": number, "changed": false, "reason": plainReason(err),
+			})
+			continue
+		}
+		changed++
+		results = append(results, map[string]any{
+			"extension": number, "changed": true, "keys": len(laid),
+		})
+	}
+
+	return map[string]any{
+		"changed": changed, "asked": len(args.Extensions),
+		"keys": len(keys), "results": results, "complete": changed == len(args.Extensions),
+	}, nil
+}
+
+// keysOf reads one extension's layout.
+func keysOf(ctx context.Context, conn pbx, known map[string]int64, number string) ([]blf.Key, error) {
+	id, there := known[number]
+	if !there {
+		return nil, plugin.Errorf("400", "no extension here has the number %s", number)
+	}
+	var user struct {
+		Blfs string `json:"Blfs"`
+	}
+	q := url.Values{}
+	q.Set("$select", "Blfs")
+	if err := conn.get(ctx, fmt.Sprintf("Users(%d)", id), q, &user); err != nil {
+		return nil, err
+	}
+	return blf.Parse(user.Blfs)
 }

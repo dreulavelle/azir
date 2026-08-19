@@ -360,6 +360,49 @@ func main() {
 				Handler: extensionSettings,
 			},
 			{
+				Name: "extensions.keys",
+				Description: "Sets the BLF key layout on one or more extensions — which buttons watch which " +
+					"extension, speed dial, park a call, log in and out of queues or switch status profile. " +
+					"Give the keys, or name another extension to copy the layout from. The whole layout is " +
+					"written every time, because the phone system keeps it as one value.",
+				Summary:            "Sets or copies a phone's BLF keys.",
+				Provides:           []plugin.Capability{plugin.CapPhoneExtensionKeys},
+				Mutates:            true,
+				RequiresPermission: "phone.manage",
+				Schema: json.RawMessage(`{
+					"type": "object",
+					"required": ["extensions"],
+					"properties": {
+						"extensions": {
+							"type": "array",
+							"items": {"type": "string"},
+							"description": "The extensions to set the keys on, written out one by one."
+						},
+						"from": {
+							"type": "string",
+							"description": "An extension to copy the layout from, instead of giving keys."
+						},
+						"keys": {
+							"type": "array",
+							"description": "The buttons, in order from the top of the phone.",
+							"items": {
+								"type": "object",
+								"required": ["kind"],
+								"properties": {
+									"kind": {
+										"type": "string",
+										"description": "BLF, SpeedDial, CustomSpeedDial, SharedParking, QueueLogin, ProfileStatus or Line."
+									},
+									"value": {"type": "string", "description": "What the key points at: an extension number, a number to dial, a parking spot or a profile."},
+									"id": {"type": "string", "description": "Only for QueueLogin: LOGGEDINQUEUE or LOGGEDOUTQUEUE."}
+								}
+							}
+						}
+					}
+				}`),
+				Handler: setExtensionKeys,
+			},
+			{
 				Name: "extensions.options",
 				Description: "Applies the same extension options to many extensions at once — the settings on an " +
 					"extension's page, such as whether the PBX delivers audio, whether remote non-tunnel " +
