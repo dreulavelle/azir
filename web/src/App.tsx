@@ -38,6 +38,7 @@ const Settings = lazy(() => import("./pages/Settings").then((m) => ({ default: m
 const Extensions = lazy(() =>
   import("./pages/Extensions").then((m) => ({ default: m.Extensions })),
 );
+const Schedule = lazy(() => import("./pages/Schedule").then((m) => ({ default: m.Schedule })));
 const BulkEdits = lazy(() => import("./pages/BulkEdits").then((m) => ({ default: m.BulkEdits })));
 
 /**
@@ -252,6 +253,14 @@ function Console() {
             onClick={() => go({ name: "extensions" })}
           />
         )}
+        {actor.permissions.includes(Perm.phoneManage) && (
+          <NavItem
+            icon={<Icon.clock />}
+            label="Schedule"
+            active={route.name === "schedule"}
+            onClick={() => go({ name: "schedule" })}
+          />
+        )}
 
         <NavGroup label="Assistant" />
         <NavItem
@@ -399,6 +408,11 @@ function Console() {
         {route.name === "bulk" && (
           <Suspense fallback={<div className="mx-auto max-w-[1180px] px-6 py-6"><div className="h-40 animate-pulse rounded-lg bg-sunken" /></div>}>
             <BulkEdits actor={actor} />
+          </Suspense>
+        )}
+        {route.name === "schedule" && (
+          <Suspense fallback={<div className="mx-auto max-w-[1180px] px-6 py-6"><div className="h-40 animate-pulse rounded-lg bg-sunken" /></div>}>
+            <Schedule actor={actor} />
           </Suspense>
         )}
         {(route.name === "diagnostics" || route.name === "snapshot") && (
