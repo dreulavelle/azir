@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/url"
 	"strings"
@@ -28,6 +29,23 @@ meant a single choice, "system_owners", and no way to make anybody a
 receptionist.
 */
 
+/*
+internalRoles are roles the phone system defines and its console does not offer.
+
+Reading the roles from the phone system turned up ten where the extension page
+lists eight. The two extra are the phone system's own — a service account is a
+"system", not a person — and putting them in a dropdown beside Receptionist is
+offering somebody a way to make an extension into something no console would
+let them make it.
+
+Not hidden, exactly: an extension already holding one still shows it, because a
+value somebody cannot see is a value they cannot fix.
+*/
+var internalRoles = map[string]bool{
+	"system":    true,
+	"observers": true,
+}
+
 // role is one of the roles 3CX ships with: the name it stores, and the words
 // the console shows for it.
 type role struct {
@@ -43,27 +61,22 @@ the console presents. Kept as the order to publish rather than sorted, because
 a permission list sorted alphabetically puts "System Owner" between "Supervisor"
 and "User" and reads as though it means nothing.
 
-The words are the console's. The names beside them are 3CX's own, and only
-"system_owners" has been read back off a real system — the rest follow its
-shape. That is why rolesDefined is asked first: where the phone system will
-name its own roles, its names win, and these are only what is offered when it
-will not. Giving the API account the system owner role is what makes it answer,
-and is what 3CX's own instructions for creating one say to do.
-
-What a wrong name would do is not known: whether 3CX refuses one or stores it
-has not been established, because the only system available to try it on has
-two extensions in a group and both belong to real people. So this is the part
-to be suspicious of, and the answer is not to guess harder — it is to let the
-phone system name its own roles, which it will as soon as the account is
-allowed to ask.
+The names were guessed once, from the shape of the only one that had been read
+off a real system, and two of the eight were wrong: "departmentadmins" and
+"owners" are group_admins and group_owners, and the phone system refused both
+guesses outright. They are right now because the phone system was asked — see
+rolesDefined — and this table is what remains for the case where it will not
+answer. That is the whole lesson: a list of what something accepts belongs to
+that something, and inferring one from a naming pattern is guessing with extra
+steps.
 */
 var stockRoles = []role{
 	{"users", "User"},
 	{"receptionists", "Receptionist"},
 	{"supervisors", "Supervisor"},
-	{"departmentadmins", "Department Administrator"},
+	{"group_admins", "Department Administrator"},
 	{"managers", "Manager"},
-	{"owners", "Owner"},
+	{"group_owners", "Owner"},
 	{"system_admins", "System Administrator"},
 	{"system_owners", "System Owner"},
 }
@@ -81,8 +94,8 @@ itself. A renamed or custom role is exactly the case where guessing would be
 worst, and a name nobody can read is still better than a role somebody cannot
 assign.
 */
-func rolesAvailable(ctx context.Context, conn pbx, inUse []string) ([]string, map[string]string) {
-	return rolesFrom(rolesDefined(ctx, conn), inUse)
+func rolesAvailable(ctx context.Context, conn pbx, groups map[string]int64, inUse []string) ([]string, map[string]string) {
+	return rolesFrom(rolesDefined(ctx, conn, groups), inUse)
 }
 
 // rolesFrom is rolesAvailable once the phone system has been asked, kept apart
@@ -99,16 +112,37 @@ func rolesFrom(defined, inUse []string) ([]string, map[string]string) {
 		order = append(order, name)
 	}
 
-	// The stock roles first, so the common ones keep the console's order
-	// whatever else turns up.
-	for _, r := range stockRoles {
-		add(r.Wire)
+	if len(defined) > 0 {
+		// The phone system answered, so these are the roles — not the ones
+		// 3CX usually ships with, and not a union of the two. Offering a role
+		// this deployment does not define is offering something that will be
+		// refused at the moment somebody tries it.
+		//
+		// Ordered the way the console lists them where the name is one this
+		// package recognises, because the answer comes back unordered and a
+		// permission list in arbitrary order reads as though it means nothing.
+		have := map[string]bool{}
+		for _, name := range defined {
+			have[strings.TrimSpace(name)] = true
+		}
+		for _, r := range stockRoles {
+			if have[r.Wire] {
+				add(r.Wire)
+			}
+		}
+		for _, name := range defined {
+			if !internalRoles[name] {
+				add(name)
+			}
+		}
+	} else {
+		for _, r := range stockRoles {
+			add(r.Wire)
+		}
 	}
-	for _, name := range defined {
-		add(name)
-	}
-	// Last, and only ever additive: a role somebody holds exists, whatever
-	// else did or did not answer.
+
+	// Only ever additive: a role somebody holds exists, whatever else did or
+	// did not answer.
 	for _, name := range inUse {
 		add(name)
 	}
@@ -129,20 +163,30 @@ Answers nothing rather than an error. A phone system that will not describe its
 own roles is not a reason to refuse to draw the form — the stock list still
 covers it, and the only thing lost is a role somebody renamed.
 */
-func rolesDefined(ctx context.Context, conn pbx) []string {
+func rolesDefined(ctx context.Context, conn pbx, groups map[string]int64) []string {
+	// A group's own rights first. MyGroup/Rights answers 403 unless the
+	// account itself holds the system owner role, and asking about a group by
+	// id does not — so the deployment that most needs this list is the one
+	// that could not get it.
+	for _, id := range groups {
+		if names := rightsAt(ctx, conn, fmt.Sprintf("Groups(%d)/Rights", id)); len(names) > 0 {
+			slog.Debug("the phone system named its roles", "roles", fmt.Sprintf("%q", names))
+			return names
+		}
+	}
+	return rightsAt(ctx, conn, "MyGroup/Rights")
+}
+
+func rightsAt(ctx context.Context, conn pbx, path string) []string {
 	var answer struct {
 		Value []struct {
 			RoleName string `json:"RoleName"`
 		} `json:"value"`
 	}
 	query := url.Values{"$select": {"RoleName"}}
-	if err := conn.get(ctx, "MyGroup/Rights", query, &answer); err != nil {
-		// Worth saying out loud rather than swallowing: 3CX answers this
-		// with 403 unless the API account itself holds the system owner
-		// role, and an account without it leaves this offering the roles
-		// 3CX ships with rather than the ones this system actually has.
-		slog.Info("the phone system would not name its roles, so the standard ones are offered",
-			"why", err)
+	if err := conn.get(ctx, path, query, &answer); err != nil {
+		slog.Info("the phone system would not name its roles here",
+			"where", path, "why", err)
 		return nil
 	}
 	names := make([]string, 0, len(answer.Value))

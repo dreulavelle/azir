@@ -22,7 +22,7 @@ costs one test.
 */
 func TestAzirCanReadWhatThisPublishes(t *testing.T) {
 	// The roles a real system would have found in use.
-	published := settable(rolesFrom(nil, []string{"system_owners"}))
+	published := settable(testLists())
 	if len(published) == 0 {
 		t.Fatal("nothing is published, so this test checks nothing")
 	}
@@ -69,7 +69,7 @@ func TestAzirCanReadWhatThisPublishes(t *testing.T) {
 // own. 3CX publishes Enabled, which is the switch bulk.FieldEnabled already
 // describes, and two columns fighting over one setting is the bug.
 func TestAzirsOwnFieldsWin(t *testing.T) {
-	encoded, _ := json.Marshal(settable(rolesFrom(nil, []string{"system_owners"})))
+	encoded, _ := json.Marshal(settable(testLists()))
 	var read []bulk.Spec
 	if err := json.Unmarshal(encoded, &read); err != nil {
 		t.Fatal(err)
@@ -119,5 +119,16 @@ func TestReadingAndWritingAgreeOnDestinations(t *testing.T) {
 			t.Errorf("%s reads as %q and normalises to %q, so it would differ from itself",
 				where, read, got)
 		}
+	}
+}
+
+// testLists is what a real phone system answered with: the stock roles, the
+// one group this one has, and its own FQDN as the only routing device.
+func testLists() fieldLists {
+	roles, labels := rolesFrom(nil, []string{"system_owners"})
+	return fieldLists{
+		Roles:       choices{Values: roles, Labels: labels},
+		Departments: choices{Values: []string{"DEFAULT"}, Labels: map[string]string{"DEFAULT": "DEFAULT (0)"}},
+		Routing:     choices{Values: []string{"pbx.example.com"}},
 	}
 }

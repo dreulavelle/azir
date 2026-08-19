@@ -93,8 +93,12 @@ var editable = []option{
 
 	// Options — the three every MSP checks, and the recording set.
 	{"PbxDeliversAudio", "PBX delivers audio", "bool", "Options", nil},
+	// One setting, because that is what it is in the console. 3CX keeps two
+	// booleans — BlockTunnel and AllowLanOnly — behind a single checkbox, so
+	// offering both meant a technician could set the one the console does not
+	// show and watch nothing happen. Written together, always; see
+	// setExtensionOptions.
 	{"BlockTunnel", "Block remote non-tunnel connections", "bool", "Options", nil},
-	{"AllowLanOnly", "Allow only from the local network", "bool", "Options", nil},
 	{"RecordCalls", "Record calls", "bool", "Options", nil},
 	{"RecordExternalCallsOnly", "Record external calls only", "bool", "Options", nil},
 	{"RecordEmailNotify", "Email when a call is recorded", "bool", "Options", nil},
@@ -128,29 +132,49 @@ One list, because everything reading this is asking the same question — what
 can be changed — and the answer should not depend on where the phone system
 happens to keep it.
 */
-func settable(roles []string, roleLabels map[string]string) []published {
+func settable(lists fieldLists) []published {
 	all := make([]option, 0, len(editable)+len(forwardingFields)+2)
 	all = append(all, editable...)
 	all = append(all, forwardingFields...)
-	// The department is read and not offered. Moving somebody between groups
-	// changes who can see their calls and what they are counted in, which is
-	// more than a name on a page — and this phone system has one group, so
-	// there is nothing to check a move against.
+	// The department and the role both live on the membership joining an
+	// extension to a group, and both are offered as what the phone system
+	// actually has rather than as free text. The department used to be
+	// read-only on the reasoning that moving somebody between groups is a
+	// wider act than renaming them — which is true, and left the extensions
+	// that belong to no group with no way to be given one, and therefore no
+	// way to be given a role either.
 	all = append(all,
-		option{fieldDepartment, "Department", "readonly", "General", nil},
-		option{fieldRole, "Role", "choice", "General", roles},
+		option{fieldDepartment, "Department", "choice", "General", lists.Departments.Values},
+		option{fieldRole, "Role", "choice", "General", lists.Roles.Values},
 	)
 	all = append(all, handsetFields...)
 
+	labelled := map[string]map[string]string{
+		fieldRole:       lists.Roles.Labels,
+		fieldDepartment: lists.Departments.Labels,
+		fieldInterface:  lists.Routing.Labels,
+	}
 	out := make([]published, 0, len(all))
 	for _, o := range all {
-		entry := published{option: o, Unique: uniquePerExtension[o.Field]}
-		if o.Field == fieldRole {
-			entry.Labels = roleLabels
+		// The routing device is the one thing on the IP phone tab worth
+		// setting in bulk, so it alone stops being read-only — and only when
+		// the phone system named somewhere for it to point.
+		if o.Field == fieldInterface && len(lists.Routing.Values) > 0 {
+			o.Kind, o.Choices = "choice", lists.Routing.Values
 		}
+		entry := published{option: o, Unique: uniquePerExtension[o.Field]}
+		entry.Labels = labelled[o.Field]
 		out = append(out, entry)
 	}
 	return out
+}
+
+// fieldLists is what the phone system will accept, for the fields whose
+// answers are a list rather than anything somebody types.
+type fieldLists struct {
+	Roles       choices
+	Departments choices
+	Routing     choices
 }
 
 /*
@@ -194,7 +218,15 @@ var editableByName = func() map[string]option {
 	for _, o := range forwardingFields {
 		byName[o.Field] = o
 	}
+	// The three that are not fields on the extension. Their choices are left
+	// empty here on purpose: what a phone system will accept for them is
+	// fetched per request, and a stale copy in a package-level map is the
+	// thing that made the role dropdown wrong in the first place. The value is
+	// checked by the writer that knows — setDepartment against the groups that
+	// exist, setRoutingDevice against the phone it is changing.
 	byName[fieldRole] = option{fieldRole, "Role", "choice", "General", nil}
+	byName[fieldDepartment] = option{fieldDepartment, "Department", "choice", "General", nil}
+	byName[fieldInterface] = option{fieldInterface, "Routing device", "choice", "IP phone", nil}
 	return byName
 }()
 
@@ -246,9 +278,12 @@ func setExtensionOptions(ctx context.Context, req plugin.Request) (any, error) {
 			rules[key] = value
 			continue
 		}
-		if key == fieldDepartment {
-			return nil, plugin.Errorf("400",
-				"the department is where an extension's group puts it, and moving somebody between groups is not something this changes")
+		// The department is the extension's group membership rather than a
+		// value on the extension, and the routing device belongs to the phone
+		// beside it. Both are written separately below.
+		if key == fieldDepartment || key == fieldInterface {
+			rules[key] = value
+			continue
 		}
 		switch spec.Kind {
 		case "bool":
@@ -257,6 +292,12 @@ func setExtensionOptions(ctx context.Context, req plugin.Request) (any, error) {
 				return nil, plugin.Errorf("400", "%s is either true or false", key)
 			}
 			settings[key] = b
+			// One checkbox in the console, two booleans underneath. Setting
+			// only the one the console does not draw is a change a technician
+			// makes, is told succeeded, and cannot see anywhere.
+			if key == fieldTunnel {
+				settings[fieldLanOnly] = b
+			}
 		default:
 			// A choice is checked against what 3CX accepts, so a typo is
 			// refused by name here rather than as an opaque 400 from the PBX
@@ -317,29 +358,51 @@ func setExtensionOptions(ctx context.Context, req plugin.Request) (any, error) {
 			})
 			continue
 		}
-		if len(settings) > 0 {
-			if err := conn.patch(ctx, fmt.Sprintf("Users(%d)", id), settings); err != nil {
-				results = append(results, map[string]any{
-					"extension": number, "changed": false, "reason": plainReason(err),
-				})
-				continue
+		// Every part is attempted, and what failed is named.
+		//
+		// This used to stop at the first failure and report the extension
+		// unchanged, which was a lie in the case that actually happens: the
+		// settings patch succeeds, the role write is refused because the
+		// extension is in no group, and a technician is told nothing happened
+		// to an extension that has just been renamed.
+		var refusals []string
+		var did []string
+		attempt := func(what string, err error) {
+			if err != nil {
+				refusals = append(refusals, plainReason(err))
+				return
 			}
+			did = append(did, what)
+		}
+
+		if len(settings) > 0 {
+			attempt("its settings", conn.patch(ctx, fmt.Sprintf("Users(%d)", id), settings))
+		}
+		if group, changing := rules[fieldDepartment]; changing {
+			attempt("its department", setDepartment(ctx, conn, id, asText(group)))
 		}
 		if role, changing := rules[fieldRole]; changing {
-			if err := setRole(ctx, conn, id, asText(role)); err != nil {
-				results = append(results, map[string]any{
-					"extension": number, "changed": false, "reason": plainReason(err),
-				})
-				continue
-			}
+			attempt("its role", setRole(ctx, conn, id, asText(role)))
 		}
-		if fwd := without(rules, fieldRole); len(fwd) > 0 {
-			if err := setForwarding(ctx, conn, id, fwd); err != nil {
-				results = append(results, map[string]any{
-					"extension": number, "changed": false, "reason": plainReason(err),
-				})
-				continue
+		if iface, changing := rules[fieldInterface]; changing {
+			attempt("its routing device", setRoutingDevice(ctx, conn, id, asText(iface)))
+		}
+		if fwd := forwardingOnly(rules); len(fwd) > 0 {
+			attempt("its call forwarding", setForwarding(ctx, conn, id, fwd))
+		}
+
+		if len(refusals) > 0 {
+			reason := strings.Join(refusals, "; ")
+			if len(did) > 0 {
+				// Saying what did land matters more than saying what did not:
+				// somebody deciding whether to run this again needs to know
+				// the extension is now half-changed.
+				reason += " (" + strings.Join(did, " and ") + " did change)"
 			}
+			results = append(results, map[string]any{
+				"extension": number, "changed": false, "reason": reason,
+			})
+			continue
 		}
 		changed++
 		results = append(results, map[string]any{"extension": number, "changed": true})
@@ -503,10 +566,9 @@ func extensionSettings(ctx context.Context, req plugin.Request) (any, error) {
 	// The field list travels with the values, so whatever reads this can offer
 	// them as columns or as a form without keeping its own copy of what 3CX
 	// will accept.
-	roles, roleLabels := rolesAvailable(ctx, conn, rolesInUse(everyRow))
 	return map[string]any{
 		"extensions": out, "count": len(out),
-		"fields": settable(roles, roleLabels), "complete": complete,
+		"fields": settable(whatItAccepts(ctx, conn, everyRow)), "complete": complete,
 	}, nil
 }
 
@@ -885,6 +947,21 @@ func without(all map[string]any, key string) map[string]any {
 	return out
 }
 
+// forwardingOnly keeps the rules that belong to the forwarding profile, which
+// is everything collected aside from the handful written through an endpoint
+// of their own. Named for what it keeps rather than built by removing each of
+// the others in turn: the removing version was one edit away from quietly
+// sending a department to the forwarding writer.
+func forwardingOnly(rules map[string]any) map[string]any {
+	out := make(map[string]any, len(rules))
+	for k, v := range rules {
+		if forwarding(k) {
+			out[k] = v
+		}
+	}
+	return out
+}
+
 // forwarding reports whether a field belongs to the forwarding profile rather
 // than to the extension itself.
 func forwarding(field string) bool {
@@ -910,6 +987,13 @@ asking when they look at a list of extensions.
 const (
 	fieldDepartment = "Department"
 	fieldRole       = "Role"
+	// fieldInterface is the phone's routing device, which lives on the handset
+	// record beside the extension rather than on the extension.
+	fieldInterface = "PhoneInterface"
+	// The two booleans behind the console's one "Block remote non-tunnel
+	// connections" checkbox. Azir publishes the first and writes both.
+	fieldTunnel  = "BlockTunnel"
+	fieldLanOnly = "AllowLanOnly"
 )
 
 // membershipOf reads the department and role off the first group an extension
@@ -978,26 +1062,73 @@ is a different act with wider effects than a name, and it is not something to
 do as a side effect of setting a role.
 */
 func setRole(ctx context.Context, conn pbx, id int64, role string) error {
+	membership, err := membershipRow(ctx, conn, id)
+	if err != nil {
+		return err
+	}
+
+	// Both, because the phone system carries two and only one of them is the
+	// membership's own. Writing GroupRights alone was accepted with a 200,
+	// validated the name, and changed nothing — a role set five times over
+	// that read back unchanged every time, which is the worst way for a write
+	// to fail.
+	for _, property := range []string{"Rights", "GroupRights"} {
+		rights, ok := membership[property].(map[string]any)
+		if !ok {
+			rights = map[string]any{}
+		}
+		rights["RoleName"] = role
+		membership[property] = rights
+	}
+
+	if err := conn.patch(ctx, fmt.Sprintf("Users(%d)", id),
+		map[string]any{"Groups": []any{membership}}); err != nil {
+		return err
+	}
+
+	// Read it back. The phone system answered the old shape with a success it
+	// did not mean, so this asks rather than assumes — and a role is what
+	// somebody is trusted with, which is not a thing to report on faith.
+	after, err := membershipRow(ctx, conn, id)
+	if err != nil {
+		return err
+	}
+	if got := roleOf(after); got != role {
+		return plugin.Errorf("502",
+			"the phone system accepted the change and left the role as %q", got)
+	}
+	return nil
+}
+
+// membershipRow reads the first group membership on an extension, which is the
+// one its page shows and the one a department and a role are read from.
+func membershipRow(ctx context.Context, conn pbx, id int64) (map[string]any, error) {
 	var user struct {
 		Groups []map[string]any `json:"Groups"`
 	}
 	q := url.Values{}
 	q.Set("$select", "Id")
-	q.Set("$expand", "Groups($expand=GroupRights)")
+	q.Set("$expand", "Groups($expand=Rights,GroupRights)")
 	if err := conn.get(ctx, fmt.Sprintf("Users(%d)", id), q, &user); err != nil {
-		return err
+		return nil, err
 	}
 	if len(user.Groups) == 0 {
-		return plugin.Errorf("400", "this extension is not in any group, so it has no role to change")
+		return nil, plugin.Errorf("400",
+			"this extension is not in any group, so it has no role to change. Set its department first")
 	}
+	return user.Groups[0], nil
+}
 
-	rights, ok := user.Groups[0]["GroupRights"].(map[string]any)
-	if !ok {
-		return plugin.Errorf("400", "this extension's group carries no rights to change")
+// roleOf reads whichever of the two rights properties carries a name.
+func roleOf(membership map[string]any) string {
+	for _, property := range []string{"Rights", "GroupRights"} {
+		if rights, ok := membership[property].(map[string]any); ok {
+			if name := asText(rights["RoleName"]); name != "" {
+				return name
+			}
+		}
 	}
-	rights["RoleName"] = role
-	return conn.patch(ctx, fmt.Sprintf("Users(%d)", id),
-		map[string]any{"Groups": user.Groups})
+	return ""
 }
 
 /*
@@ -1035,5 +1166,108 @@ func handsetOf(raw any) map[string]any {
 		"PhoneMac":       asText(phone["MacAddress"]),
 		"PhoneName":      asText(phone["Name"]),
 		"PhoneInterface": asText(phone["Interface"]),
+	}
+}
+
+/*
+setDepartment moves an extension into a group.
+
+Read the memberships, point the first at the new group, write them all back —
+the same shape as setRole beside it. An extension in no group at all gets one,
+which is the case that matters: the extensions on this phone system that hold
+no role hold none because they are in no group, so "give these five a role"
+begins here.
+
+Written by id and read by name, because that is how 3CX keeps it.
+*/
+func setDepartment(ctx context.Context, conn pbx, id int64, department string) error {
+	_, groups := departmentsAvailable(ctx, conn)
+	target, known := groups[department]
+	if !known {
+		return plugin.Errorf("400", "this phone system has no department called %q", department)
+	}
+
+	var user struct {
+		Groups []map[string]any `json:"Groups"`
+	}
+	q := url.Values{}
+	q.Set("$select", "Id")
+	q.Set("$expand", "Groups($expand=GroupRights)")
+	if err := conn.get(ctx, fmt.Sprintf("Users(%d)", id), q, &user); err != nil {
+		return err
+	}
+
+	if len(user.Groups) == 0 {
+		// No membership to move, so one is made. Rights are left unset and the
+		// phone system gives the group's default, which is the right answer:
+		// inventing a role here would be deciding what somebody is trusted
+		// with as a side effect of filing them under a department.
+		user.Groups = []map[string]any{{"GroupId": target}}
+	} else {
+		first := user.Groups[0]
+		if current, ok := first["GroupId"]; ok && asText(current) == fmt.Sprint(target) {
+			return nil
+		}
+		first["GroupId"] = target
+		// Name and Number describe the old group and would contradict the id.
+		// The phone system fills them in from the id it is given.
+		delete(first, "Name")
+		delete(first, "Number")
+		delete(first, "MemberName")
+	}
+	return conn.patch(ctx, fmt.Sprintf("Users(%d)", id),
+		map[string]any{"Groups": user.Groups})
+}
+
+/*
+setRoutingDevice changes where a desk phone fetches its configuration from.
+
+The one thing on the IP phone tab worth setting across many extensions at once:
+moving a floor of handsets from the phone system to a session border controller
+is a real job, and doing it one extension at a time in the console is the kind
+of task this tool exists for.
+
+Deliberately the only writable field on that tab. A MAC address is what
+provisions a phone — the phone system builds a configuration and the handset
+fetches it — so writing one is how a desk phone stops coming back, and it is
+not something to do to fifty at once from a form.
+*/
+func setRoutingDevice(ctx context.Context, conn pbx, id int64, iface string) error {
+	var user struct {
+		Phones []map[string]any `json:"Phones"`
+	}
+	q := url.Values{}
+	q.Set("$select", "Id")
+	q.Set("$expand", "Phones")
+	if err := conn.get(ctx, fmt.Sprintf("Users(%d)", id), q, &user); err != nil {
+		return err
+	}
+	if len(user.Phones) == 0 {
+		return plugin.Errorf("400", "this extension has no phone, so there is no routing device to set")
+	}
+	if asText(user.Phones[0]["Interface"]) == iface {
+		return nil
+	}
+	user.Phones[0]["Interface"] = iface
+	return conn.patch(ctx, fmt.Sprintf("Users(%d)", id),
+		map[string]any{"Phones": user.Phones})
+}
+
+/*
+whatItAccepts asks the phone system for every list a field is chosen from.
+
+Three requests beside the one that read the extensions, and they answer the
+question a form has to answer before it can be drawn: not "what is this set to"
+but "what may it be set to". Each falls back to nothing on its own, so a phone
+system that will not describe one of them still yields a usable form for the
+rest.
+*/
+func whatItAccepts(ctx context.Context, conn pbx, rows []map[string]any) fieldLists {
+	departments, groups := departmentsAvailable(ctx, conn)
+	roles, roleLabels := rolesAvailable(ctx, conn, groups, rolesInUse(rows))
+	return fieldLists{
+		Roles:       choices{Values: roles, Labels: roleLabels},
+		Departments: departments,
+		Routing:     routingDevices(ctx, conn, conn.fqdn()),
 	}
 }
