@@ -97,6 +97,11 @@ func (s *Server) Routes() http.Handler {
 		s.require(identity.PermDataManage, s.putRetention))
 
 	mux.HandleFunc("GET /api/customers", s.require(p, ignoreActor(s.listCustomers)))
+	// Before the {id} route below it in specificity terms, and matched ahead of
+	// it because a literal segment beats a wildcard. Keeps the actor, unlike
+	// the two around it: this answers "where was I", which is a question about
+	// the person asking.
+	mux.HandleFunc("GET /api/customers/recent", s.require(p, s.recentCustomers))
 	mux.HandleFunc("GET /api/customers/{id}", s.require(p, ignoreActor(s.getCustomer)))
 	mux.HandleFunc("POST /api/customers",
 		s.require(identity.PermCustomerManage, s.createCustomer))
@@ -384,6 +389,26 @@ func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) {
 	customers, err := s.DB.ListCustomers(r.Context())
 	if err != nil {
 		s.fail(w, err, "could not list customers")
+		return
+	}
+	writeJSON(w, http.StatusOK, customers)
+}
+
+/*
+recentCustomers answers the picker before anybody has typed.
+
+The customers this person last changed something on. Short by construction — a
+technician works on a handful — and personal, so it does not reshuffle because
+somebody else is busy.
+*/
+func (s *Server) recentCustomers(w http.ResponseWriter, r *http.Request, actor identity.Actor) {
+	limit := 5
+	if asked, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && asked > 0 {
+		limit = asked
+	}
+	customers, err := s.DB.RecentlyChanged(r.Context(), actor.Email, limit)
+	if err != nil {
+		s.fail(w, err, "could not read what you last worked on")
 		return
 	}
 	writeJSON(w, http.StatusOK, customers)

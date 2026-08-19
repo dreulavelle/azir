@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import type { BlfKey, BlfKind, BulkExtension, BulkSpec } from "../../api";
 import { Sheet, Tabs } from "../../components";
-import { Button, Chip, Problem, TextInput } from "../../ui";
+import { Button, Chip, Label, Picker, Problem, TextInput } from "../../ui";
 import { Field, LEAVE, MIXED } from "./Fields";
 import { Keys } from "./Keys";
 
@@ -179,7 +179,45 @@ export function Editor({
     return per;
   }, [setting, specs]);
 
-  const shown = byTab.get(tab) ?? [];
+  /*
+   * Call forwarding is a set of rules per status profile, not one set.
+   *
+   * The phone system keeps Available, Away, Out of office and whatever else
+   * somebody made, and its own extension page shows one at a time. Azir used
+   * to read and write only Available, so changing a rule while looking at
+   * another profile did nothing anybody could see. All of them are here now,
+   * which is thirty-five controls — so the tab picks one, exactly as the
+   * console does.
+   *
+   * The profile is the part of a field's name before the slash; Available is
+   * the one without.
+   */
+  const onTab = byTab.get(tab) ?? [];
+  const profiles = useMemo(() => {
+    const seen: string[] = [];
+    for (const spec of onTab) {
+      const at = spec.field.indexOf("/");
+      const name = at < 0 ? "Available" : spec.field.slice(0, at);
+      if (!seen.includes(name)) seen.push(name);
+    }
+    return seen;
+  }, [onTab]);
+  const [profile, setProfile] = useState("Available");
+  // So a profile edited and scrolled away from is not lost behind another one,
+  // the same way the tabs count their own changes.
+  const changesIn = (name: string) =>
+    setting.filter(([field]) => {
+      const at = field.indexOf("/");
+      return (at < 0 ? "Available" : field.slice(0, at)) === name;
+    }).length;
+  const perProfile = profiles.length > 1;
+  const here = perProfile && profiles.includes(profile) ? profile : profiles[0];
+  const shown = perProfile
+    ? onTab.filter((spec) => {
+        const at = spec.field.indexOf("/");
+        return (at < 0 ? "Available" : spec.field.slice(0, at)) === here;
+      })
+    : onTab;
   const title = making
     ? "New extension"
     : together
@@ -299,6 +337,29 @@ export function Editor({
         </div>
       ) : shown.length > 0 ? (
         <div className="divide-y divide-edge/60">
+          {perProfile && (
+            <div className="mb-3 flex items-center gap-2 rounded-lg border border-edge bg-sunken/60 px-3 py-2">
+              <Label className="shrink-0">Status profile</Label>
+              <div className="w-[190px]">
+                <Picker
+                  value={here}
+                  aria-label="Which status profile these rules belong to"
+                  disabled={busy}
+                  onChange={(e) => setProfile(e.target.value)}
+                >
+                  {profiles.map((name) => (
+                    <option key={name} value={name}>
+                      {name}
+                      {changesIn(name) > 0 ? ` · ${changesIn(name)} changed` : ""}
+                    </option>
+                  ))}
+                </Picker>
+              </div>
+              <span className="text-2xs text-ink-faint">
+                Rules apply only to this profile, as they do on the phone system.
+              </span>
+            </div>
+          )}
           {shown.map((spec) => (
             <Field
               key={spec.field}

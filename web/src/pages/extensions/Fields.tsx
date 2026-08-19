@@ -1,5 +1,6 @@
 import type { BulkSpec } from "../../api";
 import { Picker, TextInput } from "../../ui";
+import { LongChoice, TOO_MANY, type Option } from "./LongChoice";
 
 /**
  * One field, drawn the way its kind wants to be drawn.
@@ -182,6 +183,37 @@ function Control({
       value !== MIXED &&
       !(spec.choices ?? []).includes(value) &&
       !(together && value === LEAVE);
+
+    // Long lists become something to type into. A phone system with a session
+    // border controller per site, or with every router-capable handset on it,
+    // turns this field into eighty names in a column ordered by nothing.
+    if ((spec.choices ?? []).length > TOO_MANY) {
+      const options: Option[] = [];
+      if (value === MIXED) options.push({ value: MIXED, label: "Mixed" });
+      if (together) options.push({ value: LEAVE, label: "Leave alone" });
+      if (unset) options.push({ value, label: value || "Not set" });
+      for (const choice of spec.choices ?? []) {
+        options.push({
+          value: choice,
+          label: spec.labels?.[choice] ?? choice,
+          state: spec.states?.[choice],
+        });
+      }
+      return (
+        <div className="flex flex-col gap-1">
+          <LongChoice
+            id={`f-${spec.field}`}
+            ariaLabel={spec.label}
+            options={options}
+            value={value}
+            disabled={disabled}
+            onChange={onChange}
+          />
+          {spec.states?.[value] && <Reachable state={spec.states[value]} />}
+        </div>
+      );
+    }
+
     return (
       <div className="flex flex-col gap-1">
         <Picker

@@ -133,9 +133,27 @@ can be changed — and the answer should not depend on where the phone system
 happens to keep it.
 */
 func settable(lists fieldLists) []published {
-	all := make([]option, 0, len(editable)+len(forwardingFields)+2)
+	all := make([]option, 0, len(editable)+len(forwardingFields)*len(lists.Profiles)+2)
 	all = append(all, editable...)
-	all = append(all, forwardingFields...)
+	// Every status profile's rules, not only the one the phone system happens
+	// to call the default. Its own extension page shows one profile at a time
+	// and so does the form; a sheet gets all of them, which is the point.
+	for _, profile := range lists.Profiles {
+		rules := append([]option{{"NoAnswerTimeout", "Ring for, in seconds", "text", "Call forwarding", nil}}, sharedRules...)
+		// Only what this kind of profile can hold. Offering a busy rule on a
+		// profile that sends every call to one place is a control that writes
+		// nowhere, which is worse than not offering it.
+		if profile.AtDesk {
+			rules = append(rules, deskRules...)
+		} else {
+			rules = append(rules, awayRules...)
+		}
+		for _, rule := range rules {
+			copied := rule
+			copied.Field = inProfile(profile.Name, rule.Field)
+			all = append(all, copied)
+		}
+	}
 	// The department and the role both live on the membership joining an
 	// extension to a group, and both are offered as what the phone system
 	// actually has rather than as free text. The department used to be
@@ -178,6 +196,17 @@ type fieldLists struct {
 	Roles       choices
 	Departments choices
 	Routing     choices
+	// Profiles is the status profiles forwarding rules belong to, default
+	// first, each with the rules its own shape can hold.
+	Profiles []statusProfile
+}
+
+// statusProfile is one forwarding profile and what kind it is.
+type statusProfile struct {
+	Name string
+	// AtDesk is a profile that distinguishes no-answer from busy. The other
+	// kind sends everything to one place.
+	AtDesk bool
 }
 
 /*
@@ -218,11 +247,8 @@ var uniquePerExtension = map[string]bool{
 
 // editableByName is the same list as an allowlist to check against.
 var editableByName = func() map[string]option {
-	byName := make(map[string]option, len(editable)+len(forwardingFields))
+	byName := make(map[string]option, len(editable)+3)
 	for _, o := range editable {
-		byName[o.Field] = o
-	}
-	for _, o := range forwardingFields {
 		byName[o.Field] = o
 	}
 	// The three that are not fields on the extension. Their choices are left
@@ -236,6 +262,32 @@ var editableByName = func() map[string]option {
 	byName[fieldInterface] = option{fieldInterface, "Routing device", "choice", "IP phone", nil}
 	return byName
 }()
+
+/*
+settingNamed finds a field, whichever profile it belongs to.
+
+A forwarding rule arrives as "BusyInternal" or as "Away/BusyInternal" and is
+the same setting either way — the profile says which object it lands on, not
+what kind of thing it is. Without this the allowlist refused every rule that
+was not the default profile's, by name, as though the phone system had never
+heard of it.
+*/
+func settingNamed(field string) (option, bool) {
+	// A field on the extension wins its own name. "Internal" is may-only-call-
+	// internally here and where-internal-calls-go inside a profile, and the
+	// prefix is what tells them apart.
+	if spec, ok := editableByName[field]; ok {
+		return spec, ok
+	}
+	_, rule := profileOf(field)
+	for _, o := range forwardingFields {
+		if o.Field == rule {
+			o.Field = field
+			return o, true
+		}
+	}
+	return option{}, false
+}
 
 type bulkOptionsArgs struct {
 	Extensions []string       `json:"extensions"`
@@ -273,7 +325,7 @@ func setExtensionOptions(ctx context.Context, req plugin.Request) (any, error) {
 	rules := map[string]any{}
 	var refused []string
 	for key, value := range args.Options {
-		spec, ok := editableByName[key]
+		spec, ok := settingNamed(key)
 		if !ok {
 			refused = append(refused, key)
 			continue
@@ -394,8 +446,13 @@ func setExtensionOptions(ctx context.Context, req plugin.Request) (any, error) {
 		if iface, changing := rules[fieldInterface]; changing {
 			attempt("its routing device", setRoutingDevice(ctx, conn, id, asText(iface)))
 		}
-		if fwd := forwardingOnly(rules); len(fwd) > 0 {
-			attempt("its call forwarding", setForwarding(ctx, conn, id, fwd))
+		// One write per profile touched. A batch that changes Available and
+		// Away in the same go is two rules on two different objects, and
+		// sending both to one of them is how the change would land somewhere
+		// nobody was looking.
+		for _, profile := range inOrder(byProfile(forwardingOnly(rules))) {
+			attempt("its "+profile+" call forwarding",
+				setForwarding(ctx, conn, id, profile, byProfile(forwardingOnly(rules))[profile]))
 		}
 
 		if len(refusals) > 0 {
@@ -787,19 +844,97 @@ one back means reading the whole profile set, changing the one, and writing all
 of them, because that is the shape the phone system takes.
 */
 
-// theProfile is the forwarding profile these fields read and write.
-const theProfile = "Available"
+/*
+Forwarding belongs to a status profile, and there are several.
 
-// forwardingFields are the rules, in the order they read on the phone system's
-// own page.
-var forwardingFields = []option{
+The phone system keeps one set of rules per status — Available, Away, Out of
+office and whatever else somebody has made — and its extension page shows one
+profile at a time. This read and wrote only Available, which is why changing a
+rule looked like it did nothing: it worked, on a profile the person was not
+looking at, and the read agreed with the write so nothing anywhere disagreed.
+
+Every profile is carried now. Available keeps the plain field names it has
+always had, so a sheet exported last week still maps; the others are named
+"Away/BusyInternal" and so on. Prefixing all of them would be tidier and would
+silently stop matching every sheet and undo already stored.
+*/
+const defaultProfile = "Available"
+
+// profileOf splits a field into the profile it belongs to and the rule itself.
+// An unprefixed name is the default profile, which is what most of them are.
+func profileOf(field string) (profile, rule string) {
+	if at := strings.Index(field, "/"); at >= 0 {
+		return field[:at], field[at+1:]
+	}
+	return defaultProfile, field
+}
+
+/*
+inProfile is the field name a rule takes within a profile.
+
+Always prefixed, including the default one. Leaving the default's rules bare
+was tidier to read and put two different settings on one name: "Internal" is
+already an extension field — may only call internally — and it is also the away
+rule for where internal calls go. Whichever was published second won, silently,
+and only on a deployment whose default profile happens to be away-shaped.
+
+An unprefixed name is still accepted on the way in, so a sheet written before
+this still maps to the default profile.
+*/
+func inProfile(profile, rule string) string {
+	return profile + "/" + rule
+}
+
+/*
+The rules a forwarding profile carries, which depends on what kind it is.
+
+A profile holds one of two route objects and the phone system decides which:
+AvailableRoute for a profile that means "at my desk", where what matters is why
+a call did not connect — no answer, or busy — and AwayRoute for one that means
+"not here", where every call goes the same place and the only question is
+internal or external.
+
+Which is which is a property of the profile and not of its name. On the system
+this was built against, Available and Custom 1 carry AvailableRoute while Away,
+Out of office and Custom 2 carry AwayRoute — so reading the name and assuming
+would be wrong on exactly one of the five, and wrong silently.
+*/
+const (
+	atDesk   = "AvailableRoute"
+	awayFrom = "AwayRoute"
+)
+
+// sharedRules sit on the profile itself, whichever kind it is.
+var sharedRules = []option{
 	{"AcceptMultipleCalls", "Accept multiple calls", "bool", "Call forwarding", nil},
-	{"NoAnswerTimeout", "Ring for, in seconds", "text", "Call forwarding", nil},
+	{"RingMyMobile", "Also ring my mobile", "bool", "Call forwarding", nil},
+}
+
+// deskRules are the AvailableRoute ones: why the call did not connect.
+var deskRules = []option{
 	{"NoAnswerExternal", "No answer, external calls", "destination", "Call forwarding", destinations},
 	{"NoAnswerInternal", "No answer, internal calls", "destination", "Call forwarding", destinations},
 	{"BusyExternal", "Busy, external calls", "destination", "Call forwarding", destinations},
 	{"BusyInternal", "Busy, internal calls", "destination", "Call forwarding", destinations},
 }
+
+// awayRules are the AwayRoute ones: everything goes somewhere.
+var awayRules = []option{
+	{"Internal", "Internal calls go to", "destination", "Call forwarding", destinations},
+	{"External", "External calls go to", "destination", "Call forwarding", destinations},
+	{"AllHoursInternal", "Internal, outside office hours too", "bool", "Call forwarding", nil},
+	{"AllHoursExternal", "External, outside office hours too", "bool", "Call forwarding", nil},
+}
+
+// forwardingFields is every rule any profile can carry, for the allowlist and
+// for deciding whether a field belongs to a profile at all.
+var forwardingFields = func() []option {
+	all := []option{{"NoAnswerTimeout", "Ring for, in seconds", "text", "Call forwarding", nil}}
+	all = append(all, sharedRules...)
+	all = append(all, deskRules...)
+	all = append(all, awayRules...)
+	return all
+}()
 
 // destinations is where the phone system will send a call. Its own list rather
 // than every value the API defines, because the rest are internal routing
@@ -819,27 +954,85 @@ func forwardingOf(raw any) map[string]any {
 	if !ok {
 		return nil
 	}
+	out := map[string]any{}
 	for _, entry := range profiles {
 		profile, ok := entry.(map[string]any)
-		if !ok || asText(profile["Name"]) != theProfile {
+		if !ok {
 			continue
 		}
-		out := map[string]any{
-			"AcceptMultipleCalls": profile["AcceptMultipleCalls"],
-			"NoAnswerTimeout":     asText(profile["NoAnswerTimeout"]),
+		name := asText(profile["Name"])
+		if name == "" {
+			continue
 		}
-		route, _ := profile["AvailableRoute"].(map[string]any)
-		for field, key := range map[string]string{
-			"NoAnswerExternal": "NoAnswerExternal",
-			"NoAnswerInternal": "NoAnswerInternal",
-			"BusyExternal":     "BusyExternal",
-			"BusyInternal":     "BusyInternal",
-		} {
-			out[field] = whereTo(route[key])
+		for _, rule := range sharedRules {
+			out[inProfile(name, rule.Field)] = profile[rule.Field]
 		}
-		return out
+		out[inProfile(name, "NoAnswerTimeout")] = asText(profile["NoAnswerTimeout"])
+
+		if route, ok := profile[atDesk].(map[string]any); ok {
+			for _, rule := range deskRules {
+				out[inProfile(name, rule.Field)] = whereTo(route[rule.Field])
+			}
+			continue
+		}
+		if route, ok := profile[awayFrom].(map[string]any); ok {
+			for _, rule := range awayRules {
+				if rule.Kind == "bool" {
+					out[inProfile(name, rule.Field)] = route[rule.Field]
+					continue
+				}
+				out[inProfile(name, rule.Field)] = whereTo(route[rule.Field])
+			}
+		}
 	}
-	return nil
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+/*
+profilesInUse is every status profile this phone system's extensions have.
+
+Read from the extensions rather than assumed, for the same reason the roles are
+— a deployment can rename "Out of office" or add one, and a field list that
+names profiles nobody has is a form full of controls that write nowhere.
+
+Available first, then the rest in the order the phone system gives them, which
+is the order its own page lists them in.
+*/
+func profilesInUse(rows []map[string]any) []statusProfile {
+	seen := map[string]bool{}
+	var out []statusProfile
+	for _, row := range rows {
+		profiles, ok := row["ForwardingProfiles"].([]any)
+		if !ok {
+			continue
+		}
+		for _, entry := range profiles {
+			profile, ok := entry.(map[string]any)
+			if !ok {
+				continue
+			}
+			name := asText(profile["Name"])
+			if name == "" || seen[name] {
+				continue
+			}
+			seen[name] = true
+			_, atTheDesk := profile[atDesk].(map[string]any)
+			out = append(out, statusProfile{Name: name, AtDesk: atTheDesk})
+		}
+	}
+	if len(out) == 0 {
+		return []statusProfile{{Name: defaultProfile, AtDesk: true}}
+	}
+	// The default first, then the rest as the phone system gave them. It comes
+	// back in no particular order, and a picker that opens on "Custom 2" is
+	// one somebody has to correct before every edit.
+	sort.SliceStable(out, func(a, b int) bool {
+		return out[a].Name == defaultProfile && out[b].Name != defaultProfile
+	})
+	return out
 }
 
 // whereTo writes a destination as the one string the field carries.
@@ -897,7 +1090,7 @@ Read, change, write all — the profiles are a collection on the extension and
 the phone system takes them together. Everything not named here is written back
 exactly as it was found.
 */
-func setForwarding(ctx context.Context, conn pbx, id int64, changes map[string]any) error {
+func setForwarding(ctx context.Context, conn pbx, id int64, profileName string, changes map[string]any) error {
 	var user struct {
 		Profiles []map[string]any `json:"ForwardingProfiles"`
 	}
@@ -910,14 +1103,22 @@ func setForwarding(ctx context.Context, conn pbx, id int64, changes map[string]a
 
 	found := false
 	for _, profile := range user.Profiles {
-		if asText(profile["Name"]) != theProfile {
+		if asText(profile["Name"]) != profileName {
 			continue
 		}
 		found = true
-		route, ok := profile["AvailableRoute"].(map[string]any)
+		// Whichever route this profile actually carries. Writing the other one
+		// is refused by the phone system with the property name and nothing
+		// else — "forwardingprofiles[3].availableroute" — which is how this
+		// was found.
+		route, ok := profile[atDesk].(map[string]any)
 		if !ok {
-			route = map[string]any{}
-			profile["AvailableRoute"] = route
+			if away, isAway := profile[awayFrom].(map[string]any); isAway {
+				route = away
+			} else {
+				route = map[string]any{}
+				profile[atDesk] = route
+			}
 		}
 		for field, value := range changes {
 			switch field {
@@ -929,13 +1130,19 @@ func setForwarding(ctx context.Context, conn pbx, id int64, changes map[string]a
 					return plugin.Errorf("400", "ring for is a number of seconds between 1 and 600")
 				}
 				profile[field] = seconds
+			case "AllHoursInternal", "AllHoursExternal":
+				// On the route rather than the profile, and a plain yes or no
+				// rather than a place.
+				route[field] = value
+			case "RingMyMobile":
+				profile[field] = value
 			default:
 				route[field] = asDestination(asText(value))
 			}
 		}
 	}
 	if !found {
-		return plugin.Errorf("400", "this extension has no %s forwarding profile", theProfile)
+		return plugin.Errorf("400", "this extension has no %q forwarding profile", profileName)
 	}
 
 	return conn.patch(ctx, fmt.Sprintf("Users(%d)", id),
@@ -969,11 +1176,43 @@ func forwardingOnly(rules map[string]any) map[string]any {
 	return out
 }
 
+/*
+byProfile groups forwarding rules by the status profile each belongs to.
+
+The rules arrive as one flat set — "BusyInternal" and "Away/BusyInternal"
+together — because that is how a sheet carries them and how a form sends them.
+Each profile is a separate object on the phone system, so they are separated
+again here, once, rather than at each of the places that writes one.
+*/
+func byProfile(rules map[string]any) map[string]map[string]any {
+	out := map[string]map[string]any{}
+	for field, value := range rules {
+		profile, rule := profileOf(field)
+		if out[profile] == nil {
+			out[profile] = map[string]any{}
+		}
+		out[profile][rule] = value
+	}
+	return out
+}
+
+// inOrder names the profiles in a stable order, so the same change makes the
+// same requests every time and reads the same way in a log.
+func inOrder(grouped map[string]map[string]any) []string {
+	names := make([]string, 0, len(grouped))
+	for name := range grouped {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 // forwarding reports whether a field belongs to the forwarding profile rather
 // than to the extension itself.
 func forwarding(field string) bool {
+	_, rule := profileOf(field)
 	for _, f := range forwardingFields {
-		if f.Field == field {
+		if f.Field == rule {
 			return true
 		}
 	}
@@ -1272,9 +1511,11 @@ rest.
 func whatItAccepts(ctx context.Context, conn pbx, rows []map[string]any) fieldLists {
 	departments, groups := departmentsAvailable(ctx, conn)
 	roles, roleLabels := rolesAvailable(ctx, conn, groups, rolesInUse(rows))
+	profiles := profilesInUse(rows)
 	return fieldLists{
 		Roles:       choices{Values: roles, Labels: roleLabels},
 		Departments: departments,
 		Routing:     routingDevices(ctx, conn, conn.fqdn()),
+		Profiles:    profiles,
 	}
 }
