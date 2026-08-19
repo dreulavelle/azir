@@ -12,6 +12,13 @@ import { api, type Customer } from "./api";
  * than over whatever happened to be loaded, so it does not need the whole
  * customer table in the browser to work.
  *
+ * Nothing appears until something is typed. Focusing the field used to open a
+ * list of whatever the search returned for the empty string, which is a
+ * dropdown by another name: on a deployment with three hundred customers it is
+ * twenty arbitrary ones, ordered by nothing, in front of somebody who already
+ * knows which one they want. It also cost a query every time the field was
+ * clicked. Type two letters and the matches are there.
+ *
  * Debounced, because the search is a real query and a request per keystroke
  * would ask the database for answers nobody reads. Two hundred milliseconds is
  * about the gap between typing quickly and having stopped.
@@ -48,7 +55,10 @@ export function CustomerSearch({
   const [term, setTerm] = useState("");
   const [hits, setHits] = useState<Customer[]>([]);
   const [chosen, setChosen] = useState<Customer | null>(null);
-  const [open, setOpen] = useState(false);
+  // Focused is the field being edited; open is the list having something to
+  // show. They were one flag, which is what made clicking the field a
+  // dropdown — there is no reason for those two things to be the same.
+  const [focused, setFocused] = useState(false);
   const [cursor, setCursor] = useState(0);
   const [searching, setSearching] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -99,11 +109,18 @@ export function CustomerSearch({
     }
   }, []);
 
+  const asked = term.trim();
+  // The list exists only as the answer to something typed.
+  const open = focused && asked !== "";
+
   useEffect(() => {
-    if (!open) return;
-    const timer = setTimeout(() => void search(term.trim()), 200);
+    if (!focused || asked === "") {
+      setHits([]);
+      return;
+    }
+    const timer = setTimeout(() => void search(asked), 200);
     return () => clearTimeout(timer);
-  }, [term, open, search]);
+  }, [asked, focused, search]);
 
   useEffect(() => setCursor(0), [hits]);
 
@@ -140,7 +157,7 @@ export function CustomerSearch({
   function pick(customer: Customer) {
     setChosen(customer);
     setTerm("");
-    setOpen(false);
+    setFocused(false);
     onChange(customer.id, customer);
     inputRef.current?.blur();
   }
@@ -155,18 +172,14 @@ export function CustomerSearch({
   function onKeyDown(e: React.KeyboardEvent) {
     if (e.key === "Escape") {
       e.preventDefault();
-      setOpen(false);
       setTerm("");
       inputRef.current?.blur();
       return;
     }
-    if (!open) {
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        setOpen(true);
-      }
-      return;
-    }
+    // Nothing to move through until something has been typed. Arrow-down used
+    // to open the list on an empty field, which is the same dropdown by
+    // another route.
+    if (!open) return;
     if (e.key === "ArrowDown") {
       e.preventDefault();
       setCursor((c) => Math.min(c + 1, hits.length - 1));
@@ -180,9 +193,10 @@ export function CustomerSearch({
     }
   }
 
-  // Closed, the field reads as the chosen customer. Open, it reads as what is
-  // being typed — so opening it does not look like the name was deleted.
-  const shown = open ? term : (chosen?.display_name ?? "");
+  // Unfocused, the field reads as the chosen customer. Focused, it reads as
+  // what is being typed — and the chosen name moves to the placeholder, so
+  // clicking in does not look like it was deleted.
+  const shown = focused ? term : (chosen?.display_name ?? "");
 
   return (
     <div className={`relative ${className ?? ""}`}>
@@ -202,23 +216,17 @@ export function CustomerSearch({
           className="h-8 w-full rounded-md border border-edge bg-sunken px-2.5 pr-7 text-sm placeholder:text-ink-faint focus-visible:border-azir focus-visible:outline-none disabled:opacity-50"
           placeholder={chosen ? chosen.display_name : placeholder}
           value={shown}
-          onFocus={() => {
-            setOpen(true);
-            void search("");
-          }}
+          onFocus={() => setFocused(true)}
           // A click outside closes the list. Options are taken on mousedown
           // below, before this runs, so choosing one is not a race with it.
           onBlur={() => {
-            setOpen(false);
+            setFocused(false);
             setTerm("");
           }}
-          onChange={(e) => {
-            setTerm(e.target.value);
-            setOpen(true);
-          }}
+          onChange={(e) => setTerm(e.target.value)}
           onKeyDown={onKeyDown}
         />
-        {chosen && !open && (
+        {chosen && !focused && (
           <button
             type="button"
             aria-label={`Clear ${chosen.display_name}`}
@@ -266,7 +274,7 @@ export function CustomerSearch({
 
           {hits.length === 0 && (
             <li className="px-2.5 py-2 text-xs text-ink-faint">
-              {searching ? "Searching…" : term.trim() ? `Nothing matches "${term.trim()}"` : "No customers yet"}
+              {searching ? "Searching…" : `Nothing matches "${asked}"`}
             </li>
           )}
         </ul>,
