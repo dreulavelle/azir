@@ -931,6 +931,49 @@ export type ExtensionRow = {
   phone: string;
 };
 
+/**
+ * One closure: a holiday, or a day the office shuts early.
+ *
+ * Dates are "2026-12-25", or "--12-25" for one that repeats every year — which
+ * is the shape RFC 3339 has for a recurring date and sorts within a year the
+ * way a person expects. Times are "13:00", or empty for a whole day.
+ */
+export type Closure = {
+  id: number;
+  name: string;
+  starts: string;
+  ends: string;
+  from_time: string;
+  to_time: string;
+  repeats: boolean;
+  department: string;
+  prompt: string;
+};
+
+/** A closure on its way to the phone system. */
+export type NewClosure = {
+  name: string;
+  starts: string;
+  ends?: string;
+  from_time?: string;
+  to_time?: string;
+  repeats?: boolean;
+  department?: string;
+};
+
+/** The closures, and the weekly hours they are exceptions to. */
+export type Schedule = {
+  closures: Closure[];
+  count: number;
+  office_hours: {
+    kind: string;
+    days: { day: string; from: string; to: string }[];
+    ignore_closures: boolean;
+  } | null;
+  /** The customer's own zone, inherited from the phone system. Never set here. */
+  time_zone: string;
+};
+
 /** One extension as the phone system has it right now, field by field. */
 export type BulkExtension = {
   extension: string;
@@ -1282,6 +1325,22 @@ export const api = {
    */
   recentCustomers: (limit = 5) =>
     request<Customer[]>(`/api/customers/recent?limit=${encodeURIComponent(String(limit))}`),
+
+  /** When a customer's phone system is closed, and the hours it keeps. */
+  schedule: (customerID: string) =>
+    request<Schedule>(`/api/schedule?customer_id=${encodeURIComponent(customerID)}`),
+
+  addClosure: (customerID: string, closure: NewClosure) =>
+    request<{ added: boolean; closure: Closure }>(
+      `/api/schedule?customer_id=${encodeURIComponent(customerID)}`,
+      { method: "POST", body: JSON.stringify(closure) },
+    ),
+
+  removeClosure: (customerID: string, id: number) =>
+    request<{ removed: number }>(
+      `/api/schedule/${id}?customer_id=${encodeURIComponent(customerID)}`,
+      { method: "DELETE" },
+    ),
 
   /** One customer, for putting a name to an id somebody arrived holding. */
   customer: (id: string) => request<Customer>(`/api/customers/${encodeURIComponent(id)}`),

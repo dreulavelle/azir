@@ -39,6 +39,7 @@ export type Route =
   | { name: "chats" }
   | { name: "diagnostics" }
   | { name: "extensions" }
+  | { name: "schedule" }
   | { name: "bulk" }
   | { name: "snapshot"; id: string }
   | { name: "settings"; tab?: string };
@@ -71,6 +72,8 @@ export function parse(path: string, search: string): Route {
       return tail ? { name: "snapshot", id: tail } : { name: "diagnostics" };
     case "extensions":
       return { name: "extensions" };
+    case "schedule":
+      return { name: "schedule" };
     case "bulk":
       return { name: "bulk" };
     case "settings":
@@ -104,6 +107,8 @@ export function href(route: Route): string {
       return "/chats";
     case "extensions":
       return "/extensions";
+    case "schedule":
+      return "/schedule";
     case "bulk":
       return "/bulk";
     case "diagnostics":

@@ -86,6 +86,15 @@ const ACTIONS: Record<string, { verb: string; note?: string }> = {
   },
   "extension.remove": { verb: "Removed an extension" },
 
+  "schedule.add": {
+    verb: "Scheduled a closure",
+    note: "A holiday or an early closing. Refused before it is written if the name is already used, or if it covers a day another closure already covers.",
+  },
+  "schedule.remove": {
+    verb: "Removed a scheduled closure",
+    note: "The phones keep their usual hours on those days again.",
+  },
+
   "bulk.upload": { verb: "Uploaded a sheet of changes" },
   "bulk.chosen": {
     verb: "Chose extensions to change",

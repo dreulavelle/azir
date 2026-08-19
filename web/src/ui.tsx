@@ -94,25 +94,40 @@ const WASH: Record<Signal, string> = {
  * distinction between "this is a label" and "this is what someone wrote" holds
  * everywhere without being re-decided per screen.
  */
+/*
+Label names a control.
+
+A real <label> when it is given something to point at, and a span otherwise.
+Clicking a label should focus its field and a screen reader should read the two
+together, and neither happens for a span — but plenty of these sit above a
+group of controls rather than one, where a <label> pointing at nothing would be
+worse than no label element at all.
+*/
 export function Label({
   children,
   className,
   title,
+  htmlFor,
 }: {
   children: ReactNode;
   className?: string;
   title?: string;
+  /** The id of the control this names. */
+  htmlFor?: string;
 }) {
+  const As = htmlFor ? "label" : "span";
   return (
-    <span
+    <As
+      htmlFor={htmlFor}
       title={title}
       className={cn(
         "font-mono text-2xs font-medium uppercase tracking-[0.09em] text-ink-faint",
+        htmlFor ? "cursor-pointer" : "",
         className,
       )}
     >
       {children}
-    </span>
+    </As>
   );
 }
 

@@ -230,6 +230,12 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/extensions/keys", s.require(identity.PermPhoneManage, s.setExtensionKeys))
 	mux.HandleFunc("POST /api/extensions/remove", s.require(identity.PermPhoneManage, s.removeExtensions))
 
+	// When a customer is closed. Holidays and early closings are one thing to
+	// a phone system, so they are one screen and one set of routes.
+	mux.HandleFunc("GET /api/schedule", s.require(identity.PermPhoneManage, s.getSchedule))
+	mux.HandleFunc("POST /api/schedule", s.require(identity.PermPhoneManage, s.addSchedule))
+	mux.HandleFunc("DELETE /api/schedule/{id}", s.require(identity.PermPhoneManage, s.removeSchedule))
+
 	// Diagnostic snapshots: a phone system's support bundle, read.
 	mux.HandleFunc("GET /api/snapshots", s.require(p, ignoreActor(s.listSnapshots)))
 	mux.HandleFunc("GET /api/snapshots/{id}", s.require(p, ignoreActor(s.getSnapshot)))

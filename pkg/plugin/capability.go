@@ -93,6 +93,19 @@ const (
 	CapPhoneExtensionKeys Capability = "phone_system.extension_keys"
 	CapPhoneHandsetAction Capability = "phone_system.handset_action"
 	CapPhoneReview        Capability = "phone_system.review"
+	/*
+		CapPhoneSchedule is when a phone system is closed: holidays, and the
+		hours it keeps the rest of the year.
+
+		One capability rather than two, because the phone system keeps them as
+		one thing — a closure is a span of dates that may be narrowed to a span
+		of hours — and because the question somebody asks is "when are they
+		shut", not "show me the holidays table".
+	*/
+	CapPhoneSchedule       Capability = "phone_system.schedule"
+	CapPhoneScheduleAdd    Capability = "phone_system.schedule_add"
+	CapPhoneScheduleRemove Capability = "phone_system.schedule_remove"
+
 	// CapPhoneCapture is a diagnostic capture pulled from a live phone system
 	// rather than uploaded as a file. Distinct from CapPhoneEvents, which is
 	// the last few events for a screen: this is the whole log, paged, for
@@ -166,6 +179,9 @@ var vocabulary = map[Capability]struct{}{
 	CapPhoneHandsetAction:     {},
 	CapPhoneReview:            {},
 	CapPhoneCapture:           {},
+	CapPhoneSchedule:          {},
+	CapPhoneScheduleAdd:       {},
+	CapPhoneScheduleRemove:    {},
 	CapCallsList:              {},
 	CapDocsSearch:             {},
 	CapInvoicesList:           {},
