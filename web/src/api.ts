@@ -206,9 +206,43 @@ function humanStatus(status: number): string {
   return "That did not work.";
 }
 
-/** True for the statuses that mean "nothing answered", not "no". */
-function isGateway(status: number): boolean {
-  return status === 502 || status === 503 || status === 504;
+/**
+ * Raised when a connected system is not set up for what was asked.
+ *
+ * Distinct from a refusal and from an outage. A customer with no phone system
+ * is not an error anybody needs to act on in the moment — it is a fact about
+ * that customer, and the screen should say so plainly rather than colour it red
+ * or claim Azir is down.
+ */
+export class NotConfigured extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NotConfigured";
+  }
+}
+
+/**
+ * True for the statuses that mean nothing answered.
+ *
+ * Only decides an outage when the response carried no explanation of its own.
+ * Core answers a plugin's own failure with a body that says what is wrong, and
+ * treating the status alone as an outage threw that away: a customer with no
+ * 3CX was told Azir was restarting, which was neither true nor useful.
+ */
+function isOutageResponse(status: number, body: { error?: string } | null): boolean {
+  if (status !== 502 && status !== 503 && status !== 504) return false;
+  return !body?.error;
+}
+
+/** Reads an error body without letting a non-JSON one throw. */
+async function errorBody(res: Response): Promise<{ error?: string; capability?: string; code?: string; required_permission?: string } | null> {
+  try {
+    return await res.json();
+  } catch {
+    // A gateway's own error page is HTML, which is exactly the case that
+    // matters: nothing answered, so there is nothing to read.
+    return null;
+  }
 }
 
 /**
@@ -240,19 +274,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (!res.ok) {
-    if (isGateway(res.status)) throw new Unavailable();
-    let message = humanStatus(res.status);
-    try {
-      const body = await res.json();
-      if (body?.error) {
-        message = body.error;
-        // A permission refusal names the permission that was missing. Saying
-        // which one turns "you can't" into something actionable.
-        if (body.required_permission) message += ` (needs ${body.required_permission})`;
-      }
-    } catch {
-      // A non-JSON error body is not worth reporting over the status line.
-    }
+    const body = await errorBody(res);
+    if (isOutageResponse(res.status, body)) throw new Unavailable();
+    let message = body?.error || humanStatus(res.status);
+    // A permission refusal names the permission that was missing. Saying which
+    // one turns "you can't" into something actionable.
+    if (body?.required_permission) message += ` (needs ${body.required_permission})`;
     throw new Error(message);
   }
   if (res.status === 204) return undefined as T;
@@ -488,13 +515,17 @@ async function perform<T>(
     throw new Unauthorized();
   }
   if (res.status === 404 || res.status === 403) {
-    const body = await res.json().catch(() => ({}));
+    const body = await errorBody(res);
     if (body?.capability) throw new NotProvided(capability);
     throw new Error(body?.error || humanStatus(res.status));
   }
   if (!res.ok) {
-    if (isGateway(res.status)) throw new Unavailable();
-    const body = await res.json().catch(() => ({}));
+    const body = await errorBody(res);
+    if (isOutageResponse(res.status, body)) throw new Unavailable();
+    // A plugin's own 4xx is about this customer's setup, not about Azir.
+    if (res.status >= 400 && res.status < 500 && body?.error) {
+      throw new NotConfigured(body.error);
+    }
     throw new Error(body?.error || humanStatus(res.status));
   }
 
@@ -535,8 +566,8 @@ async function change<T>(
     throw new Unauthorized();
   }
   if (!res.ok) {
-    if (isGateway(res.status)) throw new Unavailable();
-    const body = await res.json().catch(() => ({}));
+    const body = await errorBody(res);
+    if (isOutageResponse(res.status, body)) throw new Unavailable();
     if (res.status === 404 && body?.capability) throw new NotProvided(capability);
     let message = body?.error || humanStatus(res.status);
     if (body?.required_permission) message += ` (needs ${body.required_permission})`;

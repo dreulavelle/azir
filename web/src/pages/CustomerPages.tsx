@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   api,
   customerName,
+  NotConfigured,
   NotProvided,
   Perm,
   work,
@@ -365,11 +366,17 @@ function PhonePanel({ customerId }: { customerId: string }) {
         setReadAt(new Date().toISOString());
         setError(null);
       } catch (e) {
-        if (e instanceof NotProvided) setAbsent(true);
-        // A customer with no PBX configured is the normal case, not a fault.
-        else if (e instanceof Error && /which customer|no phone system address/i.test(e.message)) {
-          setAbsent(true);
-        } else setError(e instanceof Error ? e.message : "The phone system could not be read.");
+        // Two ways of not having one, both ordinary. NotProvided means no
+        // plugin offers phone status at all; NotConfigured means one does and
+        // this customer is not set up on it — which is what a disconnect
+        // leaves behind, and is a fact about the customer rather than a fault.
+        //
+        // Matched on the type rather than on the wording of the message, which
+        // is what this used to do: a regular expression over "no phone system
+        // address" is a copy of the plugin's prose living in the console, and
+        // it breaks silently the day somebody rewrites the sentence.
+        if (e instanceof NotProvided || e instanceof NotConfigured) setAbsent(true);
+        else setError(e instanceof Error ? e.message : "The phone system could not be read.");
       } finally {
         setBusy(false);
       }

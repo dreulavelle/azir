@@ -473,3 +473,38 @@ func TestCredentialChangesTellThePlugin(t *testing.T) {
 	do(t, client, http.MethodDelete, srv.URL+"/api/credentials/"+id, nil, http.StatusNoContent)
 	await("deleting a credential")
 }
+
+/*
+A plugin's own complaint is not a gateway failure.
+
+Everything a plugin said used to come back as 502, which is a claim about the
+connection between Azir and something else. Most of what a plugin reports is
+not that: "no phone system address is set for this customer" is a statement
+about configuration, and answering it with 502 told the console Azir was
+unreachable — so a customer with no 3CX read as an outage rather than as a
+customer with no 3CX.
+
+Worth pinning as a table, because the mapping is the whole of the fix and it is
+the sort of thing somebody simplifies back to a constant.
+*/
+func TestPluginErrorCodesBecomeHonestStatuses(t *testing.T) {
+	for _, tc := range []struct {
+		code string
+		want int
+		why  string
+	}{
+		{"400", 400, "the request or the setup was wrong"},
+		{"403", 403, "the vendor refused"},
+		{"404", 404, "the thing asked for is not there"},
+		{"412", 412, "something has to be configured first"},
+		{"429", 429, "the vendor is rate limiting"},
+		{"500", http.StatusBadGateway, "the plugin broke, which is a gateway failure"},
+		{"503", http.StatusBadGateway, "the vendor is down"},
+		{"", http.StatusBadGateway, "no code at all says nothing about whose fault it is"},
+		{"teapot", http.StatusBadGateway, "an unparseable code is not a status"},
+	} {
+		if got := api.StatusForPluginCode(tc.code); got != tc.want {
+			t.Errorf("code %q became %d, want %d — %s", tc.code, got, tc.want, tc.why)
+		}
+	}
+}

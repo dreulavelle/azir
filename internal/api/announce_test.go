@@ -2,9 +2,9 @@ package api_test
 
 import (
 	"go/ast"
-	"os"
 	"go/parser"
 	"go/token"
+	"os"
 	"sort"
 	"strings"
 	"testing"

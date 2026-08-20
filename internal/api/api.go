@@ -578,6 +578,27 @@ func (s *Server) disconnect(w http.ResponseWriter, r *http.Request, actor identi
 	writeJSON(w, http.StatusOK, gone)
 }
 
+/*
+statusForPluginCode turns a plugin's own error code into an HTTP one.
+
+Everything a plugin said used to come back as 502, which is a claim about the
+connection between Azir and something else. Most of what a plugin actually
+reports is not that. "No phone system address is set for this customer" is a
+statement about configuration, and answering it with a gateway error told the
+console that Azir was unreachable — so a customer with no 3CX read as an outage
+rather than as a customer with no 3CX.
+
+A plugin's 4xx is about the request or the setup and is passed through. Anything
+else is the vendor or the plugin failing, which is what 502 is for.
+*/
+func StatusForPluginCode(code string) int {
+	n, err := strconv.Atoi(code)
+	if err != nil || n < 400 || n > 499 {
+		return http.StatusBadGateway
+	}
+	return n
+}
+
 func (s *Server) listCredentials(w http.ResponseWriter, r *http.Request) {
 	// References only. There is deliberately no endpoint that returns a
 	// secret value: plaintext leaves the vault solely into a plugin handler.
@@ -854,8 +875,14 @@ func (s *Server) invokeTool(w http.ResponseWriter, r *http.Request, actor identi
 			return nil, err
 		}
 		if code := msg.Header.Get("Nats-Service-Error-Code"); code != "" {
+			// The plugin's own words, before they are turned into a status.
+			// When a screen shows the wrong kind of error this is the line
+			// that says whether the plugin or the mapping was at fault.
+			s.Log.Debug("tool refused",
+				"subject", tool.Subject, "customer_id", body.CustomerID,
+				"code", code, "why", msg.Header.Get("Nats-Service-Error"))
 			toolErr = &toolFailure{
-				status: http.StatusBadGateway,
+				status: StatusForPluginCode(code),
 				body: map[string]string{
 					"error": msg.Header.Get("Nats-Service-Error"),
 					"code":  code,
