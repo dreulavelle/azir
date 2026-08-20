@@ -313,15 +313,24 @@ func run(log *slog.Logger) error {
 		}
 	}()
 
+	// Which addresses in front of Azir may say where a request came from.
+	// Empty — the default — believes no forwarding header, so an actor's
+	// recorded address is the one the connection actually arrived from.
+	proxies, err := api.TrustedProxies(os.Getenv("AZIR_TRUSTED_PROXIES"))
+	if err != nil {
+		return fmt.Errorf("AZIR_TRUSTED_PROXIES: %w", err)
+	}
+
 	server := &api.Server{
-		NC:    nc,
-		Reg:   reg,
-		DB:    db,
-		Creds: creds,
-		Audit: recorder,
-		Log:   log,
-		Web:   assets,
-		Cache: toolCache,
+		NC:      nc,
+		Reg:     reg,
+		DB:      db,
+		Creds:   creds,
+		Audit:   recorder,
+		Log:     log,
+		Web:     assets,
+		Cache:   toolCache,
+		Proxies: proxies,
 	}
 
 	/*

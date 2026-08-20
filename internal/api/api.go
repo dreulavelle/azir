@@ -52,6 +52,15 @@ type Server struct {
 	// Jobs arms and disarms deferred work. Nil disables scheduling, which is
 	// what tests that do not care about it want.
 	Jobs Scheduler
+
+	// Proxies are the addresses whose forwarding headers are believed. Zero
+	// believes none of them, which is the correct default for a deployment
+	// reached directly. See proxy.go.
+	Proxies ProxyTrust
+
+	// Throttle limits sign-in attempts. Nil disables the limit, which is what
+	// most tests want; Routes installs one when it is not set.
+	Throttle *throttle
 }
 
 // Routes builds the mux.
@@ -61,6 +70,13 @@ type Server struct {
 // check that will eventually be forgotten — and the forgetting is invisible
 // until someone reaches something they should not have.
 func (s *Server) Routes() http.Handler {
+	// Installed here rather than left to the caller, so that a Server built
+	// without one is still throttled. Sign-in is not a route to leave open by
+	// omission.
+	if s.Throttle == nil {
+		s.Throttle = newThrottle()
+	}
+
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", s.health)
@@ -68,8 +84,11 @@ func (s *Server) Routes() http.Handler {
 	// Open by necessity: you cannot require a session to find out whether an
 	// account exists yet, or to create one.
 	mux.HandleFunc("GET /api/setup", s.authState)
-	mux.HandleFunc("POST /api/setup", s.setup)
-	mux.HandleFunc("POST /api/login", s.login)
+	// Throttled, both of them. Sign-in because guessing is what it is for, and
+	// setup because it verifies nothing and creates an administrator — the one
+	// request in Azir that grants everything.
+	mux.HandleFunc("POST /api/setup", s.limited(s.setup))
+	mux.HandleFunc("POST /api/login", s.limited(s.login))
 	mux.HandleFunc("POST /api/logout", s.logout)
 	mux.HandleFunc("GET /api/me", s.whoami)
 
@@ -279,7 +298,7 @@ func (s *Server) Routes() http.Handler {
 		mux.Handle("/", SPA(s.Web))
 	}
 
-	return secured(mux)
+	return secured(mux, s.Proxies)
 }
 
 // ignoreActor adapts a handler that does not need to know who is calling.
