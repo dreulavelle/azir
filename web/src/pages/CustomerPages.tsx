@@ -23,7 +23,7 @@ import { Explain, Tooltip } from "../components";
 import { useToast } from "../Toast";
 import type { Route } from "../router";
 import { TicketRow } from "./Triage";
-import { Button, Empty, Icon, Label, Loading, Panel, PanelHead, Problem, Stat, ago, duration, initials, statusTone } from "../ui";
+import { Button, Empty, Failure, Icon, Label, Loading, Panel, PanelHead, Problem, Stat, ago, duration, initials, statusTone } from "../ui";
 
 /** Everyone the connected systems know about. */
 export function Customers({
@@ -35,7 +35,11 @@ export function Customers({
 }) {
   const [customers, setCustomers] = useState<CustomerRecord[] | null>(null);
   const [tickets, setTickets] = useState<Ticket[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // The caught value rather than its message, so an outage and a refusal can
+  // be told apart when they are shown.
+  const [error, setError] = useState<unknown>(null);
+  // Bumped to ask the effect below to run again after a failure.
+  const [attempt, setAttempt] = useState(0);
   const [missing, setMissing] = useState(false);
   const [draft, setDraft] = useState(query ?? "");
 
@@ -89,13 +93,13 @@ export function Customers({
       } catch (e) {
         if (cancelled) return;
         if (e instanceof NotProvided) setMissing(true);
-        else setError(e instanceof Error ? e.message : "That search could not be run.");
+        else setError(e ?? "That search could not be run.");
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [query]);
+  }, [query, attempt]);
 
   return (
     <div className="mx-auto max-w-[1180px] px-6 py-6">
@@ -139,7 +143,7 @@ export function Customers({
           Connect a system that knows your customers and they appear here.
         </Empty>
       )}
-      {error && <Problem>{error}</Problem>}
+      <Failure error={error} onRetry={() => setAttempt((n) => n + 1)} />
       {!customers && !error && !missing && <Loading rows={8} />}
 
       {customers && customers.length === 0 && (

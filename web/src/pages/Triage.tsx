@@ -6,7 +6,7 @@ import type { Route } from "../router";
 import { useFallbackPoll, useLiveChanges } from "../live";
 import { hasChanged, seenChange, useChangedTickets } from "../watch";
 import { cn } from "@/lib/cn";
-import { Chip, Empty, Icon, Label, Loading, Panel, Problem, Stat, daysSince, isDone, priorityRank, prioritySignal, since, statusTone } from "../ui";
+import { Chip, Empty, Failure, Icon, Label, Loading, Panel, Stat, daysSince, isDone, priorityRank, prioritySignal, since, statusTone } from "../ui";
 
 /**
  * The queue, ordered by what needs attention rather than by when it arrived.
@@ -223,7 +223,9 @@ export function Triage({ actor, go }: { actor: Actor; go: (to: Route) => void })
   const [tickets, setTickets] = useState<Ticket[] | null>(null);
   const [recent, setRecent] = useState<Ticket[] | null>(null);
   const [provenance, setProvenance] = useState<Provenance | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // The caught value rather than its message: whether this was an outage or
+  // a refusal decides how it is shown.
+  const [error, setError] = useState<unknown>(null);
   const [missing, setMissing] = useState(false);
   const [busy, setBusy] = useState(false);
   const insights = useInsights(recent, tickets);
@@ -257,7 +259,7 @@ export function Triage({ actor, go }: { actor: Actor; go: (to: Route) => void })
       setMissing(false);
     } catch (e) {
       if (e instanceof NotProvided) setMissing(true);
-      else setError(e instanceof Error ? e.message : "The queue could not be loaded.");
+      else setError(e ?? "The queue could not be loaded.");
     } finally {
       setBusy(false);
     }
@@ -289,7 +291,7 @@ export function Triage({ actor, go }: { actor: Actor; go: (to: Route) => void })
   if (error) {
     return (
       <div className="mx-auto max-w-[1180px] px-6 py-6">
-        <Problem>{error}</Problem>
+        <Failure error={error} onRetry={refresh} />
       </div>
     );
   }

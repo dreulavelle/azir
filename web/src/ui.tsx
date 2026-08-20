@@ -24,6 +24,7 @@ import {
   UserRound,
   Users,
 } from "lucide-react";
+import { isOutage } from "./api";
 import { cn } from "@/lib/cn";
 
 /** Shared presentation pieces. Nothing here knows about any integration. */
@@ -468,6 +469,88 @@ export function Empty({ headline, children }: { headline: string; children?: Rea
       {children && <div className="mt-1 text-sm text-ink-dim">{children}</div>}
     </div>
   );
+}
+
+/**
+ * When a page could not load, and it is not the reader's fault.
+ *
+ * Deliberately not Problem. Problem is critical red, which is the colour this
+ * interface uses to mean something is wrong with the work — a write that
+ * failed, a refusal, a ticket that will not move. A restart during an upgrade
+ * is not that, and painting it the same colour teaches people to read the one
+ * that matters as background noise.
+ *
+ * It carries a retry because the whole answer, in this case, is "try again in a
+ * moment" — and a button is a shorter way to say that than a sentence asking
+ * somebody to reload the page.
+ */
+export function Trouble({
+  headline,
+  children,
+  onRetry,
+  busy,
+}: {
+  headline: string;
+  children?: ReactNode;
+  onRetry?: () => void;
+  busy?: boolean;
+}) {
+  return (
+    <div className="rounded-lg border border-edge bg-sunken px-6 py-8 text-center">
+      <div className="text-base font-medium">{headline}</div>
+      {children && (
+        <div className="mx-auto mt-1.5 max-w-[52ch] text-sm leading-relaxed text-ink-dim">
+          {children}
+        </div>
+      )}
+      {onRetry && (
+        <button
+          className="mt-4 h-8 rounded-md border border-edge bg-panel px-3.5 text-sm font-medium transition-colors hover:border-azir hover:text-azir disabled:opacity-50"
+          onClick={onRetry}
+          disabled={busy}
+        >
+          {busy ? "Trying…" : "Try again"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Whatever went wrong, shown the way it deserves.
+ *
+ * One component rather than a branch in every page, because the choice between
+ * "this is broken" and "this will be back" is the same choice everywhere and
+ * getting it wrong is what produced a red "502." on the queue during an
+ * upgrade.
+ */
+export function Failure({
+  error,
+  onRetry,
+  busy,
+}: {
+  error: unknown;
+  onRetry?: () => void;
+  busy?: boolean;
+}) {
+  if (!error) return null;
+
+  if (isOutage(error)) {
+    return (
+      <Trouble headline="Azir is not answering" onRetry={onRetry} busy={busy}>
+        {error instanceof Error ? error.message : null} Nothing you were working
+        on has been lost.
+      </Trouble>
+    );
+  }
+
+  const message =
+    typeof error === "string"
+      ? error
+      : error instanceof Error
+        ? error.message
+        : "That did not work.";
+  return <Problem>{message}</Problem>;
 }
 
 export function Loading({ rows = 4 }: { rows?: number }) {
