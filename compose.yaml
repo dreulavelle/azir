@@ -1,84 +1,47 @@
 name: azir
 
-# Azir is one binary — embedded NATS with JetStream, the API, the frontend, and
-# supervised plugins. Two services stand beside it: Postgres, because semantic
-# recall needs a real ANN index and ingest is genuinely concurrent, and SearXNG,
-# so the assistant can search the web without a search provider learning what
-# your customers are having trouble with.
 services:
   azir:
     build:
       context: .
       dockerfile: Dockerfile
     image: azir:local
-    # Named so `docker logs azir` works without hunting for a generated
-    # suffix. Overridable because a fixed name is exclusive on a host: a second
-    # instance — a staging copy, or a clean one to reproduce something against —
-    # cannot start while the name is taken.
-    container_name: ${AZIR_CONTAINER_NAME:-azir}
+    container_name: azir
     environment:
       DATABASE_URL: postgres://azir:${POSTGRES_PASSWORD:?run `make init` to generate .env}@postgres:5432/azir?sslmode=disable
-      # No default, deliberately. A default here would be a working encryption
-      # key published in the repository, and every deployment that never
-      # changed it would be holding customer credentials sealed with a key
-      # anyone can read. `make init` generates one; the vault refuses to start
-      # without it.
       AZIR_MASTER_KEY: ${AZIR_MASTER_KEY:?run `make init` to generate .env}
       AZIR_LOG_LEVEL: ${AZIR_LOG_LEVEL:-info}
-      # Set NATS_URL to point at an external cluster instead of the embedded
-      # server. Everything else is unchanged when you do.
     ports:
-      # Bound to one address rather than all of them.
+      # One address, not all of them. Docker's default publishes on every
+      # interface the host has — the LAN address, every container bridge, and
+      # IPv6 — and this API is the front door to a credential vault.
       #
-      # Docker's default publishes on every interface the host has: the LAN
-      # address, every container bridge, and IPv6. On a machine running other
-      # containers that means any of them can reach this API directly — and
-      # this API is the front door to a credential vault. It was fourteen
-      # addresses on the host this was noticed on.
-      #
-      # Loopback is the default because it is right for anything that
-      # terminates TLS on this machine. A tunnel or proxy running elsewhere on
-      # the network needs a reachable address instead: set AZIR_BIND to the one
-      # interface it comes in on, never back to 0.0.0.0, and firewall that port
-      # to the proxy's address.
+      # A tunnel or proxy elsewhere on the network needs a reachable address:
+      # set AZIR_BIND to the one interface it arrives on, never back to
+      # 0.0.0.0, and firewall that port to the proxy's address.
       - "${AZIR_BIND:-127.0.0.1}:${AZIR_PORT:-8080}:8080"
     volumes:
-      # JetStream's store. Postgres holds everything else.
-      - azir-data:/var/lib/azir
-      # Plugins that did not come with the image. Any executable named
-      # plugin-<name> dropped in here is supervised alongside the bundled ones
-      # on the next start — nothing to register, nothing to rebuild. Read-only,
-      # because the container has no business writing to it, and it still has
-      # to be approved in Settings before it can do anything.
+      - ./data:/var/lib/azir
       - ./plugins:/opt/azir/plugins:ro
     depends_on:
       postgres:
         condition: service_healthy
     restart: unless-stopped
 
-  # Private search, so the assistant can look up a vendor advisory without a
-  # search provider learning what your customers are having trouble with. No
-  # published port: the only thing that talks to it is Azir, over the internal
-  # network, and an instance reachable from outside would be one somebody else
-  # could use to search on your behalf.
   searxng:
     image: searxng/searxng:latest
-    container_name: ${AZIR_SEARCH_CONTAINER_NAME:-azir-search}
+    container_name: azir-search
     environment:
-      # SearXNG refuses to start without one, and a shared default would mean
-      # every Azir deployment signing its sessions with the same key.
       SEARXNG_SECRET: ${SEARXNG_SECRET:?run `make init` to generate .env}
       SEARXNG_BASE_URL: http://searxng:8080/
     volumes:
       - ./deploy/searxng/settings.yml:/etc/searxng/settings.yml:ro
-      - searxng-cache:/var/cache/searxng
+      - ./cache:/var/cache/searxng
     restart: unless-stopped
 
   postgres:
-    # pgvector is why this is Postgres; the image ships the extension so the
-    # migration can simply CREATE EXTENSION.
     image: pgvector/pgvector:pg18
-    container_name: ${AZIR_DB_CONTAINER_NAME:-azir-db}
+    container_name: azir-db
     environment:
       POSTGRES_USER: azir
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run `make init` to generate .env}
@@ -88,15 +51,9 @@ services:
       - "-c"
       - "config_file=/etc/postgresql/postgresql.conf"
     volumes:
-      # Mounted at /var/lib/postgresql rather than .../data, which is what the
-      # 18+ images expect: the cluster then lives in a version-named
-      # subdirectory, so a future major upgrade can use `pg_upgrade --link`
-      # without both versions straddling a mount boundary.
-      - pg-data:/var/lib/postgresql
+      - ./db:/var/lib/postgresql
       - ./deploy/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
     ports:
-      # Published for psql during development, off 5432 so a Postgres already
-      # running on the host does not collide.
       - "${AZIR_PG_PORT:-5433}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U azir -d azir"]
@@ -105,7 +62,3 @@ services:
       retries: 12
     restart: unless-stopped
 
-volumes:
-  azir-data:
-  pg-data:
-  searxng-cache:

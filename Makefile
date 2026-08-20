@@ -85,6 +85,13 @@ down: ## Stop the stack
 .PHONY: down-hard
 down-hard: ## Stop the stack and delete its data, returning it to first run
 	@$(COMPOSE) down -v
+# The state directories are bind mounts, so `down -v` does not touch them —
+# it removes volumes, and there are none. Postgres also creates its directory
+# as root, so removing it from here needs root: a throwaway container has it
+# and this machine's user may not. Without this the target stopped short of
+# what its name promises, and quietly: the stack came back up on the old
+# cluster looking like a first run that had failed.
+	@docker run --rm -v "$$PWD:/w" -w /w alpine:3.22 rm -rf ./data ./db ./cache
 
 .PHONY: logs
 logs: ## Tail stack logs

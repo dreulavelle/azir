@@ -9,3 +9,11 @@ web/tsconfig.tsbuildinfo
 # Tooling caches. Nothing here is a Python project; ruff runs from a global
 # editor hook and leaves this behind anyway.
 .ruff_cache/
+
+# Where the stack keeps its state, bind-mounted so it can be inspected and
+# backed up without going through Docker. Postgres creates its directory as
+# root, so git cannot read into it and says so on every status until this is
+# here — and a committed cluster would carry the credentials table with it.
+data/
+db/
+cache/
