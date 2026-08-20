@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go"
+
 	"github.com/dreulavelle/azir/internal/api"
 	"github.com/dreulavelle/azir/internal/audit"
 	"github.com/dreulavelle/azir/internal/registry"
@@ -49,6 +51,14 @@ func server(t *testing.T) (*httptest.Server, *http.Client) {
 // serverWithDB is the same harness, handing back the database as well, for the
 // tests whose subject is what is stored rather than what an endpoint answers.
 func serverWithDB(t *testing.T) (*httptest.Server, *http.Client, *store.DB) {
+	srv, client, db, _ := serverWithBus(t)
+	return srv, client, db
+}
+
+// serverWithBus is the same harness, handing back the NATS connection as well,
+// for the tests whose subject is what core announces rather than what it
+// answers.
+func serverWithBus(t *testing.T) (*httptest.Server, *http.Client, *store.DB, *nats.Conn) {
 	t.Helper()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -145,7 +155,7 @@ func serverWithDB(t *testing.T) (*httptest.Server, *http.Client, *store.DB) {
 		"email": "admin@test.local", "display_name": "Admin", "password": "test-password-1234",
 	}, http.StatusOK)
 
-	return srv, client, db
+	return srv, client, db, nc
 }
 
 func do(t *testing.T, c *http.Client, method, url string, body any, wantStatus int) map[string]any {
@@ -363,4 +373,49 @@ func resolveForTest(t *testing.T, srv *httptest.Server, client *http.Client, cap
 		}
 	}
 	return false, nil
+}
+
+/*
+Disconnecting a system must tell the plugin, not just the database.
+
+A plugin holds a customer's settings and credential in its own caches for up to
+thirty seconds each. Deleting the rows without saying so leaves a disconnect
+that has visibly succeeded and a connection that still works — which is the one
+outcome the button must never produce. Saving settings has always announced
+itself; removing them did not, and the difference was invisible from the
+outside because both answered 200.
+
+Asserted on the bus rather than through behaviour: the announcement is the
+mechanism, and a test that waited for a cache to expire would pass for the
+wrong reason.
+*/
+func TestDisconnectingTellsThePlugin(t *testing.T) {
+	srv, client, db, nc := serverWithBus(t)
+	ctx := context.Background()
+
+	them, err := db.CreateCustomer(ctx, "Ellis Dental")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	heard := make(chan struct{}, 1)
+	sub, err := nc.Subscribe(plugin.ConfigChangedSubject("writer"), func(*nats.Msg) {
+		select {
+		case heard <- struct{}{}:
+		default:
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sub.Unsubscribe() //nolint:errcheck // test cleanup
+
+	do(t, client, http.MethodDelete,
+		srv.URL+"/api/customers/"+them.ID.String()+"/connections/writer", nil, http.StatusOK)
+
+	select {
+	case <-heard:
+	case <-time.After(3 * time.Second):
+		t.Fatal("a disconnect did not announce itself, so the plugin keeps serving the customer it no longer has settings for")
+	}
 }
