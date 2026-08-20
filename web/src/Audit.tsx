@@ -59,6 +59,7 @@ const ACTIONS: Record<string, { verb: string; note?: string }> = {
   "customer.create": { verb: "Added a customer" },
   "branding.change": { verb: "Changed the branding" },
   "branding.logo": { verb: "Changed the logo" },
+  "branding.splash": { verb: "Changed the sign-in picture" },
   "webhook.rotate": { verb: "Changed a webhook address" },
   "webhook.received": {
     verb: "A connected system reported a change",

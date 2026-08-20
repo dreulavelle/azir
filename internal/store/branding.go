@@ -16,22 +16,30 @@ type Branding struct {
 	// HasLogo rather than the bytes: the settings form only needs to know
 	// whether one is set, and shipping a few hundred kilobytes of PNG inside a
 	// JSON body on every page load would be a strange way to serve an image.
-	HasLogo   bool      `json:"has_logo"`
+	HasLogo bool `json:"has_logo"`
+
+	SplashType string `json:"splash_type,omitempty"`
+	// HasSplash, for the same reason as HasLogo and more so: the sign-in
+	// picture is measured in hundreds of kilobytes.
+	HasSplash bool      `json:"has_splash"`
 	UpdatedAt time.Time `json:"updated_at"`
 	UpdatedBy string    `json:"updated_by"`
 }
 
 func (db *DB) Branding(ctx context.Context) (Branding, error) {
 	var b Branding
-	var logo []byte
+	var logo, splash []byte
 	err := db.pool.QueryRow(ctx, `
-		SELECT name, tagline, mark, accent, logo, logo_type, updated_at, updated_by
+		SELECT name, tagline, mark, accent, logo, logo_type, splash, splash_type,
+			updated_at, updated_by
 		FROM branding WHERE id`).Scan(
-		&b.Name, &b.Tagline, &b.Mark, &b.Accent, &logo, &b.LogoType, &b.UpdatedAt, &b.UpdatedBy)
+		&b.Name, &b.Tagline, &b.Mark, &b.Accent, &logo, &b.LogoType,
+		&splash, &b.SplashType, &b.UpdatedAt, &b.UpdatedBy)
 	if err != nil {
 		return Branding{}, fmt.Errorf("store: read branding: %w", err)
 	}
 	b.HasLogo = len(logo) > 0
+	b.HasSplash = len(splash) > 0
 	return b, nil
 }
 
@@ -69,6 +77,32 @@ func (db *DB) SetLogo(ctx context.Context, image []byte, kind, by string) error 
 		WHERE id`, image, kind, by)
 	if err != nil {
 		return fmt.Errorf("store: write logo: %w", err)
+	}
+	return nil
+}
+
+// Splash returns the stored sign-in picture and its content type.
+func (db *DB) Splash(ctx context.Context) ([]byte, string, error) {
+	var splash []byte
+	var kind string
+	err := db.pool.QueryRow(ctx,
+		`SELECT splash, splash_type FROM branding WHERE id`).Scan(&splash, &kind)
+	if err != nil {
+		return nil, "", fmt.Errorf("store: read splash: %w", err)
+	}
+	if len(splash) == 0 {
+		return nil, "", ErrNotFound
+	}
+	return splash, kind, nil
+}
+
+// SetSplash stores a sign-in picture, or clears it when given nothing.
+func (db *DB) SetSplash(ctx context.Context, image []byte, kind, by string) error {
+	_, err := db.pool.Exec(ctx, `
+		UPDATE branding SET splash = $1, splash_type = $2, updated_at = now(), updated_by = $3
+		WHERE id`, image, kind, by)
+	if err != nil {
+		return fmt.Errorf("store: write splash: %w", err)
 	}
 	return nil
 }

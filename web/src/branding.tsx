@@ -18,6 +18,7 @@ export type Branding = {
   mark: string;
   accent: string;
   has_logo: boolean;
+  has_splash: boolean;
   effective_name: string;
   effective_mark: string;
   effective_tagline: string;
@@ -31,6 +32,7 @@ const unknown: Branding = {
   mark: "",
   accent: "",
   has_logo: false,
+  has_splash: false,
   effective_name: "",
   effective_mark: "",
   effective_tagline: "",

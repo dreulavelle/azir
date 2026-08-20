@@ -1,5 +1,5 @@
 import { Mark, useBranding } from "./branding";
-import { SignInScene } from "./scene";
+import { SignInShell } from "./SignInShell";
 import { useState } from "react";
 import { api, type AuthState } from "./api";
 import { Problem } from "./ui";
@@ -18,53 +18,49 @@ export function Gate({ state, onDone }: { state: AuthState; onDone: () => void }
   const ssoError = new URLSearchParams(window.location.search).get("sso_error");
 
   return (
-    <div className="relative grid min-h-screen place-items-center overflow-hidden px-4">
-      {/* The one screen with nothing to compete with, so the one screen that
-          gets atmosphere. */}
-      <SignInScene accent={brand.effective_accent || "#7c6bff"} />
+    <SignInShell
+      // The uploaded picture when there is one, and the shipped default
+      // otherwise — the same rule the name, tagline and mark already follow, so
+      // a release that improves the default still reaches a deployment that
+      // never overrode it.
+      splash={brand.has_splash ? "/api/branding/splash" : undefined}
+      mark={<Mark size={52} className="shadow-e2" />}
+      tagline={brand.effective_tagline}
+      eyebrow={state.needs_setup ? "First run" : "Sign in"}
+      heading={
+        state.needs_setup
+          ? "Create the administrator"
+          : `Sign in to ${brand.effective_name}`
+      }
+      note={
+        state.needs_setup
+          ? "This happens once. The account you make here can configure everything else, including how everybody else signs in."
+          : undefined
+      }
+    >
+      {ssoError && <Problem>{ssoError}</Problem>}
 
-      {/* A wash under the card, so the text sits on something solid however
-          bright the field behind it happens to get. */}
-      <div
-        className="pointer-events-none absolute inset-0"
-        style={{
-          background:
-            "radial-gradient(46% 40% at 50% 45%, color-mix(in srgb, var(--ground) 78%, transparent), color-mix(in srgb, var(--ground) 24%, transparent))",
-        }}
-        aria-hidden="true"
-      />
-
-      <div className="relative w-full max-w-sm rounded-xl border border-edge bg-panel/95 p-7 shadow-e3 backdrop-blur">
-        <div className="mb-5 flex justify-center">
-          <Mark size={44} />
-        </div>
-        <h1 className="text-center text-xl font-semibold tracking-tight">
-          {brand.effective_name}
-        </h1>
-        <p className="mt-1 text-center text-xs text-ink-dim">{brand.effective_tagline}</p>
-        <p className="mb-5 mt-4 text-center font-mono text-2xs font-medium uppercase tracking-[0.09em] text-ink-faint">
-          {state.needs_setup ? "first run" : "sign in"}
-        </p>
-
-        {ssoError && <Problem>{ssoError}</Problem>}
-
-        {state.needs_setup ? (
-          <SetupForm onDone={onDone} />
-        ) : (
-          <>
-            {state.oidc_enabled && (
-              <>
-                <a className="flex h-9 items-center justify-center gap-2 rounded-md border border-edge bg-sunken text-sm font-medium transition-colors hover:border-azir hover:text-azir" href="/api/auth/oidc/start">
-                  Continue with {state.oidc_label}
-                </a>
-                <div className="my-5 flex items-center gap-3 font-mono text-2xs uppercase tracking-[0.09em] text-ink-faint before:h-px before:flex-1 before:bg-edge after:h-px after:flex-1 after:bg-edge">or sign in with a password</div>
-              </>
-            )}
-            <LoginForm onDone={onDone} />
-          </>
-        )}
-      </div>
-    </div>
+      {state.needs_setup ? (
+        <SetupForm onDone={onDone} />
+      ) : (
+        <>
+          {state.oidc_enabled && (
+            <>
+              <a
+                className="flex h-10 items-center justify-center gap-2 rounded-md border border-edge bg-sunken text-sm font-medium transition-colors hover:border-azir hover:text-azir"
+                href="/api/auth/oidc/start"
+              >
+                Continue with {state.oidc_label}
+              </a>
+              <div className="my-6 flex items-center gap-3 font-mono text-2xs uppercase tracking-[0.14em] text-ink-faint before:h-px before:flex-1 before:bg-edge after:h-px after:flex-1 after:bg-edge">
+                or
+              </div>
+            </>
+          )}
+          <LoginForm onDone={onDone} />
+        </>
+      )}
+    </SignInShell>
   );
 }
 

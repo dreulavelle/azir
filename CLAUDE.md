@@ -14,9 +14,14 @@ change code here without breaking something quietly.
 make check      # gofmt -w, go vet, go test -race    <- run before calling work done
 make build      # binaries into bin/
 make up         # build and start the stack
-make smoke      # sixteen checks against a running stack
+make smoke      # fifteen checks against a running stack
 make test-db    # print an AZIR_TEST_DATABASE_URL for a faster local loop
 ```
+
+`helpdesk.dreulavelle.com` is **the** instance: a development deployment, not a
+production one, and there is no second environment beside it. Changes are built
+and deployed there with `make up`, and that is where they are looked at and
+demonstrated from. Do not stand up a parallel dev server.
 
 `go test ./...` needs no setup. Frontend: `cd web && npm run typecheck && npm run build`.
 
