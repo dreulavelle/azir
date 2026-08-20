@@ -334,3 +334,38 @@ func (db *DB) DeleteUser(ctx context.Context, id uuid.UUID) error {
 	}
 	return nil
 }
+
+/*
+ActorByID resolves a person and what they may do, without a session.
+
+For work that runs when nobody is signed in. A job carries the person who
+scheduled it, and their permissions are read again at the moment it fires
+rather than frozen when it was created — so an account that has since been
+disabled, deleted or moved to a narrower role stops the work it armed. That is
+what makes those three things kill switches instead of paperwork.
+*/
+func (db *DB) ActorByID(ctx context.Context, id uuid.UUID) (identity.Actor, error) {
+	var (
+		a           identity.Actor
+		disabled    bool
+		permissions []string
+	)
+	err := db.pool.QueryRow(ctx, `
+		SELECT u.id, u.email, u.display_name, u.role, u.disabled, r.permissions
+		FROM users u
+		JOIN roles r ON r.name = u.role
+		WHERE u.id = $1`, id,
+	).Scan(&a.UserID, &a.Email, &a.DisplayName, &a.Role, &disabled, &permissions)
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		return identity.Actor{}, identity.ErrUnauthenticated
+	}
+	if err != nil {
+		return identity.Actor{}, fmt.Errorf("store: resolve actor: %w", err)
+	}
+	if disabled {
+		return identity.Actor{}, identity.ErrUnauthenticated
+	}
+	a.Permissions = permissions
+	return a, nil
+}

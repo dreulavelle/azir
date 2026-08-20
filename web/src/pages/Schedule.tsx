@@ -4,6 +4,7 @@ import {
   type Actor,
   type Closure,
   type Customer,
+  type Job,
   type OpenDay,
   type Schedule as Sched,
 } from "../api";
@@ -121,6 +122,7 @@ export function Schedule({ actor }: { actor: Actor }) {
   const [busy, setBusy] = useState(false);
   const [making, setMaking] = useState(false);
   const [removing, setRemoving] = useState<Closure | null>(null);
+  const [jobs, setJobs] = useState<Job[]>([]);
   const toast = useToast();
 
   const mayManage = actor.permissions.includes("phone.manage");
@@ -150,6 +152,14 @@ export function Schedule({ actor }: { actor: Actor }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [customerID, load]);
 
+  // Scheduled work belongs to the customer, not to the department: a change
+  // armed against one department is still something about to happen on their
+  // phone system, and hiding it behind a picker is how it surprises somebody.
+  useEffect(() => {
+    void loadJobs(customerID);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [customerID]);
+
   // A different customer has different departments; theirs is not ours.
   useEffect(() => setDepartment(""), [customerID]);
 
@@ -178,6 +188,53 @@ export function Schedule({ actor }: { actor: Actor }) {
     }
     return out;
   }, [schedule, year]);
+
+  async function loadJobs(id: string) {
+    if (!id) {
+      setJobs([]);
+      return;
+    }
+    try {
+      setJobs((await api.jobs(id)).jobs);
+    } catch {
+      // Scheduling being unreadable should not take the whole screen down;
+      // the hours and closures above it are still true.
+    }
+  }
+
+  async function scheduleHours(days: OpenDay[], at: string) {
+    setBusy(true);
+    setProblem(null);
+    try {
+      await api.scheduleJob({
+        capability: "phone_system.office_hours_set",
+        args: { department: schedule?.department ?? department, days },
+        title: `${schedule?.department ?? department}: new office hours`,
+        customer_id: customerID,
+        run_at: at,
+      });
+      toast("Scheduled", { tone: "good" });
+      await loadJobs(customerID);
+    } catch (e) {
+      setProblem(e instanceof Error ? e.message : "Could not schedule that");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function cancelJob(job: Job) {
+    setBusy(true);
+    setProblem(null);
+    try {
+      await api.cancelJob(job.id);
+      toast(`${job.title} cancelled`, { tone: "good" });
+      await loadJobs(customerID);
+    } catch (e) {
+      setProblem(e instanceof Error ? e.message : "Could not cancel that");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function add(closure: Parameters<typeof api.addClosure>[1]) {
     setBusy(true);
@@ -326,6 +383,17 @@ export function Schedule({ actor }: { actor: Actor }) {
               setBusy(false);
             }
           }}
+          onLater={(days, at) => void scheduleHours(days, at)}
+        />
+      )}
+
+      {customerID && schedule && (
+        <Scheduled
+          jobs={jobs}
+          zone={schedule.time_zone}
+          mayManage={mayManage}
+          busy={busy}
+          onCancel={(job) => void cancelJob(job)}
         />
       )}
 
@@ -620,6 +688,69 @@ function NewClosure({
 }
 
 /** The days of a week, in the order a week is read. */
+/**
+ * A wall-clock time in somebody else's zone, as an instant.
+ *
+ * "Four o'clock on Friday" means the customer's four o'clock. A technician in
+ * Fort Worth scheduling a change for a customer in Phoenix means theirs, not
+ * his, and the browser's own zone is not the answer to either.
+ *
+ * Done by asking what a given instant reads as in that zone and inverting the
+ * difference. Ambiguous at the hour a zone puts its clocks back, which is the
+ * one hour a year nobody should schedule a phone system change in anyway.
+ */
+function instantIn(wall: string, zone: string): string {
+  const pretend = new Date(`${wall}:00Z`);
+  if (Number.isNaN(pretend.getTime())) return "";
+  if (!zone) return new Date(wall).toISOString();
+
+  let shown: number;
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: zone,
+      hour12: false,
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit",
+    }).formatToParts(pretend);
+    const at = (type: string) => Number(parts.find((p) => p.type === type)?.value ?? "0");
+    shown = Date.UTC(at("year"), at("month") - 1, at("day"), at("hour") % 24, at("minute"), at("second"));
+  } catch {
+    // A zone the browser does not know. Better the technician's own clock than
+    // nothing at all, and the dialog says which one it used.
+    return new Date(wall).toISOString();
+  }
+  return new Date(pretend.getTime() - (shown - pretend.getTime())).toISOString();
+}
+
+/** An instant, read back in the customer's zone. */
+function whenReads(iso: string, zone: string): string {
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return iso;
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      timeZone: zone || undefined,
+      weekday: "short", month: "short", day: "numeric",
+      hour: "numeric", minute: "2-digit",
+    }).format(at);
+  } catch {
+    return at.toLocaleString();
+  }
+}
+
+/** The soonest a browser should offer, for the `min` on a time field. */
+function soonest(): string {
+  const now = new Date(Date.now() - new Date().getTimezoneOffset() * 60_000);
+  return now.toISOString().slice(0, 16);
+}
+
+const JOB_TONE: Record<Job["status"], "good" | "warn" | "urgent" | "accent" | ""> = {
+  scheduled: "accent",
+  running: "warn",
+  done: "good",
+  failed: "urgent",
+  cancelled: "",
+};
+
 const WEEK = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 
 /**
@@ -640,6 +771,7 @@ function Hours({
   mayManage,
   busy,
   onSave,
+  onLater,
 }: {
   days: OpenDay[];
   zone: string;
@@ -647,7 +779,9 @@ function Hours({
   mayManage: boolean;
   busy: boolean;
   onSave: (days: OpenDay[]) => void;
+  onLater: (days: OpenDay[], at: string) => void;
 }) {
+  const [later, setLater] = useState(false);
   const asIs = useMemo(() => {
     const out = new Map<string, OpenDay>();
     for (const day of days) {
@@ -687,6 +821,15 @@ function Hours({
                 Undo
               </Button>
             )}
+            {/*
+              Hours are the one thing here with no expiry of its own. A closure
+              is dated and ends by itself; a week does not, so "these hours from
+              Monday" is otherwise a note somebody has to remember to act on.
+            */}
+            <Button disabled={busy || !changed} onClick={() => setLater(true)}>
+              <Icon.clock />
+              Later…
+            </Button>
             <Button
               weight="primary"
               disabled={busy || !changed}
@@ -750,6 +893,175 @@ function Hours({
           );
         })}
       </div>
+
+      {later && (
+        <Later
+          what={`${department}'s office hours`}
+          zone={zone}
+          busy={busy}
+          onClose={() => setLater(false)}
+          onConfirm={(at) => {
+            setLater(false);
+            onLater([...week.values()], at);
+          }}
+        />
+      )}
+    </Panel>
+  );
+}
+
+/**
+ * When, rather than now.
+ *
+ * One field, because one question is being asked. The zone is the customer's
+ * and is stated rather than chosen — it comes from their phone system, and a
+ * technician picking a different one would only ever be picking wrong.
+ */
+function Later({
+  what,
+  zone,
+  busy,
+  onClose,
+  onConfirm,
+}: {
+  what: string;
+  zone: string;
+  busy: boolean;
+  onClose: () => void;
+  onConfirm: (at: string) => void;
+}) {
+  const [wall, setWall] = useState("");
+  const at = wall ? instantIn(wall, zone) : "";
+  const passed = Boolean(at) && new Date(at).getTime() < Date.now();
+
+  return (
+    <Dialog
+      open
+      onOpenChange={(next) => {
+        if (!next && !busy) onClose();
+      }}
+      title="Schedule this for later"
+      description={
+        <>
+          {what} will change at the moment you name, without anybody being here.
+          Scheduling it is the approval; you can cancel it up until it happens.
+        </>
+      }
+      footer={
+        <>
+          <Button onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+          <Button
+            weight="primary"
+            disabled={busy || !at || passed}
+            onClick={() => onConfirm(at)}
+          >
+            {busy ? "Scheduling…" : "Schedule"}
+          </Button>
+        </>
+      }
+    >
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor="when-later">When</Label>
+        <TextInput
+          id="when-later"
+          type="datetime-local"
+          value={wall}
+          min={soonest()}
+          disabled={busy}
+          onChange={(e) => setWall(e.target.value)}
+        />
+        <p className="text-xs text-ink-dim">
+          {zone
+            ? `Their local time — ${zone}.`
+            : "Your own clock; this customer's phone system did not say which zone it keeps."}
+        </p>
+        {passed && <Problem>That time has already passed.</Problem>}
+      </div>
+    </Dialog>
+  );
+}
+
+/**
+ * What is going to happen, and what already did.
+ *
+ * Deliberately not only this screen's own work: the list is every change armed
+ * for this customer, whichever screen armed it. "Is anything about to change on
+ * their phone system" has one answer, and somebody looking for it should not
+ * have to know which page put it there.
+ */
+function Scheduled({
+  jobs,
+  zone,
+  mayManage,
+  busy,
+  onCancel,
+}: {
+  jobs: Job[];
+  zone: string;
+  mayManage: boolean;
+  busy: boolean;
+  onCancel: (job: Job) => void;
+}) {
+  const pending = jobs.filter((j) => j.status === "scheduled" || j.status === "running").length;
+
+  return (
+    <Panel>
+      <div className="flex items-center justify-between border-b border-edge px-4 py-3">
+        <div>
+          <h2 className="text-sm font-medium">
+            {pending === 0 ? "Nothing waiting" : `${pending} change${pending === 1 ? "" : "s"} waiting`}
+          </h2>
+          <p className="text-xs text-ink-dim">
+            Changes armed to happen later, and the ones that already ran.
+          </p>
+        </div>
+      </div>
+
+      {jobs.length === 0 ? (
+        <Empty headline="Nothing is scheduled">
+          Changes made here take effect straight away unless you ask for them later.
+        </Empty>
+      ) : (
+        <ul className="divide-y divide-edge">
+          {jobs.map((job) => (
+            <li key={job.id} className="flex items-start gap-2 px-4 py-3">
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="text-sm font-medium">{job.title}</span>
+                  <Chip tone={JOB_TONE[job.status]}>{job.status}</Chip>
+                  {job.repeats && <Chip>repeats</Chip>}
+                </div>
+                <div className="mt-0.5 text-xs text-ink-dim">
+                  {job.status === "scheduled" ? whenReads(job.run_at, zone) : null}
+                  {job.status !== "scheduled" && job.last_run_at
+                    ? whenReads(job.last_run_at, zone)
+                    : null}
+                  {job.created_by ? ` · scheduled by ${job.created_by}` : ""}
+                </div>
+                {/*
+                  The words the far end used. A failure with nothing beside it
+                  is the one outcome a person cannot act on.
+                */}
+                {job.result && job.status === "failed" && (
+                  <div className="mt-1 text-xs text-critical">{job.result}</div>
+                )}
+              </div>
+              {mayManage && job.status === "scheduled" && (
+                <button
+                  className="rounded-md px-2 py-1 text-xs text-ink-faint transition-colors hover:bg-sunken hover:text-critical disabled:opacity-50"
+                  aria-label={`Cancel ${job.title}`}
+                  disabled={busy}
+                  onClick={() => onCancel(job)}
+                >
+                  Cancel
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
     </Panel>
   );
 }

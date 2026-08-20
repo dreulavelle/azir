@@ -994,6 +994,51 @@ export type Schedule = {
   time_zone: string;
 };
 
+/**
+ * Work somebody asked for, to happen later.
+ *
+ * Generic on purpose: a job is any change Azir can make, with a time on it. The
+ * screen that armed it wrote the title, because "3cx.set_office_hours" is not
+ * an answer to "what is this and can I cancel it".
+ *
+ * Creating it was the approval. Nothing asks again when it fires — there is
+ * nobody there — but every standing gate is checked at that moment, so a job
+ * can still end up refused by an administrator who never knew it existed.
+ */
+export type Job = {
+  id: string;
+  customer_id?: string;
+  plugin: string;
+  tool: string;
+  args: unknown;
+  title: string;
+  run_at: string;
+  /** A cron expression for work that repeats. Absent for work that happens once. */
+  repeats?: string;
+  time_zone: string;
+  created_by: string;
+  created_at: string;
+  status: "scheduled" | "running" | "done" | "failed" | "cancelled";
+  last_run_at?: string;
+  /** What the far end said. The only thing that explains a failure. */
+  result?: string;
+  runs: number;
+};
+
+/** What it takes to arm one. Either a capability or a plugin and tool by name. */
+export type NewJob = {
+  capability?: string;
+  plugin?: string;
+  tool?: string;
+  args?: unknown;
+  title: string;
+  customer_id?: string;
+  /** RFC3339. */
+  run_at: string;
+  repeats?: string;
+  time_zone?: string;
+};
+
 /** One extension as the phone system has it right now, field by field. */
 export type BulkExtension = {
   extension: string;
@@ -1371,6 +1416,18 @@ export const api = {
       `/api/schedule/${id}?customer_id=${encodeURIComponent(customerID)}`,
       { method: "DELETE" },
     ),
+
+  /** Everything scheduled, for one customer or for the whole deployment. */
+  jobs: (customerID = "") =>
+    request<{ jobs: Job[] }>(
+      "/api/jobs" + (customerID ? `?customer_id=${encodeURIComponent(customerID)}` : ""),
+    ),
+
+  scheduleJob: (job: NewJob) =>
+    request<Job>("/api/jobs", { method: "POST", body: JSON.stringify(job) }),
+
+  cancelJob: (id: string) =>
+    request<Job>(`/api/jobs/${encodeURIComponent(id)}`, { method: "DELETE" }),
 
   /** One customer, for putting a name to an id somebody arrived holding. */
   customer: (id: string) => request<Customer>(`/api/customers/${encodeURIComponent(id)}`),

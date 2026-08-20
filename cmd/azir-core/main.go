@@ -30,6 +30,7 @@ import (
 	"github.com/dreulavelle/azir/internal/natsd"
 	"github.com/dreulavelle/azir/internal/pluginhost"
 	"github.com/dreulavelle/azir/internal/registry"
+	"github.com/dreulavelle/azir/internal/scheduler"
 	"github.com/dreulavelle/azir/internal/store"
 	"github.com/dreulavelle/azir/internal/supervisor"
 	"github.com/dreulavelle/azir/internal/vault"
@@ -322,6 +323,37 @@ func run(log *slog.Logger) error {
 		Web:   assets,
 		Cache: toolCache,
 	}
+
+	/*
+		Work somebody asked for, to happen later.
+
+		JetStream holds the timers — a scheduled message survives a restart and
+		needs no ticker — and Postgres holds what a person needs to read: what
+		is armed, who armed it, and what happened when it fired. Reconcile puts
+		the two back in step after a restart before anything is served, so a
+		job that lost its timer gets one and a job whose moment passed while
+		this was down is marked missed rather than firing hours late.
+	*/
+	sched, err := scheduler.Setup(ctx, js, db, log, server)
+	if err != nil {
+		return fmt.Errorf("could not start scheduling: %w", err)
+	}
+	server.Jobs = sched
+	if err := sched.Reconcile(ctx); err != nil {
+		log.Error("could not reconcile scheduled work", "error", err)
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := sched.Run(ctx); err != nil && ctx.Err() == nil {
+			log.Error("scheduling stopped", "error", err)
+		}
+	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		sched.Sweep(ctx, 5*time.Minute)
+	}()
 
 	// Relays "something changed" from wherever it happened to every browser
 	// currently looking at a screen it affects.
