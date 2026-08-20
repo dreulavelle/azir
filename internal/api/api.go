@@ -568,6 +568,13 @@ func (s *Server) disconnect(w http.ResponseWriter, r *http.Request, actor identi
 			"plugin", plugin, "customer_id", id, "error", err)
 	}
 
+	// The plugin is holding this customer's settings and credential in its own
+	// caches, for up to thirty seconds each. Without this the rows are gone and
+	// the connection still works — which is exactly what a disconnect must not
+	// look like. Saving settings has always announced itself; removing them is
+	// the same kind of change and was not.
+	s.announceConfigChange(plugin)
+
 	writeJSON(w, http.StatusOK, gone)
 }
 

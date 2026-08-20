@@ -516,6 +516,13 @@ function ConnectedSystems({
   const [plugins, setPlugins] = useState<Plugin[] | null>(null);
   const [open, setOpen] = useState<string | null>(null);
   const [linking, setLinking] = useState(false);
+  // Bumped after a disconnect to remount the settings form below.
+  //
+  // It loads once and its inputs do not change when the rows behind it are
+  // deleted, so without this the fields stay filled with the settings that
+  // were just removed and the system reads as still connected — which is the
+  // whole thing somebody was trying to undo.
+  const [version, setVersion] = useState(0);
   const toast = useToast();
 
   useEffect(() => {
@@ -616,12 +623,19 @@ function ConnectedSystems({
 
               {open === p.name && (
                 <div className="border-t border-edge px-4 py-4">
-                  <PluginSettings plugin={p} customerId={linked.id} />
+                  <PluginSettings
+                    key={`${p.name}-${version}`}
+                    plugin={p}
+                    customerId={linked.id}
+                  />
                   <Disconnect
                     plugin={p.name}
                     customerId={linked.id}
                     displayName={displayName}
-                    onDone={onLinked}
+                    onDone={async () => {
+                      setVersion((n) => n + 1);
+                      await onLinked();
+                    }}
                   />
                 </div>
               )}
