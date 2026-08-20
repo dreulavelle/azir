@@ -1,12 +1,18 @@
 package store_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/google/uuid"
+
+	"github.com/dreulavelle/azir/internal/logging"
 
 	"github.com/dreulavelle/azir/internal/store"
 	"github.com/dreulavelle/azir/internal/testsupport"
@@ -78,7 +84,7 @@ func TestCustomerSpine(t *testing.T) {
 func TestCredentialsSealedAtRest(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()
-	creds := store.NewCredentials(db, testVault(t))
+	creds := store.NewCredentials(db, testVault(t), nil)
 
 	c, err := db.CreateCustomer(ctx, "Acme Dental")
 	if err != nil {
@@ -123,6 +129,128 @@ func TestCredentialsSealedAtRest(t *testing.T) {
 	}
 }
 
+/*
+Unsealing a credential must teach the log redactor about it.
+
+This is the wiring the canary tests in internal/logging cannot prove. Those
+build a handler and register the sentinel themselves, so they demonstrate that
+the handler scrubs what it has been told — which it always did. What was
+missing was anybody telling it: nothing outside a test ever called Register,
+so in a real deployment the literal list was empty and every case below would
+have gone straight to stdout.
+
+The assertion is deliberately end-to-end. It opens a credential through the
+ordinary path and then logs the value the careless ways, rather than checking
+that Register was called and trusting the rest.
+*/
+func TestOpeningACredentialTeachesTheRedactor(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+
+	var buf bytes.Buffer
+	redactor := logging.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	log := slog.New(redactor)
+	creds := store.NewCredentials(db, testVault(t), redactor)
+
+	c, err := db.CreateCustomer(ctx, "Ellis Chiropractic")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const secret = "AZIR-CANARY-wiring-4c1a77e2-DO-NOT-EMIT"
+	if _, err := creds.Put(ctx, &c.ID, "3cx", "extension_password", []byte(secret)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Before the secret has ever been unsealed the redactor cannot know it.
+	// Stated as a precondition so that a version of this test which passes for
+	// the wrong reason — a redactor that scrubs everything — fails here.
+	buf.Reset()
+	log.Info("nothing has been opened yet: " + secret)
+	if !strings.Contains(buf.String(), secret) {
+		t.Fatal("the redactor scrubbed a value it was never told about; this test would prove nothing")
+	}
+
+	if _, err := creds.Open(ctx, &c.ID, "3cx", "extension_password"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Every route by which a resolved credential has historically escaped.
+	// The key-name cases were covered before; the rest depend on the literal
+	// list this test exists to prove is populated.
+	cases := []struct {
+		name string
+		emit func()
+	}{
+		{"as a message", func() { log.Info("connecting with " + secret) }},
+		{"as an innocuously-keyed attr", func() { log.Info("auth", "note", secret) }},
+		{"inside an error", func() { log.Error("failed", "error", errors.New("using "+secret)) }},
+		{"in a formatted string", func() { log.Info(fmt.Sprintf("token=%s", secret)) }},
+		{"via a derived logger", func() { log.With("detail", secret).Info("derived") }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			buf.Reset()
+			tc.emit()
+			if strings.Contains(buf.String(), secret) {
+				t.Fatalf("an unsealed credential reached the log via %s:\n%s", tc.name, buf.String())
+			}
+			if buf.Len() == 0 {
+				t.Fatal("nothing was logged; the test proves nothing")
+			}
+		})
+	}
+}
+
+// Registering the same secret repeatedly must not grow the literal list.
+// Credentials are unsealed per request, so an unbounded list is a slow memory
+// leak that also makes every log line more expensive.
+func TestRepeatedOpensDoNotGrowTheRedactor(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+
+	counter := &countingRedactor{}
+	creds := store.NewCredentials(db, testVault(t), counter)
+
+	c, err := db.CreateCustomer(ctx, "Bay Street Legal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := creds.Put(ctx, &c.ID, "3cx", "extension_password", []byte("AZIR-CANARY-dedupe-DO-NOT-EMIT")); err != nil {
+		t.Fatal(err)
+	}
+
+	for range 50 {
+		if _, err := creds.Open(ctx, &c.ID, "3cx", "extension_password"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if counter.calls != 50 {
+		t.Fatalf("want a registration per open, got %d", counter.calls)
+	}
+	if n := counter.distinct(); n != 1 {
+		t.Fatalf("want 1 distinct secret registered, got %d", n)
+	}
+}
+
+type countingRedactor struct {
+	calls  int
+	values []string
+}
+
+func (c *countingRedactor) Register(values ...string) {
+	c.calls++
+	c.values = append(c.values, values...)
+}
+
+func (c *countingRedactor) distinct() int {
+	seen := map[string]struct{}{}
+	for _, v := range c.values {
+		seen[v] = struct{}{}
+	}
+	return len(seen)
+}
+
 // Rotation must re-wrap onto the new key while leaving secrets readable.
 func TestCredentialRotation(t *testing.T) {
 	db := testDB(t)
@@ -139,7 +267,7 @@ func TestCredentialRotation(t *testing.T) {
 		t.Fatal(err)
 	}
 	const secret = "rotate-me-please"
-	if _, err := store.NewCredentials(db, v1).Put(ctx, nil, "syncro", "api_key", []byte(secret)); err != nil {
+	if _, err := store.NewCredentials(db, v1, nil).Put(ctx, nil, "syncro", "api_key", []byte(secret)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -148,7 +276,7 @@ func TestCredentialRotation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	creds2 := store.NewCredentials(db, v2)
+	creds2 := store.NewCredentials(db, v2, nil)
 
 	moved, err := creds2.Rotate(ctx)
 	if err != nil {
@@ -228,7 +356,7 @@ func TestCapabilityGate(t *testing.T) {
 func TestDeleteCredential(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()
-	creds := store.NewCredentials(db, testVault(t))
+	creds := store.NewCredentials(db, testVault(t), nil)
 
 	ref, err := creds.Put(ctx, nil, "syncro", "api_key", []byte("some-api-key"))
 	if err != nil {
@@ -287,5 +415,172 @@ func TestSearchCustomers(t *testing.T) {
 	}
 	if len(all) != 3 {
 		t.Errorf("empty query returned %d customers, want 3", len(all))
+	}
+}
+
+/*
+Only one account can win first-run setup.
+
+Setup used to count the accounts and then create one, which are two statements
+with a gap between them. Both requests could look, both see nothing, and both
+insert — leaving a deployment with two administrators, one of whom nobody
+chose. The route is open to anyone precisely while that gap exists.
+
+Run concurrently and with real contention, because the bug is invisible to a
+sequential test: calling CreateFirstUser twice in a row has always returned
+ErrSetupComplete the second time.
+*/
+func TestOnlyOneFirstUserSurvivesARace(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+
+	const racers = 8
+	var (
+		wg      sync.WaitGroup
+		mu      sync.Mutex
+		created []store.User
+		errs    []error
+		ready   = make(chan struct{})
+	)
+
+	for i := range racers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-ready // release them together, so the window is actually contested
+			u, err := db.CreateFirstUser(ctx,
+				fmt.Sprintf("admin%d@example.com", i), "First Admin", "correct-horse-battery")
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				errs = append(errs, err)
+				return
+			}
+			created = append(created, u)
+		}()
+	}
+	close(ready)
+	wg.Wait()
+
+	if len(created) != 1 {
+		t.Fatalf("first-run setup created %d administrators; exactly one may win", len(created))
+	}
+	if len(errs) != racers-1 {
+		t.Fatalf("want %d refusals, got %d", racers-1, len(errs))
+	}
+	for _, err := range errs {
+		if !errors.Is(err, store.ErrSetupComplete) {
+			t.Errorf("a losing racer got %v, want ErrSetupComplete", err)
+		}
+	}
+
+	// And the survivor is an administrator, not merely a row.
+	if created[0].Role != "admin" {
+		t.Errorf("the first account has role %q, want admin", created[0].Role)
+	}
+
+	// Setup stays closed afterwards.
+	if _, err := db.CreateFirstUser(ctx, "later@example.com", "Later", "correct-horse-battery"); !errors.Is(err, store.ErrSetupComplete) {
+		t.Errorf("setup reopened after completing: %v", err)
+	}
+}
+
+/*
+A sealed credential belongs to the row it was stored in.
+
+Without binding, ciphertext is a portable blob: write access to this table is
+enough to copy one customer's PBX password into another customer's row, and
+Azir opens it and connects with it — the wrong customer's system, using
+credentials nobody granted for it. There is no integrity check that would
+notice, because every field involved is one the attacker just wrote.
+
+This performs that exact move at the SQL level, which is the only way to prove
+the property. It cannot be reached through the store's own API, and that is the
+point: the threat is somebody who is not using the API.
+*/
+func TestASealedCredentialCannotBeMovedBetweenCustomers(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	creds := store.NewCredentials(db, testVault(t), nil)
+
+	victim, err := db.CreateCustomer(ctx, "Ellis Dental")
+	if err != nil {
+		t.Fatal(err)
+	}
+	attacker, err := db.CreateCustomer(ctx, "Kroth Holdings")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const secret = "the-victims-pbx-system-owner-password"
+	if _, err := creds.Put(ctx, &victim.ID, "3cx", "extension_password", []byte(secret)); err != nil {
+		t.Fatal(err)
+	}
+	// The attacker's own row, so there is somewhere to write the stolen blob.
+	if _, err := creds.Put(ctx, &attacker.ID, "3cx", "extension_password", []byte("the-attackers-own-password")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Lift the victim's sealed bytes into the attacker's row, wholesale.
+	if _, err := db.Pool().Exec(ctx, `
+		UPDATE credentials AS dst
+		SET dek_wrapped = src.dek_wrapped,
+		    dek_nonce   = src.dek_nonce,
+		    ciphertext  = src.ciphertext,
+		    nonce       = src.nonce,
+		    key_version = src.key_version
+		FROM credentials AS src
+		WHERE dst.customer_id = $1 AND src.customer_id = $2
+		  AND dst.plugin = '3cx' AND src.plugin = '3cx'`,
+		attacker.ID, victim.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := creds.Open(ctx, &attacker.ID, "3cx", "extension_password")
+	if err == nil {
+		if string(got) == secret {
+			t.Fatal("a credential moved between customers opened: the victim's password was served for the attacker's PBX")
+		}
+		t.Fatalf("a tampered credential opened as %q", got)
+	}
+
+	// The victim's own row is untouched and still works.
+	stillGood, err := creds.Open(ctx, &victim.ID, "3cx", "extension_password")
+	if err != nil {
+		t.Fatalf("the victim's own credential stopped opening: %v", err)
+	}
+	if string(stillGood) != secret {
+		t.Fatal("the victim's credential did not round-trip")
+	}
+}
+
+// The same for the other two parts of the scope: a credential stored for one
+// plugin or one kind must not open as another.
+func TestASealedCredentialCannotBeMovedBetweenPluginsOrKinds(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	creds := store.NewCredentials(db, testVault(t), nil)
+
+	if _, err := creds.Put(ctx, nil, "syncro", "api_key", []byte("a-psa-api-key-worth-having")); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct{ name, plugin, kind string }{
+		{"another plugin", "3cx", "api_key"},
+		{"another kind", "syncro", "webhook_secret"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := db.Pool().Exec(ctx, `
+				INSERT INTO credentials
+					(id, customer_id, plugin, kind, dek_wrapped, dek_nonce, ciphertext, nonce, key_version)
+				SELECT gen_random_uuid(), NULL, $1, $2, dek_wrapped, dek_nonce, ciphertext, nonce, key_version
+				FROM credentials WHERE plugin = 'syncro' AND kind = 'api_key'`,
+				tc.plugin, tc.kind); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := creds.Open(ctx, nil, tc.plugin, tc.kind); err == nil {
+				t.Fatalf("a credential copied to %s/%s opened", tc.plugin, tc.kind)
+			}
+		})
 	}
 }

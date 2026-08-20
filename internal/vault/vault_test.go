@@ -36,11 +36,11 @@ func TestSealOpenRoundTrip(t *testing.T) {
 		strings.Repeat("long", 5000),
 		"unicode: ✓ 日本語 emoji 🔐",
 	} {
-		sealed, err := v.Seal([]byte(plaintext))
+		sealed, err := v.Seal([]byte(plaintext), nil)
 		if err != nil {
 			t.Fatalf("seal %q: %v", plaintext[:min(len(plaintext), 20)], err)
 		}
-		opened, err := v.Open(sealed)
+		opened, err := v.Open(sealed, nil)
 		if err != nil {
 			t.Fatalf("open: %v", err)
 		}
@@ -55,11 +55,11 @@ func TestSealOpenRoundTrip(t *testing.T) {
 func TestSealIsNotDeterministic(t *testing.T) {
 	v := newVault(t, map[int][]byte{1: key(0x22)}, 1)
 
-	a, err := v.Seal([]byte("same-secret-value"))
+	a, err := v.Seal([]byte("same-secret-value"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := v.Seal([]byte("same-secret-value"))
+	b, err := v.Seal([]byte("same-secret-value"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestSealedFieldsCarryNoPlaintext(t *testing.T) {
 	v := newVault(t, map[int][]byte{1: key(0x33)}, 1)
 	const secret = "AZIR-CANARY-vault-b7f3e91d-DO-NOT-EMIT"
 
-	sealed, err := v.Seal([]byte(secret))
+	sealed, err := v.Seal([]byte(secret), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func TestSealedFieldsCarryNoPlaintext(t *testing.T) {
 func TestTamperedCiphertextIsRejected(t *testing.T) {
 	v := newVault(t, map[int][]byte{1: key(0x44)}, 1)
 
-	sealed, err := v.Seal([]byte("an-api-key-worth-protecting"))
+	sealed, err := v.Seal([]byte("an-api-key-worth-protecting"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestTamperedCiphertextIsRejected(t *testing.T) {
 			damaged.DEKNonce = bytes.Clone(sealed.DEKNonce)
 			corrupt(&damaged)
 
-			if _, err := v.Open(damaged); err == nil {
+			if _, err := v.Open(damaged, nil); err == nil {
 				t.Errorf("tampering with %s was not detected", field)
 			}
 		})
@@ -136,7 +136,7 @@ func TestTamperedCiphertextIsRejected(t *testing.T) {
 // A secret sealed under one key must not open under another.
 func TestWrongKeyCannotOpen(t *testing.T) {
 	sealer := newVault(t, map[int][]byte{1: key(0x55)}, 1)
-	sealed, err := sealer.Seal([]byte("cross-key-secret"))
+	sealed, err := sealer.Seal([]byte("cross-key-secret"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +144,7 @@ func TestWrongKeyCannotOpen(t *testing.T) {
 	// Same version number, different key material — the case where someone
 	// restores a database against the wrong master key.
 	imposter := newVault(t, map[int][]byte{1: key(0x66)}, 1)
-	if _, err := imposter.Open(sealed); err == nil {
+	if _, err := imposter.Open(sealed, nil); err == nil {
 		t.Fatal("a secret opened under the wrong master key")
 	}
 }
@@ -155,7 +155,7 @@ func TestRewrapKeepsSecretReadable(t *testing.T) {
 	k1, k2 := key(0x77), key(0x88)
 
 	v1 := newVault(t, map[int][]byte{1: k1}, 1)
-	sealed, err := v1.Seal([]byte("rotate-me"))
+	sealed, err := v1.Seal([]byte("rotate-me"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +177,7 @@ func TestRewrapKeepsSecretReadable(t *testing.T) {
 		t.Error("the data key was not re-wrapped")
 	}
 
-	opened, err := v2.Open(rewrapped)
+	opened, err := v2.Open(rewrapped, nil)
 	if err != nil {
 		t.Fatalf("secret unreadable after rotation: %v", err)
 	}
@@ -199,14 +199,14 @@ func TestRewrapKeepsSecretReadable(t *testing.T) {
 // opening them with a different one.
 func TestUnknownKeyVersionIsRefused(t *testing.T) {
 	v1 := newVault(t, map[int][]byte{1: key(0x99)}, 1)
-	sealed, err := v1.Seal([]byte("sealed-under-v1"))
+	sealed, err := v1.Seal([]byte("sealed-under-v1"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	v2 := newVault(t, map[int][]byte{2: key(0xAA)}, 2)
 
-	_, err = v2.Open(sealed)
+	_, err = v2.Open(sealed, nil)
 	if !errors.Is(err, vault.ErrUnknownVersion) {
 		t.Fatalf("want ErrUnknownVersion, got %v", err)
 	}
@@ -304,17 +304,92 @@ func TestErrorsCarryNoPlaintext(t *testing.T) {
 	const secret = "AZIR-CANARY-err-b7f3e91d-DO-NOT-EMIT"
 
 	v1 := newVault(t, map[int][]byte{1: key(0x12)}, 1)
-	sealed, err := v1.Seal([]byte(secret))
+	sealed, err := v1.Seal([]byte(secret), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	v2 := newVault(t, map[int][]byte{1: key(0x34)}, 1)
-	_, err = v2.Open(sealed)
+	_, err = v2.Open(sealed, nil)
 	if err == nil {
 		t.Fatal("expected a failure")
 	}
 	if strings.Contains(err.Error(), secret) {
 		t.Errorf("error quoted the secret: %v", err)
+	}
+}
+
+// A secret sealed with additional data must not open without it, or with
+// different additional data. This is the whole of what the binding buys.
+func TestAdditionalDataBindsTheCiphertext(t *testing.T) {
+	v := newVault(t, map[int][]byte{1: key(0x11)}, 1)
+
+	const secret = "a-pbx-system-owner-password"
+	sealed, err := v.Seal([]byte(secret), []byte("customer-a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	opened, err := v.Open(sealed, []byte("customer-a"))
+	if err != nil {
+		t.Fatalf("the secret did not open for the scope it was sealed for: %v", err)
+	}
+	if string(opened) != secret {
+		t.Fatal("the secret did not round-trip intact")
+	}
+
+	for _, wrong := range [][]byte{
+		[]byte("customer-b"),  // moved to another customer
+		[]byte("customer-a "), // near miss
+		[]byte(""),            // empty
+		nil,                   // absent entirely
+	} {
+		if _, err := v.Open(sealed, wrong); err == nil {
+			t.Errorf("a secret bound to customer-a opened under %q", wrong)
+		}
+	}
+
+	// And the reverse: something sealed without binding must not open with one.
+	unbound, err := v.Seal([]byte(secret), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.Open(unbound, []byte("customer-a")); err == nil {
+		t.Error("an unbound secret opened as though it were bound")
+	}
+}
+
+// Rotation moves the data key and must not disturb the payload's binding.
+// If it did, key rotation would quietly make every credential unreadable.
+func TestRewrapPreservesTheBinding(t *testing.T) {
+	k1, k2 := key(0x22), key(0x33)
+	v1 := newVault(t, map[int][]byte{1: k1}, 1)
+	v2 := newVault(t, map[int][]byte{1: k1, 2: k2}, 2)
+
+	aad := []byte("3cx/extension_password/customer-a")
+	sealed, err := v1.Seal([]byte("rotate-me-safely"), aad)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rewrapped, err := v2.Rewrap(sealed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rewrapped.KeyVersion != 2 {
+		t.Fatalf("rewrap left the secret on key version %d", rewrapped.KeyVersion)
+	}
+
+	opened, err := v2.Open(rewrapped, aad)
+	if err != nil {
+		t.Fatalf("a rotated secret no longer opens for its own scope: %v", err)
+	}
+	if string(opened) != "rotate-me-safely" {
+		t.Fatal("rotation altered the payload")
+	}
+
+	// Still bound after rotation.
+	if _, err := v2.Open(rewrapped, []byte("some-other-scope")); err == nil {
+		t.Error("rotation dropped the binding; a rotated secret became portable")
 	}
 }

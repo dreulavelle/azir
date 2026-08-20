@@ -72,6 +72,43 @@ func TestCanaryDetectorActuallyDetects(t *testing.T) {
 	}
 }
 
+/*
+Core must treat every field name the SDK treats as secret.
+
+These were two hand-maintained lists and they drifted: the SDK grew the
+telephony names — a SIP AuthID, a voicemail PIN, a licence key — when the 3CX
+plugin was written, and core's never heard of them. Supervised plugins have
+their stdout piped through this handler, so the gap meant a plugin's tool
+output was protected while the same value in its log line was not.
+
+They are one list now. This asserts it stays one, for a plugin that logs an
+attribute rather than returning it.
+*/
+func TestCoreRedactsEveryKeyTheSDKConsidersSecret(t *testing.T) {
+	// Named explicitly rather than ranged over an exported list: the point is
+	// to fail if one of these stops being covered, and a test that iterates
+	// whatever the source currently says would pass by construction.
+	for _, key := range []string{
+		"password", "passwd", "secret", "token", "apikey", "api_key",
+		"authorization", "credential", "private_key", "session", "cookie",
+		"authid", "auth_id", "vmpin", "sipid", "sip_id",
+		"licensekey", "license_key", "pin",
+		// Core's own, which no plugin has reason to emit.
+		"dek", "master_key",
+	} {
+		t.Run(key, func(t *testing.T) {
+			_, log, buf := newLogger()
+			// Deliberately not registered as a literal: this is about the key
+			// name alone, which is all core has for a value it never issued.
+			log.Info("from a plugin", key, "AZIR-UNREGISTERED-VALUE-b7f3e91d")
+
+			if strings.Contains(buf.String(), "AZIR-UNREGISTERED-VALUE") {
+				t.Fatalf("a value under key %q reached the log: %s", key, buf.String())
+			}
+		})
+	}
+}
+
 // Redaction must not be so aggressive that logs stop being useful.
 func TestNonSecretsSurvive(t *testing.T) {
 	h, log, buf := newLogger()
@@ -113,7 +150,7 @@ func TestCanaryRoundTripsThroughVaultWithoutExposure(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sealed, err := v.Seal([]byte(canary))
+	sealed, err := v.Seal([]byte(canary), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +168,7 @@ func TestCanaryRoundTripsThroughVaultWithoutExposure(t *testing.T) {
 		}
 	}
 
-	opened, err := v.Open(sealed)
+	opened, err := v.Open(sealed, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

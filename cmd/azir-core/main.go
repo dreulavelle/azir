@@ -45,13 +45,17 @@ func main() {
 	log := slog.New(redactor)
 	slog.SetDefault(log)
 
-	if err := run(log); err != nil {
+	if err := run(log, redactor); err != nil {
 		log.Error("fatal", "error", err)
 		os.Exit(1)
 	}
 }
 
-func run(log *slog.Logger) error {
+// run takes the handler as well as the logger built from it. The logger writes
+// lines; the handler is what learns the secrets those lines must never carry,
+// and the credential store needs the second to keep the promise made about the
+// first.
+func run(log *slog.Logger, redactor *logging.Handler) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -133,7 +137,7 @@ func run(log *slog.Logger) error {
 	// time, so an administrator changes them in the console and nothing needs
 	// redeploying. These subjects sit outside azir.tool.*, so neither is ever
 	// discoverable as a model-facing capability.
-	creds := store.NewCredentials(db, v)
+	creds := store.NewCredentials(db, v, redactor)
 	host := pluginhost.New(nc, db, creds, recorder, log)
 	wg.Add(1)
 	go func() {

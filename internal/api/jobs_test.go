@@ -88,7 +88,7 @@ func scheduled(t *testing.T) (*httptest.Server, *http.Client, *store.DB, *atomic
 
 	s := &api.Server{
 		NC: nc, Reg: reg, DB: db,
-		Creds: store.NewCredentials(db, testsupport.Vault(t)),
+		Creds: store.NewCredentials(db, testsupport.Vault(t), nil),
 		Audit: recorder, Log: quiet,
 	}
 	stream, err := jetstream.New(nc)

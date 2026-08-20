@@ -1,0 +1,25 @@
+-- Sealed credentials are now bound to the scope they were stored for.
+--
+-- Each ciphertext is sealed with its (plugin, kind, customer) as additional
+-- authenticated data, so it opens only when read back for that same scope.
+-- Before this, a sealed secret was a portable blob: anybody able to write this
+-- table could copy one customer's PBX password into another customer's row,
+-- and Azir would open it and use it, having no way to tell it had been handed
+-- the wrong secret. Now that move produces a ciphertext that does not
+-- authenticate, and producing one that would needs the master key — which is
+-- exactly what an attacker holding only the database does not have.
+--
+-- Rows written before this change carry no binding and cannot be opened under
+-- the new rule. They are deleted rather than kept, because a credential that
+-- cannot be decrypted is not a credential: leaving them would mean every
+-- affected plugin failing at request time with an authentication error, when
+-- the honest answer is that nothing is configured. After this migration the
+-- console shows those integrations as unconfigured and an administrator enters
+-- the credential again, which takes a minute and leaves no ambiguity about
+-- what is stored.
+--
+-- Deliberately a clean break rather than a compatibility path. A dual-format
+-- reader would have to accept unbound ciphertext to be useful, which is the
+-- very thing being removed, and it would have had to be deleted later by
+-- somebody who remembered why it was there.
+DELETE FROM credentials;

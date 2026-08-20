@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"time"
@@ -25,16 +26,52 @@ type CredentialRef struct {
 	UpdatedAt  time.Time  `json:"updated_at"`
 }
 
+// Redactor is told about every secret this package unseals, so that a value
+// which later reaches a log line is scrubbed before it is written. Satisfied
+// by *logging.Handler.
+//
+// An interface rather than the concrete handler because store must not depend
+// on how logging is assembled, and because a test wants to see what was
+// registered without a log sink to read back.
+type Redactor interface {
+	Register(values ...string)
+}
+
 // Credentials stores and retrieves sealed secrets. It is the only path to
 // credential material, and it never returns plaintext except from Open.
 type Credentials struct {
-	db *DB
-	v  *vault.Vault
+	db  *DB
+	v   *vault.Vault
+	red Redactor
 }
 
 // NewCredentials binds a vault to storage.
-func NewCredentials(db *DB, v *vault.Vault) *Credentials {
-	return &Credentials{db: db, v: v}
+//
+// red is a required argument rather than an optional setter: it is what keeps
+// unsealed secrets out of the logs, and a deployment that forgot to attach one
+// would look exactly like a deployment that had. Pass nil only in a test that
+// is not asserting anything about redaction.
+func NewCredentials(db *DB, v *vault.Vault, red Redactor) *Credentials {
+	return &Credentials{db: db, v: v, red: red}
+}
+
+/*
+credentialAAD is what a sealed credential is bound to: the scope it was stored
+for, which is exactly the three things a lookup supplies to find it again.
+
+Length-prefixed rather than joined with a separator, so the encoding is
+injective. ("ab", "c") and ("a", "bc") would otherwise produce the same bytes,
+and two distinct scopes sharing a binding is precisely the property this exists
+to deny.
+*/
+func credentialAAD(plugin, kind string, scope uuid.UUID) []byte {
+	aad := make([]byte, 0, 8+len(plugin)+len(kind)+len(scope))
+	aad = binary.BigEndian.AppendUint32(aad, uint32(len(plugin)))
+	aad = append(aad, plugin...)
+	aad = binary.BigEndian.AppendUint32(aad, uint32(len(kind)))
+	aad = append(aad, kind...)
+	aad = append(aad, scope[:]...)
+	return aad
 }
 
 // nilScope is the sentinel the unique index coalesces a NULL customer to, so
@@ -58,7 +95,7 @@ func (c *Credentials) Put(ctx context.Context, customerID *uuid.UUID, plugin, ki
 		return CredentialRef{}, errors.New("store: refusing to store an empty secret")
 	}
 
-	sealed, err := c.v.Seal(secret)
+	sealed, err := c.v.Seal(secret, credentialAAD(plugin, kind, scope(customerID)))
 	if err != nil {
 		return CredentialRef{}, err
 	}
@@ -96,7 +133,13 @@ func (c *Credentials) Put(ctx context.Context, customerID *uuid.UUID, plugin, ki
 }
 
 // Open returns the plaintext secret for a scope. Callers must not log, format
-// or return the result; register it with the logging redactor instead.
+// or return the result.
+//
+// Registration with the logging redactor happens here rather than in each
+// caller. It was asked of callers once, in this comment, and not one of them
+// did it — which is the ordinary fate of a step that has to be remembered.
+// Doing it at the only place plaintext is produced means every secret is
+// covered, including the ones unsealed by code written after this line.
 func (c *Credentials) Open(ctx context.Context, customerID *uuid.UUID, plugin, kind string) ([]byte, error) {
 	var s vault.Sealed
 	err := c.db.pool.QueryRow(ctx, `
@@ -111,7 +154,14 @@ func (c *Credentials) Open(ctx context.Context, customerID *uuid.UUID, plugin, k
 	if err != nil {
 		return nil, fmt.Errorf("store: load credential: %w", err)
 	}
-	return c.v.Open(s)
+	secret, err := c.v.Open(s, credentialAAD(plugin, kind, scope(customerID)))
+	if err != nil {
+		return nil, err
+	}
+	if c.red != nil {
+		c.red.Register(string(secret))
+	}
+	return secret, nil
 }
 
 // List returns references only. There is deliberately no way to enumerate
