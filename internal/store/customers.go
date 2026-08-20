@@ -200,6 +200,71 @@ func (db *DB) LinkIdentity(ctx context.Context, customerID uuid.UUID, plugin, ex
 	return nil
 }
 
+/*
+Disconnect removes everything one plugin holds about one customer.
+
+Three tables, because "their 3CX is no longer ours to touch" is three facts:
+the identity the plugin knew them by, the settings somebody typed on their
+behalf, and the credential sealed against them. Leaving any one behind is worse
+than not offering this at all — an orphaned credential is a System Owner
+password for a phone system nobody believes is connected any more, sitting in
+the vault with nothing on any screen to say it is there.
+
+In one transaction for the same reason. A disconnect that removed the settings
+and failed on the credential would report success and leave exactly that.
+
+Returns what went, so the caller can say so rather than claim a removal that
+removed nothing.
+*/
+func (db *DB) Disconnect(ctx context.Context, customerID uuid.UUID, plugin string) (Disconnected, error) {
+	var gone Disconnected
+	if plugin == "" {
+		return gone, errors.New("store: a plugin is required")
+	}
+
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		return gone, fmt.Errorf("store: disconnect: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op once committed
+
+	tag, err := tx.Exec(ctx,
+		`DELETE FROM customer_identities WHERE customer_id = $1 AND plugin = $2`,
+		customerID, plugin)
+	if err != nil {
+		return gone, fmt.Errorf("store: disconnect identity: %w", err)
+	}
+	gone.Identities = int(tag.RowsAffected())
+
+	tag, err = tx.Exec(ctx,
+		`DELETE FROM plugin_config WHERE plugin = $1 AND customer_id = $2`,
+		plugin, customerID)
+	if err != nil {
+		return gone, fmt.Errorf("store: disconnect settings: %w", err)
+	}
+	gone.Settings = int(tag.RowsAffected())
+
+	tag, err = tx.Exec(ctx,
+		`DELETE FROM credentials WHERE plugin = $1 AND customer_id = $2`,
+		plugin, customerID)
+	if err != nil {
+		return gone, fmt.Errorf("store: disconnect credentials: %w", err)
+	}
+	gone.Credentials = int(tag.RowsAffected())
+
+	if err := tx.Commit(ctx); err != nil {
+		return gone, fmt.Errorf("store: disconnect: %w", err)
+	}
+	return gone, nil
+}
+
+// Disconnected counts what a Disconnect removed.
+type Disconnected struct {
+	Identities  int `json:"identities"`
+	Settings    int `json:"settings"`
+	Credentials int `json:"credentials"`
+}
+
 // ResolveIdentity finds the customer an external record belongs to. This is
 // how a Syncro ticket becomes an Azir customer without Syncro defining one.
 func (db *DB) ResolveIdentity(ctx context.Context, plugin, externalID string) (Customer, error) {

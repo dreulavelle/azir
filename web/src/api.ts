@@ -1493,6 +1493,16 @@ export const api = {
       body: JSON.stringify({ display_name: displayName }),
     }),
 
+  /**
+   * Removes what one plugin holds about one customer: its settings, its
+   * credential, and the id it knew them by.
+   */
+  disconnect: (id: string, plugin: string) =>
+    request<{ identities: number; settings: number; credentials: number }>(
+      `/api/customers/${id}/connections/${plugin}`,
+      { method: "DELETE" },
+    ),
+
   linkIdentity: (id: string, plugin: string, externalId: string) =>
     request<void>(`/api/customers/${id}/identities`, {
       method: "POST",

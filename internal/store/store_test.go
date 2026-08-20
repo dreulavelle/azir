@@ -584,3 +584,96 @@ func TestASealedCredentialCannotBeMovedBetweenPluginsOrKinds(t *testing.T) {
 		})
 	}
 }
+
+/*
+Disconnecting a plugin from a customer must take the credential with it.
+
+The point of the whole operation is that nothing is left holding the keys. An
+orphaned credential is a System Owner password for a phone system nobody
+believes is connected any more, sitting sealed in the vault with nothing on any
+screen to say it is there — which is worse than never offering the button,
+because somebody has been told it is gone.
+*/
+func TestDisconnectRemovesEverythingThatPluginHeld(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	creds := store.NewCredentials(db, testVault(t), nil)
+
+	them, err := db.CreateCustomer(ctx, "Ellis Dental")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := db.CreateCustomer(ctx, "Kroth Holdings")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.LinkIdentity(ctx, them.ID, "3cx", "pbx-ellis"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.LinkIdentity(ctx, them.ID, "syncro", "12345"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetPluginConfig(ctx, "3cx", &them.ID,
+		map[string]any{"host": "pbx.ellis.example"}, "tech@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := creds.Put(ctx, &them.ID, "3cx", "password", []byte("system-owner-password")); err != nil {
+		t.Fatal(err)
+	}
+	// A different customer's 3CX, which must survive untouched.
+	if _, err := creds.Put(ctx, &other.ID, "3cx", "password", []byte("someone-elses-password")); err != nil {
+		t.Fatal(err)
+	}
+
+	gone, err := db.Disconnect(ctx, them.ID, "3cx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gone.Identities != 1 || gone.Settings != 1 || gone.Credentials != 1 {
+		t.Fatalf("removed %+v, want one of each", gone)
+	}
+
+	if _, err := creds.Open(ctx, &them.ID, "3cx", "password"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("the credential outlived the disconnect: %v", err)
+	}
+	cfg, err := db.GetPluginConfig(ctx, "3cx", &them.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Values) != 0 {
+		t.Errorf("settings outlived the disconnect: %v", cfg.Values)
+	}
+	if _, err := db.ResolveIdentity(ctx, "3cx", "pbx-ellis"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("the identity outlived the disconnect: %v", err)
+	}
+
+	// Everything the disconnect was not about is still there. Taking a
+	// customer's phone system away must not take their helpdesk with it, and
+	// must not touch anybody else's.
+	if _, err := db.ResolveIdentity(ctx, "syncro", "12345"); err != nil {
+		t.Errorf("disconnecting 3cx removed the syncro link: %v", err)
+	}
+	if _, err := creds.Open(ctx, &other.ID, "3cx", "password"); err != nil {
+		t.Errorf("disconnecting one customer's 3cx removed another's: %v", err)
+	}
+}
+
+// Disconnecting something that was never connected is not an error, and says
+// so by reporting that it removed nothing.
+func TestDisconnectingWhatWasNeverThereRemovesNothing(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+
+	them, err := db.CreateCustomer(ctx, "Bay Street Legal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gone, err := db.Disconnect(ctx, them.ID, "3cx")
+	if err != nil {
+		t.Fatalf("disconnecting an unconnected plugin failed: %v", err)
+	}
+	if gone.Identities != 0 || gone.Settings != 0 || gone.Credentials != 0 {
+		t.Fatalf("removed %+v from a customer with nothing connected", gone)
+	}
+}

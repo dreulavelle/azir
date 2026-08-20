@@ -57,6 +57,7 @@ const ACTIONS: Record<string, { verb: string; note?: string }> = {
   "role.delete": { verb: "Removed a role" },
 
   "customer.create": { verb: "Added a customer" },
+  "customer.disconnect": { verb: "Disconnected a system from a customer" },
   "branding.change": { verb: "Changed the branding" },
   "branding.logo": { verb: "Changed the logo" },
   "branding.splash": { verb: "Changed the sign-in picture" },
