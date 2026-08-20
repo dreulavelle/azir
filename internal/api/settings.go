@@ -77,6 +77,18 @@ func secretFields(schema json.RawMessage) []string {
 //
 // Best effort on purpose: the settings are already saved and the caches expire
 // on their own, so a failure here costs a delay, never correctness.
+// announceEveryPlugin tells them all, for a change that was not about any one
+// of them. Reset is the only caller and needs to be: it removes every
+// credential and every setting in the deployment at once.
+func (s *Server) announceEveryPlugin() {
+	if s.Reg == nil {
+		return
+	}
+	for _, p := range s.Reg.Snapshot().Plugins {
+		s.announceConfigChange(p.Name)
+	}
+}
+
 func (s *Server) announceConfigChange(pluginName string) {
 	if err := s.NC.Publish(plugin.ConfigChangedSubject(pluginName), nil); err != nil {
 		s.Log.Warn("could not announce a settings change",

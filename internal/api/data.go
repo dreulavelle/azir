@@ -185,6 +185,15 @@ func (s *Server) resetAll(w http.ResponseWriter, r *http.Request, actor identity
 		Detail:      detail,
 	})
 
+	// Every plugin, because this took every credential and every setting.
+	//
+	// Without it a reset is the loudest version of a bug this codebase has now
+	// found four times: the rows are gone, the console says so, and each plugin
+	// carries on serving customers from a credential cached for five minutes.
+	// "Start fresh" leaving the deployment connected to somebody's phone system
+	// is the worst possible reading of that button.
+	s.announceEveryPlugin()
+
 	s.Log.Warn("reset everything but the accounts", "actor", actor.Email, "rows", rows)
 	writeJSON(w, http.StatusOK, map[string]any{"removed": removed})
 }

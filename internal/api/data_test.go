@@ -8,10 +8,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/nats-io/nats.go"
 
 	"github.com/dreulavelle/azir/internal/identity"
 	"github.com/dreulavelle/azir/internal/store"
 	"github.com/dreulavelle/azir/internal/testsupport"
+	"github.com/dreulavelle/azir/pkg/plugin"
 )
 
 // counts reads the data screen back as name to number.
@@ -378,5 +380,49 @@ func TestACaptureExpiresOnTheConfiguredClock(t *testing.T) {
 	days := time.Until(*saved.ExpiresAt).Hours() / 24
 	if days < 29 || days > 31 {
 		t.Errorf("expires in %.1f days, wanted about 30", days)
+	}
+}
+
+/*
+Resetting must tell every plugin, not just the database.
+
+This is the loudest version of a gap found four times now: the rows go, the
+console says so, and each plugin carries on serving customers from a credential
+it cached five minutes ago. "Start fresh" leaving the deployment still connected
+to somebody's phone system is the worst possible reading of that button.
+
+Both plugins in the harness are watched, because a reset is not about any one of
+them — announcing to the first and stopping would look identical from a test
+that only listened to one.
+*/
+func TestResettingTellsEveryPlugin(t *testing.T) {
+	srv, client, _, nc := serverWithBus(t)
+
+	heard := make(chan string, 8)
+	for _, name := range []string{"writer", "reader"} {
+		sub, err := nc.Subscribe(plugin.ConfigChangedSubject(name), func(m *nats.Msg) {
+			select {
+			case heard <- m.Subject:
+			default:
+			}
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer sub.Unsubscribe() //nolint:errcheck // test cleanup
+	}
+
+	do(t, client, http.MethodPost, srv.URL+"/api/data/reset",
+		map[string]string{"confirm": "reset"}, http.StatusOK)
+
+	seen := map[string]bool{}
+	deadline := time.After(4 * time.Second)
+	for len(seen) < 2 {
+		select {
+		case subject := <-heard:
+			seen[subject] = true
+		case <-deadline:
+			t.Fatalf("a reset announced itself to %d of 2 plugins; the rest keep serving from cache", len(seen))
+		}
 	}
 }
