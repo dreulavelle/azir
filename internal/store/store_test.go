@@ -362,10 +362,10 @@ func TestDeleteCredential(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := creds.Delete(ctx, ref.ID); err != nil {
+	if _, err := creds.Delete(ctx, ref.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := creds.Delete(ctx, uuid.New()); !errors.Is(err, store.ErrNotFound) {
+	if _, err := creds.Delete(ctx, uuid.New()); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("want ErrNotFound, got %v", err)
 	}
 	if _, err := creds.Open(ctx, nil, "syncro", "api_key"); !errors.Is(err, store.ErrNotFound) {

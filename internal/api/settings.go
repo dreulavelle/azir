@@ -377,7 +377,7 @@ func (s *Server) deleteSettingSecret(w http.ResponseWriter, r *http.Request, act
 	}
 	for _, ref := range refs {
 		if ref.Plugin == name && ref.Kind == field && sameScope(ref.CustomerID, customerID) {
-			if err := s.Creds.Delete(r.Context(), ref.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
+			if _, err := s.Creds.Delete(r.Context(), ref.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
 				s.fail(w, err, "could not delete credential")
 				return
 			}

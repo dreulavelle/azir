@@ -419,3 +419,57 @@ func TestDisconnectingTellsThePlugin(t *testing.T) {
 		t.Fatal("a disconnect did not announce itself, so the plugin keeps serving the customer it no longer has settings for")
 	}
 }
+
+/*
+Replacing or removing a credential must tell the plugin.
+
+A plugin caches a resolved credential for five minutes. Somebody replacing one
+is usually replacing it because the old value should stop working, and somebody
+removing one has been told by the console that it is gone — five minutes of the
+old value still opening a customer's phone system is the wrong answer to both.
+
+Rotation is the deliberate exception and is asserted separately below: it
+re-wraps data keys without touching plaintext, so a cache holding the old value
+is holding the right one.
+*/
+func TestCredentialChangesTellThePlugin(t *testing.T) {
+	srv, client, _, nc := serverWithBus(t)
+
+	heard := make(chan struct{}, 4)
+	sub, err := nc.Subscribe(plugin.ConfigChangedSubject("writer"), func(*nats.Msg) {
+		select {
+		case heard <- struct{}{}:
+		default:
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sub.Unsubscribe() //nolint:errcheck // test cleanup
+
+	await := func(what string) {
+		t.Helper()
+		select {
+		case <-heard:
+		case <-time.After(3 * time.Second):
+			t.Fatalf("%s did not announce itself; the plugin keeps the old value for five minutes", what)
+		}
+	}
+
+	stored := do(t, client, http.MethodPut, srv.URL+"/api/credentials", map[string]any{
+		"plugin": "writer", "kind": "api_key", "secret": "first-value",
+	}, http.StatusOK)
+	await("storing a credential")
+
+	do(t, client, http.MethodPut, srv.URL+"/api/credentials", map[string]any{
+		"plugin": "writer", "kind": "api_key", "secret": "replacement-value",
+	}, http.StatusOK)
+	await("replacing a credential")
+
+	id, _ := stored["id"].(string)
+	if id == "" {
+		t.Fatal("storing a credential did not return its id")
+	}
+	do(t, client, http.MethodDelete, srv.URL+"/api/credentials/"+id, nil, http.StatusNoContent)
+	await("deleting a credential")
+}
