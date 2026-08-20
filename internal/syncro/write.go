@@ -17,10 +17,11 @@ import (
 // can say something, move a ticket along, and put it in the right hands. It
 // cannot create, delete, invoice or charge, because those either belong in
 // Syncro or are irreversible enough that a second pair of eyes is the point.
-const (
-	writeCommentPath = "/tickets/%d/comment"
-	writeTicketPath  = "/tickets/%d"
-)
+//
+// The paths are built at each call site below. They were named as constants
+// here once, and both were dead: the calls had always spelled them out, so the
+// constants read as the definition of the write surface while changing them
+// would have done nothing.
 
 // CommentRequest posts a message to a ticket.
 type CommentRequest struct {

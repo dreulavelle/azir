@@ -1149,18 +1149,6 @@ func setForwarding(ctx context.Context, conn pbx, id int64, profileName string, 
 		map[string]any{"ForwardingProfiles": user.Profiles})
 }
 
-// without copies a map minus one key, so the forwarding writer is handed only
-// forwarding.
-func without(all map[string]any, key string) map[string]any {
-	out := make(map[string]any, len(all))
-	for k, v := range all {
-		if k != key {
-			out[k] = v
-		}
-	}
-	return out
-}
-
 // forwardingOnly keeps the rules that belong to the forwarding profile, which
 // is everything collected aside from the handful written through an endpoint
 // of their own. Named for what it keeps rather than built by removing each of
