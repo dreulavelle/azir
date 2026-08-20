@@ -617,6 +617,12 @@ function ConnectedSystems({
               {open === p.name && (
                 <div className="border-t border-edge px-4 py-4">
                   <PluginSettings plugin={p} customerId={linked.id} />
+                  <Disconnect
+                    plugin={p.name}
+                    customerId={linked.id}
+                    displayName={displayName}
+                    onDone={onLinked}
+                  />
                 </div>
               )}
             </section>
@@ -874,6 +880,100 @@ function RecentTime({ customerId }: { customerId: number }) {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Taking one system back off one customer.
+ *
+ * Two presses rather than one, and the second one says what it will do. This
+ * removes a credential — for a phone system, a System Owner password somebody
+ * had to go and fetch — and there is no undo except going and fetching it
+ * again. A single button labelled "Disconnect" beside a settings form is too
+ * easy to hit on the way past.
+ *
+ * It lives under the settings rather than beside the plugin's name for the same
+ * reason: you have to have opened the thing before you can take it away.
+ */
+function Disconnect({
+  plugin,
+  customerId,
+  displayName,
+  onDone,
+}: {
+  plugin: string;
+  customerId: string;
+  displayName: string;
+  onDone: () => Promise<void>;
+}) {
+  const [arming, setArming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const toast = useToast();
+
+  async function run() {
+    setBusy(true);
+    try {
+      const gone = await api.disconnect(customerId, plugin);
+      await onDone();
+      setArming(false);
+      // Named, because "disconnected" does not tell somebody whether a
+      // credential they will have to re-fetch has just gone.
+      const parts = [
+        gone.settings && `${gone.settings} setting${gone.settings === 1 ? "" : "s"}`,
+        gone.credentials &&
+          `${gone.credentials} credential${gone.credentials === 1 ? "" : "s"}`,
+      ].filter(Boolean);
+      toast(
+        parts.length
+          ? `${plugin} disconnected — ${parts.join(" and ")} removed`
+          : `${plugin} was not connected to ${displayName}`,
+      );
+    } catch (e) {
+      toast("Could not disconnect that system", {
+        tone: "bad",
+        detail: e instanceof Error ? e.message : undefined,
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mt-5 border-t border-edge pt-4">
+      {!arming ? (
+        <button
+          className="text-xs text-ink-dim underline-offset-2 transition-colors hover:text-critical hover:underline"
+          onClick={() => setArming(true)}
+        >
+          Disconnect {plugin} from {displayName}
+        </button>
+      ) : (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-critical/30 bg-critical/5 px-3.5 py-3">
+          <p className="max-w-[58ch] text-xs text-ink-dim">
+            This removes {displayName}&rsquo;s {plugin} settings and the credential
+            stored for them, and forgets the id {plugin} knew them by. Nothing in{" "}
+            {plugin} itself is changed. To reconnect, the credential has to be
+            entered again.
+          </p>
+          <div className="flex shrink-0 items-center gap-2">
+            <button
+              className="h-8 rounded-md px-3 text-xs text-ink-dim transition-colors hover:bg-sunken"
+              onClick={() => setArming(false)}
+              disabled={busy}
+            >
+              Keep it
+            </button>
+            <button
+              className="h-8 rounded-md bg-critical px-3 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+              onClick={() => void run()}
+              disabled={busy}
+            >
+              {busy ? "Disconnecting…" : "Disconnect"}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

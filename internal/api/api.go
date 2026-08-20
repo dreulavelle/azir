@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -130,6 +131,10 @@ func (s *Server) Routes() http.Handler {
 		s.require(identity.PermCustomerManage, s.createCustomer))
 	mux.HandleFunc("POST /api/customers/{id}/identities",
 		s.require(identity.PermCustomerManage, s.linkIdentity))
+	// Removing what a plugin holds about one customer: its settings, its
+	// credential and the id it knew them by.
+	mux.HandleFunc("DELETE /api/customers/{id}/connections/{plugin}",
+		s.require(identity.PermPluginConfigure, s.disconnect))
 
 	mux.HandleFunc("GET /api/credentials",
 		s.require(identity.PermCredentialManage, ignoreActor(s.listCredentials)))
@@ -516,6 +521,54 @@ func (s *Server) linkIdentity(w http.ResponseWriter, r *http.Request, actor iden
 		Plugin: body.Plugin, CustomerID: &id, Outcome: audit.OutcomeOK,
 	})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "linked"})
+}
+
+/*
+disconnect removes one plugin's hold on one customer.
+
+Gated on plugin.configure rather than customer.manage, matching the write it
+undoes: the same permission is what let somebody type the credential in. A
+technician who can connect a phone system can disconnect it; one who can rename
+a customer cannot.
+
+Audited with what it actually removed. "Disconnected 3CX" is not the useful
+record — "disconnected 3CX, and a credential went with it" is, because that is
+the part somebody may need to put back.
+*/
+func (s *Server) disconnect(w http.ResponseWriter, r *http.Request, actor identity.Actor) {
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errBody("invalid customer id"))
+		return
+	}
+	plugin := strings.TrimSpace(r.PathValue("plugin"))
+	if plugin == "" {
+		writeJSON(w, http.StatusBadRequest, errBody("say which system to disconnect"))
+		return
+	}
+
+	gone, err := s.DB.Disconnect(r.Context(), id, plugin)
+	if err != nil {
+		s.fail(w, err, "could not disconnect that system")
+		return
+	}
+
+	s.Audit.Record(r.Context(), audit.Event{
+		ActorUserID: actor.Email, Action: "customer.disconnect",
+		Plugin: plugin, CustomerID: &id, Outcome: audit.OutcomeOK,
+		Detail: fmt.Sprintf("%d settings, %d credentials, %d identities",
+			gone.Settings, gone.Credentials, gone.Identities),
+	})
+
+	// The cache is keyed by plugin, and what it holds was read with a
+	// credential that no longer exists. Leaving it would answer from a
+	// connection somebody just severed.
+	if _, err := s.DB.InvalidateCache(r.Context(), plugin, "", &id); err != nil {
+		s.Log.Warn("could not clear cached results after a disconnect",
+			"plugin", plugin, "customer_id", id, "error", err)
+	}
+
+	writeJSON(w, http.StatusOK, gone)
 }
 
 func (s *Server) listCredentials(w http.ResponseWriter, r *http.Request) {
