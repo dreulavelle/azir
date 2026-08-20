@@ -6,7 +6,7 @@ import { hasChanged, seenChange, useChangedTickets } from "../watch";
 import { matcher, useHelpdeskSchema } from "../whoami";
 import { Life } from "../charts";
 import { cn } from "@/lib/cn";
-import { Chip, Empty, Icon, Label, Loading, Problem, daysSince, isDone, priorityRank, prioritySignal, since, statusTone } from "../ui";
+import { Chip, Empty, Failure, Icon, Label, Loading, daysSince, isDone, priorityRank, prioritySignal, since, statusTone } from "../ui";
 
 /**
  * Every ticket, searchable.
@@ -49,7 +49,9 @@ export function Tickets({
   go: (to: Route, replace?: boolean) => void;
 }) {
   const [tickets, setTickets] = useState<Ticket[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // The caught value rather than its message: whether this was an outage or
+  // a refusal decides how it is shown, and a string throws that away.
+  const [error, setError] = useState<unknown>(null);
   const [missing, setMissing] = useState(false);
   const [draft, setDraft] = useState(query ?? "");
   const [busy, setBusy] = useState(false);
@@ -88,7 +90,7 @@ export function Tickets({
         setMissing(false);
       } catch (e) {
         if (e instanceof NotProvided) setMissing(true);
-        else setError(e instanceof Error ? e.message : "That search could not be run.");
+        else setError(e ?? "That search could not be run.");
       } finally {
         setBusy(false);
       }
@@ -123,7 +125,7 @@ export function Tickets({
       setReadTo(answer.data.page?.page ?? readTo + 1);
       setMore((answer.data.page?.page ?? 0) < (answer.data.page?.total_pages ?? 0));
     } catch (e) {
-      setError(e instanceof Error ? e.message : "More tickets could not be loaded.");
+      setError(e ?? "More tickets could not be loaded.");
     } finally {
       setBusy(false);
     }
@@ -319,7 +321,7 @@ export function Tickets({
       </div>
 
       {missing && <Empty headline="No helpdesk is connected yet" />}
-      {error && <Problem>{error}</Problem>}
+      <Failure error={error} onRetry={() => void load(true)} busy={busy} />
       {!tickets && !error && !missing && <Loading rows={8} />}
 
       {tickets && count === 0 && (

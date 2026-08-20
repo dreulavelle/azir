@@ -164,9 +164,61 @@ export function onSessionExpired(fn: () => void) {
  */
 export class Unreachable extends Error {
   constructor() {
-    super("Azir could not be reached. It may be restarting, or the connection dropped.");
+    super("The connection dropped, or something on the network is in the way.");
     this.name = "Unreachable";
   }
+}
+
+/**
+ * Raised when something between the browser and Azir answered instead of Azir.
+ *
+ * A 502, 503 or 504 is almost never Azir refusing anything: it is a proxy or a
+ * tunnel saying it could not reach the thing behind it, which on a self-hosted
+ * deployment usually means the container is restarting after an upgrade. The
+ * page has nothing to fix and neither does the person reading it — the right
+ * thing to say is that it will come back.
+ */
+export class Unavailable extends Error {
+  constructor() {
+    super("This usually means it is restarting after an update, and it comes back on its own in a moment.");
+    this.name = "Unavailable";
+  }
+}
+
+/**
+ * What to tell somebody when a response carried no explanation of its own.
+ *
+ * Every one of these used to fall through to `${status} ${statusText}`, and
+ * because statusText is empty over HTTP/2 that rendered as a bare "502." on the
+ * queue — a number, a full stop, and nothing a technician could do about it.
+ * A status code is a fact about a protocol, not a sentence about somebody's
+ * afternoon.
+ */
+function humanStatus(status: number): string {
+  if (status === 404) return "That is not here any more.";
+  if (status === 408) return "That took too long and was given up on. Try it again.";
+  if (status === 413) return "That is too large to send.";
+  if (status === 429) return "That is being asked for too quickly. Wait a moment and try again.";
+  if (status >= 500) {
+    return "Something went wrong at Azir's end. Nothing you did caused it; trying again often works.";
+  }
+  if (status >= 400) return "Azir would not accept that request.";
+  return "That did not work.";
+}
+
+/** True for the statuses that mean "nothing answered", not "no". */
+function isGateway(status: number): boolean {
+  return status === 502 || status === 503 || status === 504;
+}
+
+/**
+ * Whether a failure means "nothing answered" rather than "no".
+ *
+ * The two want different words and a different colour: one is a thing to wait
+ * out, the other is a thing to deal with.
+ */
+export function isOutage(e: unknown): boolean {
+  return e instanceof Unavailable || e instanceof Unreachable;
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -188,7 +240,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (!res.ok) {
-    let message = `${res.status} ${res.statusText}`;
+    if (isGateway(res.status)) throw new Unavailable();
+    let message = humanStatus(res.status);
     try {
       const body = await res.json();
       if (body?.error) {
@@ -437,11 +490,12 @@ async function perform<T>(
   if (res.status === 404 || res.status === 403) {
     const body = await res.json().catch(() => ({}));
     if (body?.capability) throw new NotProvided(capability);
-    throw new Error(body?.error ?? `${res.status} ${res.statusText}`);
+    throw new Error(body?.error || humanStatus(res.status));
   }
   if (!res.ok) {
+    if (isGateway(res.status)) throw new Unavailable();
     const body = await res.json().catch(() => ({}));
-    throw new Error(body?.error ?? `${res.status} ${res.statusText}`);
+    throw new Error(body?.error || humanStatus(res.status));
   }
 
   return {
@@ -481,9 +535,10 @@ async function change<T>(
     throw new Unauthorized();
   }
   if (!res.ok) {
+    if (isGateway(res.status)) throw new Unavailable();
     const body = await res.json().catch(() => ({}));
     if (res.status === 404 && body?.capability) throw new NotProvided(capability);
-    let message = body?.error ?? `${res.status} ${res.statusText}`;
+    let message = body?.error || humanStatus(res.status);
     if (body?.required_permission) message += ` (needs ${body.required_permission})`;
     throw new Error(message);
   }
@@ -689,7 +744,7 @@ export const snapshots = {
     }
     if (!res.ok) {
       const problem = await res.json().catch(() => ({}));
-      throw new Error(problem?.error ?? `${res.status} ${res.statusText}`);
+      throw new Error(problem?.error ?? humanStatus(res.status));
     }
     return (await res.json()) as { snapshot: Snapshot; report: SnapshotReport };
   },
@@ -1168,7 +1223,7 @@ export const api = {
       `/api/bulk/starting-sheet?customer_id=${encodeURIComponent(customerID)}${columns}`,
     );
     if (!res.ok) {
-      let message = `${res.status} ${res.statusText}`;
+      let message = humanStatus(res.status);
       try {
         const body = await res.json();
         if (body?.error) message = body.error;
@@ -1695,7 +1750,7 @@ export const chat = {
     }
     if (!res.ok || !res.body) {
       const body = await res.json().catch(() => ({}));
-      throw new Error(body?.error ?? `${res.status} ${res.statusText}`);
+      throw new Error(body?.error ?? humanStatus(res.status));
     }
 
     const reader = res.body.getReader();

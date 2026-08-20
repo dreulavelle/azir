@@ -3,7 +3,7 @@ import {
   api,
   onSessionExpired,
   Perm,
-  Unauthorized,
+  Unauthorized, isOutage,
   work,
   type Actor,
   type AuthState,
@@ -18,7 +18,7 @@ import { useFallbackPoll, useLiveChanges } from "./live";
 import { useTicketWatch } from "./watch";
 import { cn } from "@/lib/cn";
 import { BrandingProvider, Mark, useBranding } from "./branding";
-import { Icon, initials, roleLabel, statusTone, type Signal } from "./ui";
+import { Icon, initials, roleLabel, statusTone, type Signal, Trouble} from "./ui";
 import { Triage } from "./pages/Triage";
 import { Tickets } from "./pages/Tickets";
 import { TicketDetail } from "./pages/TicketDetail";
@@ -57,7 +57,11 @@ const AssistantPanel = lazy(() =>
 type Session =
   | { state: "loading" }
   | { state: "gate"; auth: AuthState }
-  | { state: "in"; actor: Actor };
+  | { state: "in"; actor: Actor }
+  // Could not find out. Distinct from "gate", because showing somebody a
+  // sign-in form that cannot work is worse than telling them nothing is
+  // answering: they type a password, watch it fail, and doubt the password.
+  | { state: "down"; error: unknown };
 
 const NO_SSO: AuthState = { needs_setup: false, oidc_enabled: false, oidc_label: "" };
 
@@ -93,12 +97,25 @@ function Console() {
       }
     } catch (err) {
       if (!(err instanceof Unauthorized)) {
+        // Nothing answered, so nothing is known. Say that rather than falling
+        // back to a form.
+        if (isOutage(err)) {
+          setSession({ state: "down", error: err });
+          return;
+        }
         setSession({ state: "gate", auth: NO_SSO });
         return;
       }
       try {
         setSession({ state: "gate", auth: await api.authState() });
-      } catch {
+      } catch (err2) {
+        if (isOutage(err2)) {
+          setSession({ state: "down", error: err2 });
+          return;
+        }
+        // A refusal that is not an outage still leaves somebody able to sign
+        // in with a password, which is the path that works when the identity
+        // provider is the broken thing.
         setSession({ state: "gate", auth: NO_SSO });
       }
     }
@@ -182,6 +199,21 @@ function Console() {
     return (
       <div className="grid min-h-screen place-items-center">
         <div className="h-3 w-45 animate-pulse rounded bg-sunken" />
+      </div>
+    );
+  }
+  if (session.state === "down") {
+    return (
+      <div className="grid min-h-screen place-items-center bg-ground p-6">
+        <div className="w-full max-w-md">
+          <Trouble
+            headline={`${brand.effective_name || "Azir"} is not answering`}
+            onRetry={() => void resolve()}
+          >
+            {session.error instanceof Error ? session.error.message : null} Nothing
+            you were working on has been lost.
+          </Trouble>
+        </div>
       </div>
     );
   }
