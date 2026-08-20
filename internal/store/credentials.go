@@ -187,16 +187,26 @@ func (c *Credentials) List(ctx context.Context) ([]CredentialRef, error) {
 	return out, rows.Err()
 }
 
-// Delete removes a credential.
-func (c *Credentials) Delete(ctx context.Context, id uuid.UUID) error {
-	tag, err := c.db.pool.Exec(ctx, `DELETE FROM credentials WHERE id = $1`, id)
+// Delete removes a credential and says which one it was.
+//
+// The reference comes back because the caller needs it after the row is gone:
+// the plugin has to be told to drop the value from its cache, and the audit
+// entry should name what was removed rather than only that something was. A
+// caller holding an id knows nothing else about it.
+func (c *Credentials) Delete(ctx context.Context, id uuid.UUID) (CredentialRef, error) {
+	var ref CredentialRef
+	err := c.db.pool.QueryRow(ctx, `
+		DELETE FROM credentials WHERE id = $1
+		RETURNING id, customer_id, plugin, kind, key_version, created_at, updated_at`, id,
+	).Scan(&ref.ID, &ref.CustomerID, &ref.Plugin, &ref.Kind,
+		&ref.KeyVersion, &ref.CreatedAt, &ref.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return CredentialRef{}, ErrNotFound
+	}
 	if err != nil {
-		return fmt.Errorf("store: delete credential: %w", err)
+		return CredentialRef{}, fmt.Errorf("store: delete credential: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return ref, nil
 }
 
 // Rotate re-wraps every credential onto the current master key. Payloads are

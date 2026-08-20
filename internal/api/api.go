@@ -611,6 +611,11 @@ func (s *Server) putCredential(w http.ResponseWriter, r *http.Request, actor ide
 		Plugin: body.Plugin, CustomerID: body.CustomerID,
 		Outcome: audit.OutcomeOK, Detail: body.Kind,
 	})
+	// The plugin is holding the previous value, for up to five minutes. Somebody
+	// replacing a credential is often replacing it because the old one should
+	// stop working, and leaving it live for that long is the opposite of what
+	// they pressed the button for.
+	s.announceConfigChange(body.Plugin)
 	writeJSON(w, http.StatusOK, ref)
 }
 
@@ -620,7 +625,7 @@ func (s *Server) deleteCredential(w http.ResponseWriter, r *http.Request, actor 
 		writeJSON(w, http.StatusBadRequest, errBody("invalid credential id"))
 		return
 	}
-	err = s.Creds.Delete(r.Context(), id)
+	ref, err := s.Creds.Delete(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, errBody("credential not found"))
 		return
@@ -630,11 +635,24 @@ func (s *Server) deleteCredential(w http.ResponseWriter, r *http.Request, actor 
 		return
 	}
 	s.Audit.Record(r.Context(), audit.Event{
-		ActorUserID: actor.Email, Action: "credential.delete", Outcome: audit.OutcomeOK,
+		ActorUserID: actor.Email, Action: "credential.delete",
+		Plugin: ref.Plugin, CustomerID: ref.CustomerID,
+		Outcome: audit.OutcomeOK, Detail: ref.Kind,
 	})
+	// Same five-minute window as replacing one, and a worse ending: the row is
+	// gone, the console says so, and the plugin carries on using the value.
+	s.announceConfigChange(ref.Plugin)
 	writeJSON(w, http.StatusNoContent, nil)
 }
 
+/*
+rotateCredentials moves every secret onto the current master key.
+
+Deliberately does not announce anything. Rotation re-wraps the data keys and
+never touches the plaintext, so what a plugin has cached is still exactly right
+— telling every plugin to drop its caches would cost a round of vendor
+re-authentication to change nothing.
+*/
 func (s *Server) rotateCredentials(w http.ResponseWriter, r *http.Request, actor identity.Actor) {
 	moved, err := s.Creds.Rotate(r.Context())
 	if err != nil {
