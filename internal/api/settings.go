@@ -90,6 +90,7 @@ func (s *Server) announceEveryPlugin() {
 }
 
 func (s *Server) announceConfigChange(pluginName string) {
+	s.Log.Debug("announcing a settings change", "plugin", pluginName)
 	if err := s.NC.Publish(plugin.ConfigChangedSubject(pluginName), nil); err != nil {
 		s.Log.Warn("could not announce a settings change",
 			"plugin", pluginName, "error", err)

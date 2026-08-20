@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"sort"
 	"strings"
 
 	"github.com/google/uuid"
@@ -132,6 +133,12 @@ func (h *Host) resolveCredential(ctx context.Context, m *nats.Msg) {
 	}
 
 	secret, err := h.creds.Open(ctx, customerID, name, req.Kind)
+	// The value is never logged, only whether there was one. Which plugin asked
+	// for what, for whom, and whether it existed is the whole question when a
+	// connection behaves as though it is still configured.
+	h.log.Debug("credential resolved",
+		"plugin", name, "kind", req.Kind, "customer_id", req.CustomerID,
+		"found", err == nil)
 	if errors.Is(err, store.ErrNotFound) {
 		// Not an error worth auditing as a failure: an unconfigured plugin is
 		// an ordinary state, and the tool should say so rather than break.
@@ -208,6 +215,16 @@ func (h *Host) resolveConfig(ctx context.Context, m *nats.Msg) {
 		h.respondErr(m, "500", "resolution failed")
 		return
 	}
+
+	// Key names rather than values: a settings blob can hold anything an
+	// integration asked for, and the useful fact here is which scope answered.
+	keys := make([]string, 0, len(settings.Values))
+	for k := range settings.Values {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	h.log.Debug("settings resolved",
+		"plugin", name, "customer_id", req.CustomerID, "keys", keys)
 
 	body, err := json.Marshal(map[string]any{"values": settings.Values})
 	if err != nil {
