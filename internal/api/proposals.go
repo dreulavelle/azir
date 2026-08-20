@@ -176,6 +176,19 @@ const (
 	byHand        why = "a person asked for it"
 	fromSheet     why = "from a sheet of changes"
 	fromAssistant why = "approved from the assistant"
+
+	/*
+		onSchedule is work a person armed earlier.
+
+		Its own reason because the activity log's question is who wanted this,
+		and "somebody scheduled it" is a true and different answer from
+		"somebody pressed a button". The change is still recorded against the
+		person who scheduled it — they are who decided it should happen — but
+		reading the log a week later, nobody should have to wonder why a
+		technician appeared to be editing a phone system at four in the
+		morning.
+	*/
+	onSchedule why = "scheduled earlier by a person"
 )
 
 func (s *Server) performTool(

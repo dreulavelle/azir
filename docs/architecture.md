@@ -58,6 +58,15 @@ the assistant proposes and a technician approves the change itself. Bulk edits
 are compared against the live system and shown as a before-and-after; what is
 approved is the difference, never the intention.
 
+A change with a time on it is the one case where "a person is in it" needs
+spelling out. Arming the job is the approval: someone with the permission said
+do this, and named the moment. Nothing asks again when it fires, because nobody
+is there to ask. What *is* re-checked at that moment is every standing gate —
+the account still exists and is enabled, the role still carries the permission,
+writes are still on for the plugin, and the tool is still approved — so
+withdrawing any of them stops work armed before anyone thought to worry. See
+`internal/scheduler`.
+
 **Discovery proposes; an administrator approves.** A plugin appearing in `$SRV`
 becomes a candidate capability, not a granted one — it lands as `pending` and
 is unusable until someone activates it. Without this, anyone able to start a
@@ -154,6 +163,7 @@ internal/natsd/       embedded NATS server
 internal/oidc/        single sign-on
 internal/pluginhost/  vault, config and identity resolution for plugins
 internal/registry/    service discovery and the capability index
+internal/scheduler/   deferred work: JetStream holds the timers
 internal/store/       Postgres: spine, credentials, capabilities, audit
 internal/supervisor/  bundled plugins as supervised children
 internal/supportinfo/ reading a 3CX support bundle

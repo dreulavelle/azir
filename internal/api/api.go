@@ -48,6 +48,10 @@ type Server struct {
 
 	// OIDC holds the discovered identity provider between sign-ins.
 	OIDC oidc.Cache
+
+	// Jobs arms and disarms deferred work. Nil disables scheduling, which is
+	// what tests that do not care about it want.
+	Jobs Scheduler
 }
 
 // Routes builds the mux.
@@ -236,6 +240,14 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/schedule", s.require(identity.PermPhoneManage, s.addSchedule))
 	mux.HandleFunc("DELETE /api/schedule/{id}", s.require(identity.PermPhoneManage, s.removeSchedule))
 	mux.HandleFunc("PUT /api/schedule/hours", s.require(identity.PermPhoneManage, s.setHours))
+
+	// Deferred work. Generic: a job is any write tool with a time on it, so
+	// these three routes are the whole of scheduling for every plugin there
+	// will ever be. What each job may do is gated on the tool it names, not
+	// on the route.
+	mux.HandleFunc("GET /api/jobs", s.require(identity.PermToolRead, s.listJobs))
+	mux.HandleFunc("POST /api/jobs", s.require(identity.PermToolRead, s.createJob))
+	mux.HandleFunc("DELETE /api/jobs/{id}", s.require(identity.PermToolRead, s.cancelJob))
 
 	// Diagnostic snapshots: a phone system's support bundle, read.
 	mux.HandleFunc("GET /api/snapshots", s.require(p, ignoreActor(s.listSnapshots)))

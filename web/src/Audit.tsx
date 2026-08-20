@@ -99,6 +99,15 @@ const ACTIONS: Record<string, { verb: string; note?: string }> = {
     note: "The phones keep their usual hours on those days again.",
   },
 
+  "job.schedule": {
+    verb: "Scheduled a change for later",
+    note: "Arming it was the approval — nothing asks again when it runs, because nobody is there. Every standing gate is checked at that moment, so withdrawing a tool's approval or a plugin's write switch stops it.",
+  },
+  "job.cancel": {
+    verb: "Cancelled a scheduled change",
+    note: "The timer is removed, not just the row, so nothing can still fire behind it.",
+  },
+
   "bulk.upload": { verb: "Uploaded a sheet of changes" },
   "bulk.chosen": {
     verb: "Chose extensions to change",
