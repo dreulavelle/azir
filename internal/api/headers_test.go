@@ -100,6 +100,17 @@ on the strength of a request that never proved it could serve it — and about
 includeSubDomains staying absent, which would reach names Azir has never heard
 of and cannot fix.
 */
+/*
+Strict-Transport-Security is sent only when the connection really was
+encrypted, and a request does not get to say that it was.
+
+This harness names no trusted proxy, which is the default deployment. So
+X-Forwarded-Proto here is a header a stranger wrote, and answering it with HSTS
+would mean pinning a browser to HTTPS on the say-so of the browser. The case
+that does send it — a genuine TLS-terminating proxy, named in
+AZIR_TRUSTED_PROXIES — is TestStrictTransportBehindATrustedProxy in proxy_test.go,
+which can set the trust boundary this harness deliberately leaves empty.
+*/
 func TestStrictTransportOnlyWhenItIsTrue(t *testing.T) {
 	srv, client := server(t)
 
@@ -123,11 +134,7 @@ func TestStrictTransportOnlyWhenItIsTrue(t *testing.T) {
 	}
 	res.Body.Close()
 
-	hsts := res.Header.Get("Strict-Transport-Security")
-	if hsts == "" {
-		t.Fatal("nothing behind a tls-terminating proxy")
-	}
-	if strings.Contains(hsts, "includeSubDomains") {
-		t.Errorf("reaches other names under the same domain: %q", hsts)
+	if got := res.Header.Get("Strict-Transport-Security"); got != "" {
+		t.Errorf("an unverifiable X-Forwarded-Proto was answered with %q", got)
 	}
 }

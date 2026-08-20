@@ -61,7 +61,6 @@ type options struct {
 	natsURL string
 	logger  *slog.Logger
 	secrets []string
-	name    string
 }
 
 // Option configures Serve.

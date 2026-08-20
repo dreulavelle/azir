@@ -10,6 +10,7 @@ import (
 
 	"github.com/dreulavelle/azir/internal/audit"
 	"github.com/dreulavelle/azir/internal/identity"
+	"github.com/dreulavelle/azir/internal/store"
 )
 
 // sessionCookie is the browser's session cookie name.
@@ -66,16 +67,6 @@ func (s *Server) require(permission string, next func(http.ResponseWriter, *http
 // before the identity provider works, and that same account is what remains
 // when the provider is the thing that is broken.
 func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
-	count, err := s.DB.CountUsers(r.Context())
-	if err != nil {
-		s.fail(w, err, "could not check setup state")
-		return
-	}
-	if count > 0 {
-		writeJSON(w, http.StatusConflict, errBody("setup has already been completed"))
-		return
-	}
-
 	var body struct {
 		Email       string `json:"email"`
 		DisplayName string `json:"display_name"`
@@ -86,7 +77,14 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := s.DB.CreateUser(r.Context(), body.Email, body.DisplayName, "admin", body.Password)
+	// Whether setup is still open is decided inside the same transaction that
+	// creates the account, not by a separate question asked beforehand. Two of
+	// these arriving together used to be able to make two administrators.
+	user, err := s.DB.CreateFirstUser(r.Context(), body.Email, body.DisplayName, body.Password)
+	if errors.Is(err, store.ErrSetupComplete) {
+		writeJSON(w, http.StatusConflict, errBody("setup has already been completed"))
+		return
+	}
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, errBody(err.Error()))
 		return
@@ -132,7 +130,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) issueSession(w http.ResponseWriter, r *http.Request, userID uuid.UUID, email string) {
-	token, expires, err := s.DB.CreateSession(r.Context(), userID, r.UserAgent(), clientIP(r))
+	token, expires, err := s.DB.CreateSession(r.Context(), userID, r.UserAgent(), s.Proxies.clientIP(r))
 	if err != nil {
 		s.fail(w, err, "could not start a session")
 		return
@@ -155,7 +153,7 @@ func (s *Server) setSessionCookie(w http.ResponseWriter, r *http.Request, token 
 		// Secure is set when the request arrived over TLS. A self-hosted
 		// deployment on plain HTTP inside a LAN would otherwise be unable to
 		// log in at all, which is worse than the cookie lacking the flag there.
-		Secure: overTLS(r),
+		Secure: s.Proxies.overTLS(r),
 	})
 }
 
@@ -181,20 +179,4 @@ func (s *Server) whoami(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, actor)
-}
-
-// clientIP prefers the forwarded header when present, since a self-hosted
-// deployment usually sits behind something.
-func clientIP(r *http.Request) string {
-	if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
-		if first, _, ok := strings.Cut(forwarded, ","); ok {
-			return strings.TrimSpace(first)
-		}
-		return strings.TrimSpace(forwarded)
-	}
-	host, _, ok := strings.Cut(r.RemoteAddr, ":")
-	if !ok {
-		return r.RemoteAddr
-	}
-	return host
 }

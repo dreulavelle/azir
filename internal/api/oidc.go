@@ -87,7 +87,7 @@ func (s *Server) redirectURL(r *http.Request, cfg store.AuthConfig) string {
 		return cfg.RedirectURL
 	}
 	scheme := "http"
-	if overTLS(r) {
+	if s.Proxies.overTLS(r) {
 		scheme = "https"
 	}
 	host := r.Header.Get("X-Forwarded-Host")
@@ -184,7 +184,7 @@ func (s *Server) oidcCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, expires, err := s.DB.CreateSession(r.Context(), user.ID, r.UserAgent(), clientIP(r))
+	token, expires, err := s.DB.CreateSession(r.Context(), user.ID, r.UserAgent(), s.Proxies.clientIP(r))
 	if err != nil {
 		s.signInFailed(w, r, who.Email, "could not start a session", err)
 		return

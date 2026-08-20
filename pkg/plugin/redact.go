@@ -15,6 +15,12 @@ const redactedMarker = "[redacted]"
 // keys. False positives are acceptable and intentional: a ticket field that
 // happens to be called "token" being redacted is a far cheaper mistake than a
 // credential reaching model context.
+//
+// This list is the one Azir has, not merely the one the SDK has. Core's log
+// handler asks IsSensitiveKey rather than keeping a second copy: the two lists
+// were separate once and drifted, so the telephony names below protected a
+// plugin's tool output while its stdout went through a redactor that had never
+// heard of them.
 var sensitiveKeys = []string{
 	"password", "passwd", "secret", "token", "apikey", "api_key",
 	"authorization", "credential", "private_key", "session", "cookie",
@@ -121,7 +127,10 @@ func (r *Redactor) scrubLiterals(s string) string {
 	return s
 }
 
-func isSensitiveKey(k string) bool {
+// IsSensitiveKey reports whether a field name is one whose value must never be
+// emitted. Exported so that core's log handler and the SDK's payload redactor
+// decide the question the same way, from the same list.
+func IsSensitiveKey(k string) bool {
 	lower := strings.ToLower(k)
 	for _, s := range sensitiveKeys {
 		if strings.Contains(lower, s) {
@@ -130,6 +139,8 @@ func isSensitiveKey(k string) bool {
 	}
 	return false
 }
+
+func isSensitiveKey(k string) bool { return IsSensitiveKey(k) }
 
 // stripSecretFields removes secret-marked properties from a JSON Schema before
 // it is published for model consumption, so the model cannot request what it

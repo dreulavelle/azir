@@ -171,7 +171,7 @@ func TestResettingTakesTheSetupAndLeavesThePeople(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	creds := store.NewCredentials(db, testsupport.Vault(t))
+	creds := store.NewCredentials(db, testsupport.Vault(t), nil)
 	if _, err := creds.Put(ctx, &customer.ID, "syncro", "api-key", []byte("secret")); err != nil {
 		t.Fatal(err)
 	}
@@ -375,7 +375,7 @@ func TestACaptureExpiresOnTheConfiguredClock(t *testing.T) {
 		t.Fatal("a capture with no expiry is a capture that never goes away")
 	}
 
-	days := saved.ExpiresAt.Sub(time.Now()).Hours() / 24
+	days := time.Until(*saved.ExpiresAt).Hours() / 24
 	if days < 29 || days > 31 {
 		t.Errorf("expires in %.1f days, wanted about 30", days)
 	}

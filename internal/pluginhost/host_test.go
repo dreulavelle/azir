@@ -47,7 +47,7 @@ func newHarness(t *testing.T) *harness {
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
 	nc, _ := testsupport.NATS(t)
 	db := testsupport.DB(t, testDSN)
-	creds := store.NewCredentials(db, testsupport.Vault(t))
+	creds := store.NewCredentials(db, testsupport.Vault(t), nil)
 
 	recorder, js, err := audit.Setup(ctx, nc, quiet)
 	if err != nil {

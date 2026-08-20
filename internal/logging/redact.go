@@ -11,6 +11,8 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+
+	"github.com/dreulavelle/azir/pkg/plugin"
 )
 
 // Marker replaces any redacted value.
@@ -20,11 +22,10 @@ const Marker = "[redacted]"
 // Shorter values match everywhere and would render logs useless.
 const minLiteralLength = 6
 
-var sensitiveKeys = []string{
-	"password", "passwd", "secret", "token", "apikey", "api_key",
-	"authorization", "credential", "private_key", "session", "cookie",
-	"dek", "master_key",
-}
+// extraSensitiveKeys are the names core cares about that a plugin has no
+// reason to. Everything else comes from plugin.IsSensitiveKey, which is the
+// single list both redactors consult — see pkg/plugin/redact.go.
+var extraSensitiveKeys = []string{"dek", "master_key"}
 
 // Handler wraps another slog.Handler and redacts attribute values by key name
 // and by registered literal.
@@ -35,8 +36,15 @@ type Handler struct {
 
 // literals is shared by every Handler derived from one root, so a secret
 // registered after startup is scrubbed by loggers already handed out.
+//
+// Deduplicated, because registration happens where secrets are unsealed rather
+// than once at startup: a plugin resolving its credential on every request
+// would otherwise append the same value until the process ran out of memory,
+// and make every log line slower on the way there. The set decides membership;
+// the slice is what scrub walks.
 type literals struct {
 	mu     sync.RWMutex
+	seen   map[string]struct{}
 	values []string
 }
 
@@ -44,9 +52,17 @@ func (l *literals) add(vals ...string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	for _, v := range vals {
-		if len(v) >= minLiteralLength {
-			l.values = append(l.values, v)
+		if len(v) < minLiteralLength {
+			continue
 		}
+		if _, dup := l.seen[v]; dup {
+			continue
+		}
+		if l.seen == nil {
+			l.seen = make(map[string]struct{})
+		}
+		l.seen[v] = struct{}{}
+		l.values = append(l.values, v)
 	}
 }
 
@@ -125,8 +141,11 @@ func (h *Handler) redact(a slog.Attr, parentSensitive bool) slog.Attr {
 }
 
 func isSensitiveKey(k string) bool {
+	if plugin.IsSensitiveKey(k) {
+		return true
+	}
 	lower := strings.ToLower(k)
-	for _, s := range sensitiveKeys {
+	for _, s := range extraSensitiveKeys {
 		if strings.Contains(lower, s) {
 			return true
 		}

@@ -61,6 +61,15 @@ jobs:
             echo "a canary sentinel was compiled into a shipped binary"; exit 1
           fi
 
+      # Reachability-based, so it reports the vulnerabilities this code can
+      # actually reach rather than every advisory touching the module graph.
+      # A dependency is not a thing you audit once: this fails the build on the
+      # day an advisory lands, which is the only day it is cheap to act on.
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
   web:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -78,6 +87,12 @@ jobs:
       # resolves something else is a build that proves nothing about what ships.
       - run: npm ci
       - run: npm run typecheck
+      # The frontend is served from the same origin as the API and holds the
+      # session cookie, so a compromised dependency here reaches everything the
+      # signed-in technician can. high rather than every advisory: a job that
+      # cries wolf on a transitive devDependency gets ignored, and an ignored
+      # gate is worse than no gate.
+      - run: npm audit --audit-level=high
       - run: npm run build
 
   image:

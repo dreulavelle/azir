@@ -13,6 +13,13 @@ import (
 	"github.com/dreulavelle/azir/internal/identity"
 )
 
+// queryer is the part of pgx a write needs, satisfied by both the pool and a
+// transaction. Defined here, next to its only consumer, rather than as a
+// package-wide abstraction over the database.
+type queryer interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
 // User is an account.
 type User struct {
 	ID          uuid.UUID  `json:"id"`
@@ -46,6 +53,14 @@ func (db *DB) CountUsers(ctx context.Context) (int, error) {
 // CreateUser adds an account. Pass an empty password for a provider-backed
 // account, which then cannot be signed into locally.
 func (db *DB) CreateUser(ctx context.Context, email, displayName, role, password string) (User, error) {
+	return insertUser(ctx, db.pool, email, displayName, role, password)
+}
+
+// insertUser is the one place an account is written, so that the first-run
+// administrator and every account added afterwards are validated, hashed and
+// stored identically. Takes anything that can run a query, which is how the
+// same code runs inside first-run setup's transaction and outside it.
+func insertUser(ctx context.Context, q queryer, email, displayName, role, password string) (User, error) {
 	email = strings.TrimSpace(strings.ToLower(email))
 	if email == "" || !strings.Contains(email, "@") {
 		return User{}, errors.New("store: a valid email is required")
@@ -66,7 +81,7 @@ func (db *DB) CreateUser(ctx context.Context, email, displayName, role, password
 		DisplayName: strings.TrimSpace(displayName),
 		Role:        role,
 	}
-	err := db.pool.QueryRow(ctx, `
+	err := q.QueryRow(ctx, `
 		INSERT INTO users (id, email, display_name, role, password_hash)
 		VALUES ($1, $2, $3, $4, $5)
 		RETURNING created_at`,
@@ -80,6 +95,60 @@ func (db *DB) CreateUser(ctx context.Context, email, displayName, role, password
 			return User{}, fmt.Errorf("store: no such role %q", role)
 		}
 		return User{}, fmt.Errorf("store: create user: %w", err)
+	}
+	return u, nil
+}
+
+// setupLockID namespaces the advisory lock first-run setup takes. Distinct
+// from migrationLockID: the two serialise different things and must not block
+// each other.
+const setupLockID int64 = 0x415A4952_53455455 // "AZIR" "SETU"
+
+// ErrSetupComplete means an account already exists, so first-run setup is over.
+var ErrSetupComplete = errors.New("store: setup has already been completed")
+
+/*
+CreateFirstUser creates the initial administrator, and only ever the first.
+
+Checking the count in the handler and inserting here left a gap between the two
+that two requests could both pass through, arriving at a deployment with two
+administrators nobody chose. The window was small and open exactly when the
+route was: before anyone had signed in, when the endpoint answers to the whole
+internet.
+
+Closing it needs the database, not a tidier ordering of the same two calls.
+INSERT ... WHERE NOT EXISTS does not do it either — under READ COMMITTED both
+statements evaluate their subquery against a snapshot from before the other's
+insert, and both proceed. So this takes the same kind of advisory lock the
+migrator takes, for the same reason: the check and the write have to be one
+indivisible thing, and Postgres is the only party that can see both.
+*/
+func (db *DB) CreateFirstUser(ctx context.Context, email, displayName, password string) (User, error) {
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		return User{}, fmt.Errorf("store: create first user: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op once committed
+
+	// Held until the transaction ends, whichever way it ends.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, setupLockID); err != nil {
+		return User{}, fmt.Errorf("store: create first user: %w", err)
+	}
+
+	var n int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM users`).Scan(&n); err != nil {
+		return User{}, fmt.Errorf("store: create first user: %w", err)
+	}
+	if n > 0 {
+		return User{}, ErrSetupComplete
+	}
+
+	u, err := insertUser(ctx, tx, email, displayName, identity.RoleAdmin, password)
+	if err != nil {
+		return User{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return User{}, fmt.Errorf("store: create first user: %w", err)
 	}
 	return u, nil
 }

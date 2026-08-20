@@ -131,18 +131,38 @@ func FromEnv() (*Vault, error) {
 // CurrentVersion reports which master key seals new secrets.
 func (v *Vault) CurrentVersion() int { return v.current }
 
-// Seal encrypts plaintext under a fresh data key.
-func (v *Vault) Seal(plaintext []byte) (Sealed, error) {
+/*
+Seal encrypts plaintext under a fresh data key, bound to aad.
+
+aad is additional authenticated data: it is not stored and not encrypted, but
+the ciphertext will only open when the same value is supplied again. Callers
+pass whatever identifies the thing being sealed — for a credential, the scope
+it belongs to.
+
+That binding is what stops a sealed secret being moved. Without it a row's
+ciphertext is a portable blob: anyone able to write the database could copy one
+customer's PBX password into another customer's row and Azir would open it
+without complaint, having no way to know it had been handed the wrong secret.
+With it, the ciphertext authenticates against the scope it is being read for,
+and a moved blob fails to open. Producing one that would succeed needs the
+master key, which is the thing an attacker with only the database does not
+have.
+
+The binding is on the payload, not on the wrapped data key. Rewrap therefore
+does not need to know anything about scope, and key rotation stays a cheap
+re-wrap that never touches ciphertext.
+*/
+func (v *Vault) Seal(plaintext, aad []byte) (Sealed, error) {
 	dek := make([]byte, KeySize)
 	if _, err := rand.Read(dek); err != nil {
 		return Sealed{}, fmt.Errorf("vault: generate data key: %w", err)
 	}
 
-	ciphertext, nonce, err := sealWith(dek, plaintext)
+	ciphertext, nonce, err := sealWith(dek, plaintext, aad)
 	if err != nil {
 		return Sealed{}, err
 	}
-	wrapped, dekNonce, err := sealWith(v.keys[v.current], dek)
+	wrapped, dekNonce, err := sealWith(v.keys[v.current], dek, nil)
 	if err != nil {
 		return Sealed{}, err
 	}
@@ -156,18 +176,23 @@ func (v *Vault) Seal(plaintext []byte) (Sealed, error) {
 	}, nil
 }
 
-// Open decrypts a sealed secret.
-func (v *Vault) Open(s Sealed) ([]byte, error) {
+// Open decrypts a sealed secret. aad must be exactly what Seal was given, or
+// the secret does not open — see Seal for why that is the point.
+func (v *Vault) Open(s Sealed, aad []byte) ([]byte, error) {
 	master, ok := v.keys[s.KeyVersion]
 	if !ok {
 		return nil, fmt.Errorf("%w: %d", ErrUnknownVersion, s.KeyVersion)
 	}
-	dek, err := openWith(master, s.DEKWrapped, s.DEKNonce)
+	dek, err := openWith(master, s.DEKWrapped, s.DEKNonce, nil)
 	if err != nil {
 		return nil, fmt.Errorf("vault: unwrap data key: %w", err)
 	}
-	plaintext, err := openWith(dek, s.Ciphertext, s.Nonce)
+	plaintext, err := openWith(dek, s.Ciphertext, s.Nonce, aad)
 	if err != nil {
+		// Deliberately does not distinguish a wrong key from a secret being
+		// read for the wrong scope. Both mean the same thing to a caller —
+		// this is not yours to read — and saying which would confirm to
+		// somebody probing that they had found real ciphertext.
 		return nil, fmt.Errorf("vault: open secret: %w", err)
 	}
 	return plaintext, nil
@@ -183,11 +208,13 @@ func (v *Vault) Rewrap(s Sealed) (Sealed, error) {
 	if !ok {
 		return Sealed{}, fmt.Errorf("%w: %d", ErrUnknownVersion, s.KeyVersion)
 	}
-	dek, err := openWith(old, s.DEKWrapped, s.DEKNonce)
+	// Only the data key moves, and the data key carries no aad, so rotation
+	// needs to know nothing about what the payload is bound to.
+	dek, err := openWith(old, s.DEKWrapped, s.DEKNonce, nil)
 	if err != nil {
 		return Sealed{}, fmt.Errorf("vault: unwrap data key: %w", err)
 	}
-	wrapped, dekNonce, err := sealWith(v.keys[v.current], dek)
+	wrapped, dekNonce, err := sealWith(v.keys[v.current], dek, nil)
 	if err != nil {
 		return Sealed{}, err
 	}
@@ -197,7 +224,7 @@ func (v *Vault) Rewrap(s Sealed) (Sealed, error) {
 	return s, nil
 }
 
-func sealWith(key, plaintext []byte) (ciphertext, nonce []byte, err error) {
+func sealWith(key, plaintext, aad []byte) (ciphertext, nonce []byte, err error) {
 	gcm, err := newGCM(key)
 	if err != nil {
 		return nil, nil, err
@@ -206,10 +233,10 @@ func sealWith(key, plaintext []byte) (ciphertext, nonce []byte, err error) {
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, nil, fmt.Errorf("vault: generate nonce: %w", err)
 	}
-	return gcm.Seal(nil, nonce, plaintext, nil), nonce, nil
+	return gcm.Seal(nil, nonce, plaintext, aad), nonce, nil
 }
 
-func openWith(key, ciphertext, nonce []byte) ([]byte, error) {
+func openWith(key, ciphertext, nonce, aad []byte) ([]byte, error) {
 	gcm, err := newGCM(key)
 	if err != nil {
 		return nil, err
@@ -217,9 +244,10 @@ func openWith(key, ciphertext, nonce []byte) ([]byte, error) {
 	if len(nonce) != gcm.NonceSize() {
 		return nil, errors.New("vault: nonce has wrong length")
 	}
-	// GCM authenticates, so a tampered ciphertext fails here rather than
-	// producing plausible garbage.
-	return gcm.Open(nil, nonce, ciphertext, nil)
+	// GCM authenticates both the ciphertext and the additional data, so a
+	// tampered payload and a payload presented for the wrong scope both fail
+	// here rather than producing plausible garbage.
+	return gcm.Open(nil, nonce, ciphertext, aad)
 }
 
 func newGCM(key []byte) (cipher.AEAD, error) {

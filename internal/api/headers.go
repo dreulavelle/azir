@@ -74,7 +74,7 @@ var contentSecurityPolicy = strings.Join([]string{
 }, "; ")
 
 // secured wraps the mux with the headers above.
-func secured(next http.Handler) http.Handler {
+func secured(next http.Handler, proxies ProxyTrust) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("Content-Security-Policy", contentSecurityPolicy)
@@ -104,19 +104,10 @@ func secured(next http.Handler) http.Handler {
 		// sending it always would be harmless but dishonest. includeSubDomains
 		// is deliberately absent: it would pin every other name under the same
 		// domain to HTTPS as well, and Azir has no idea what else is there.
-		if overTLS(r) {
+		if proxies.overTLS(r) {
 			h.Set("Strict-Transport-Security", "max-age=31536000")
 		}
 
 		next.ServeHTTP(w, r)
 	})
-}
-
-// overTLS reports whether the browser's side of the connection was encrypted.
-//
-// Behind a reverse proxy or a tunnel the request arrives here over plain HTTP
-// no matter how it started, so the proxy's account of the original scheme is
-// the only thing there is to go on.
-func overTLS(r *http.Request) bool {
-	return r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
 }

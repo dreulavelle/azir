@@ -127,7 +127,7 @@ func serverWithDB(t *testing.T) (*httptest.Server, *http.Client, *store.DB) {
 
 	s := &api.Server{
 		NC: nc, Reg: reg, DB: db,
-		Creds: store.NewCredentials(db, testsupport.Vault(t)),
+		Creds: store.NewCredentials(db, testsupport.Vault(t), nil),
 		Audit: recorder, Log: quiet,
 	}
 	srv := httptest.NewServer(s.Routes())
