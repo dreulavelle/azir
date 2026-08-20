@@ -134,7 +134,27 @@ func HashPassword(password string) (string, error) {
 		base64.RawStdEncoding.EncodeToString(key)), nil
 }
 
+// Bounds on the parameters read back out of a stored hash.
+//
+// The encoded form carries its own cost parameters so that they can be raised
+// later without invalidating existing passwords, which means VerifyPassword
+// takes its instructions from the database. That is fine while the database
+// says what HashPassword wrote, and worth checking when it does not: a zero
+// key length crashes argon2 outright — a nil dereference inside blake2b, not
+// an error — and an absurd memory figure asks the allocator for it.
+//
+// Nothing reachable today writes a hash this would reject. An import, a
+// restore from another system, or a migration that reshapes the column all
+// could, and "the stored value is always well-formed" is an assumption worth
+// only as much as the next person's care.
+const (
+	maxArgonTime    = 16
+	maxArgonMemory  = 1 << 21 // 2 GiB, in KiB
+	maxArgonThreads = 64
+)
+
 // VerifyPassword checks a password against an encoded hash in constant time.
+// A hash it cannot make sense of is a failed verification, never a panic.
 func VerifyPassword(encoded, password string) bool {
 	parts := strings.Split(encoded, "$")
 	if len(parts) != 6 || parts[0] != "argon2id" {
@@ -144,9 +164,19 @@ func VerifyPassword(encoded, password string) bool {
 	if _, err := fmt.Sscanf(parts[1]+" "+parts[2]+" "+parts[3], "%d %d %d", &t, &m, &p); err != nil {
 		return false
 	}
+	if t < 1 || t > maxArgonTime ||
+		m < 8 || m > maxArgonMemory ||
+		p < 1 || p > maxArgonThreads {
+		return false
+	}
 	salt, err1 := base64.RawStdEncoding.DecodeString(parts[4])
 	want, err2 := base64.RawStdEncoding.DecodeString(parts[5])
 	if err1 != nil || err2 != nil {
+		return false
+	}
+	// argon2 panics on a zero key length rather than returning an error, and a
+	// hash carrying no key would otherwise be compared against nothing.
+	if len(salt) == 0 || len(want) != argonKeyLen {
 		return false
 	}
 	got := argon2.IDKey([]byte(password), salt, uint32(t), uint32(m), uint8(p), uint32(len(want)))
