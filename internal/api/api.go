@@ -195,10 +195,13 @@ func (s *Server) Routes() http.Handler {
 	// this deployment calls itself before it knows who is looking.
 	mux.HandleFunc("GET /api/branding", s.getBranding)
 	mux.HandleFunc("GET /api/branding/logo", s.getLogo)
+	mux.HandleFunc("GET /api/branding/splash", s.getSplash)
 	mux.HandleFunc("PUT /api/branding",
 		s.require(identity.PermPluginConfigure, s.putBranding))
 	mux.HandleFunc("PUT /api/branding/logo",
 		s.require(identity.PermPluginConfigure, s.putLogo))
+	mux.HandleFunc("PUT /api/branding/splash",
+		s.require(identity.PermPluginConfigure, s.putSplash))
 
 	// Unauthenticated as well, and safe because nothing it is sent is
 	// believed: see internal/api/webhooks.go.

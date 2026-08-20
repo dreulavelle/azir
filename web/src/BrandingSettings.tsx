@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { cn } from "@/lib/cn";
 import { Explain } from "./components";
 import { Mark, readableOn, useBranding, type Branding } from "./branding";
-import { SignInScene } from "./scene";
+import { SignInShell } from "./SignInShell";
+import defaultSplash from "./assets/login-splash.webp";
+import { toWebp } from "./images";
 import { useToast } from "./Toast";
 import { Label } from "./ui";
 
@@ -19,6 +20,8 @@ export function BrandingSettings() {
   const [draft, setDraft] = useState<Partial<Branding>>({});
   const [busy, setBusy] = useState(false);
   const file = useRef<HTMLInputElement>(null);
+  const splashFile = useRef<HTMLInputElement>(null);
+  const [stamp, setStamp] = useState(0);
   const toast = useToast();
 
   useEffect(() => {
@@ -50,17 +53,29 @@ export function BrandingSettings() {
     }
   }
 
-  async function upload(chosen: File | null) {
+  async function upload(what: "logo" | "splash", chosen: File | null) {
     setBusy(true);
     try {
-      const res = await fetch("/api/branding/logo", {
+      // Re-encoded before it is sent. A logo is drawn at about 40 pixels and a
+      // picture fills half a card, so neither needs the dimensions a design
+      // tool exports at, and WebP is a fraction of the size at both.
+      const ready = chosen
+        ? await toWebp(chosen, what === "logo" ? 512 : 1600)
+        : null;
+
+      const res = await fetch(`/api/branding/${what}`, {
         method: "PUT",
-        headers: { "content-type": chosen ? chosen.type : "text/plain" },
-        body: chosen ?? new Blob([]),
+        headers: { "content-type": ready ? ready.type : "text/plain" },
+        body: ready ? ready.blob : new Blob([]),
       });
       if (!res.ok) throw new Error((await res.json()).error ?? "Could not upload");
       await reload();
-      toast(chosen ? "Logo updated" : "Logo removed");
+      // Cache-busting the preview: the picture is served from a fixed URL with
+      // an entity tag, so without this the browser shows the previous one
+      // until something else makes it revalidate.
+      setStamp(Date.now());
+      const noun = what === "logo" ? "Logo" : "Picture";
+      toast(chosen ? `${noun} updated` : `${noun} removed`);
     } catch (e) {
       toast("Could not upload that", {
         tone: "bad",
@@ -69,10 +84,14 @@ export function BrandingSettings() {
     } finally {
       setBusy(false);
       if (file.current) file.current.value = "";
+      if (splashFile.current) splashFile.current.value = "";
     }
   }
 
   const accent = draft.accent?.trim() || brand.effective_accent;
+  const splashSrc = brand.has_splash
+    ? `/api/branding/splash?v=${stamp}`
+    : defaultSplash;
 
   return (
     <section className="rounded-lg border border-edge bg-panel shadow-e1">
@@ -167,10 +186,12 @@ export function BrandingSettings() {
             <span className="flex items-center gap-2 text-sm font-medium">
               Logo
               <Explain>
-                PNG, JPEG, WebP or GIF, up to 512KB. It is drawn at about 40
-                pixels. Stored here rather than linked, so no page load reaches
-                out to another server. SVG is not accepted because it can carry
-                code.
+                PNG, JPEG, SVG, WebP or GIF. Converted to WebP and scaled down
+                here in the browser before it is sent, so what gets stored is a
+                fraction of what you picked. Stored rather than linked, so no
+                page load reaches out to another server. An SVG is rasterised on
+                the way — nothing keeps its markup, because markup served back
+                to a browser can carry code.
               </Explain>
             </span>
             <div className="flex items-center gap-3">
@@ -178,16 +199,50 @@ export function BrandingSettings() {
               <input
                 ref={file}
                 type="file"
-                accept="image/png,image/jpeg,image/webp,image/gif"
+                accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml"
                 className="text-xs file:mr-2 file:rounded-md file:border file:border-edge file:bg-sunken file:px-2.5 file:py-1 file:text-xs file:text-ink"
-                onChange={(e) => void upload(e.target.files?.[0] ?? null)}
+                onChange={(e) => void upload("logo", e.target.files?.[0] ?? null)}
                 disabled={busy}
               />
               {brand.has_logo && (
                 <button
                   className="rounded-md px-2 py-1 text-xs text-ink-dim transition-colors hover:bg-critical/10 hover:text-critical"
                   disabled={busy}
-                  onClick={() => void upload(null)}
+                  onClick={() => void upload("logo", null)}
+                >
+                  Remove
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <span className="flex items-center gap-2 text-sm font-medium">
+              Sign-in picture
+              <Explain>
+                PNG, JPEG, SVG, WebP or GIF. It fills half the sign-in card, so
+                something tall looks best. Converted to WebP and scaled to 1600
+                pixels here before it is sent. Leave it empty to keep the one
+                Azir ships.
+              </Explain>
+            </span>
+            <div className="flex items-center gap-3">
+              <div className="h-10 w-8 shrink-0 overflow-hidden rounded ring-1 ring-edge">
+                <img src={splashSrc} alt="" className="h-full w-full object-cover" />
+              </div>
+              <input
+                ref={splashFile}
+                type="file"
+                accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml"
+                className="text-xs file:mr-2 file:rounded-md file:border file:border-edge file:bg-sunken file:px-2.5 file:py-1 file:text-xs file:text-ink"
+                onChange={(e) => void upload("splash", e.target.files?.[0] ?? null)}
+                disabled={busy}
+              />
+              {brand.has_splash && (
+                <button
+                  className="rounded-md px-2 py-1 text-xs text-ink-dim transition-colors hover:bg-critical/10 hover:text-critical"
+                  disabled={busy}
+                  onClick={() => void upload("splash", null)}
                 >
                   Remove
                 </button>
@@ -210,41 +265,109 @@ export function BrandingSettings() {
             screen this changes most and the one nobody signed in ever sees. */}
         <div className="flex flex-col gap-2">
           <Label>How the sign-in page will look</Label>
-          <div className="relative aspect-[4/3] overflow-hidden rounded-lg border border-edge bg-ground">
-            <SignInScene accent={accent} />
-            <div
-              className="pointer-events-none absolute inset-0"
-              style={{
-                background:
-                  "radial-gradient(46% 40% at 50% 45%, color-mix(in srgb, var(--ground) 78%, transparent), color-mix(in srgb, var(--ground) 24%, transparent))",
-              }}
-            />
-            <div className="absolute inset-0 grid place-items-center p-6">
-              <div className="w-full max-w-[240px] rounded-xl border border-edge bg-panel/95 p-5 text-center shadow-e3">
+          {/*
+            The real screen, at a smaller size.
+
+            Not a drawing of it. This renders the same component the sign-in
+            page renders, at its natural width, scaled down to whatever room
+            the settings column has. A hand-built miniature would be a second
+            copy of the layout that somebody has to remember to update, and it
+            drifted from the real page within an afternoon of being written.
+
+            The draft accent is put on the wrapper as --azir, so every gradient,
+            glow and button inside picks it up without a value being threaded
+            through any of them.
+          */}
+          <ScaledPreview
+            style={{
+              ["--azir" as string]: accent,
+              ["--azir-ink" as string]: readableOn(accent),
+            }}
+          >
+            <SignInShell
+              fill={false}
+              splash={splashSrc}
+              tagline={draft.tagline?.trim() || brand.effective_tagline}
+              eyebrow="Sign in"
+              heading={`Sign in to ${draft.name?.trim() || brand.effective_name}`}
+              mark={
                 <span
-                  className="mx-auto mb-3 grid size-9 place-items-center rounded-lg font-mono text-sm font-semibold"
+                  className="grid size-[52px] place-items-center rounded-xl font-mono text-2xl font-semibold shadow-e2"
                   style={{ background: accent, color: readableOn(accent) }}
                 >
                   {draft.mark?.trim() ||
                     (draft.name?.trim()?.[0]?.toUpperCase() ?? brand.effective_mark)}
                 </span>
-                <div className="text-sm font-semibold tracking-tight">
-                  {draft.name?.trim() || brand.effective_name}
-                </div>
-                <div className="mt-0.5 text-2xs text-ink-dim">
-                  {draft.tagline?.trim() || brand.effective_tagline}
-                </div>
+              }
+            >
+              {/* Inert, but the same shapes and spacing the real form has, so
+                  the proportions in the preview are the proportions shipped. */}
+              <div className="flex flex-col gap-3">
+                <div className="text-sm font-medium">Email</div>
+                <div className="h-9 rounded-md bg-sunken ring-1 ring-edge" />
+                <div className="text-sm font-medium">Password</div>
+                <div className="h-9 rounded-md bg-sunken ring-1 ring-edge" />
                 <div
-                  className={cn("mt-3 h-7 rounded-md text-2xs font-medium leading-7")}
+                  className="mt-1 h-9 rounded-md text-center text-sm font-medium leading-9"
                   style={{ background: accent, color: readableOn(accent) }}
                 >
                   Sign in
                 </div>
               </div>
-            </div>
-          </div>
+            </SignInShell>
+          </ScaledPreview>
         </div>
       </div>
     </section>
   );
 }
+
+/**
+ * Renders children at a fixed natural size and scales them to fit the width
+ * available, so a preview is the real thing seen from further away rather than
+ * a smaller thing built to look like it.
+ */
+function ScaledPreview({
+  children,
+  style,
+}: {
+  children: React.ReactNode;
+  style?: React.CSSProperties;
+}) {
+  const box = useRef<HTMLDivElement>(null);
+  const [scale, setScale] = useState(0.3);
+
+  useEffect(() => {
+    const node = box.current;
+    if (!node) return;
+    const fit = () => setScale(node.clientWidth / NATURAL_W);
+    fit();
+    // The settings column changes width with the window and with the assistant
+    // panel opening beside it, so this cannot be measured once.
+    const observer = new ResizeObserver(fit);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+
+  return (
+    <div
+      ref={box}
+      className="relative overflow-hidden rounded-lg border border-edge bg-ground"
+      style={{ height: NATURAL_H * scale }}
+    >
+      <div
+        className="absolute left-0 top-0 origin-top-left"
+        style={{ width: NATURAL_W, height: NATURAL_H, transform: `scale(${scale})`, ...style }}
+        // Decorative, and its controls are not real ones.
+        aria-hidden="true"
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/** The size the preview is drawn at before being scaled down. A desktop shape,
+ *  because that is what the card is laid out for. */
+const NATURAL_W = 1180;
+const NATURAL_H = 740;

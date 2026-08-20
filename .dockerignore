@@ -6,6 +6,4 @@ web/dist
 # The running stack's state. The build context is the repository root, so
 # without this every `make up` would ship the Postgres cluster to the daemon,
 # and it only gets bigger.
-data
-db
-cache
+.state

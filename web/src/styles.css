@@ -2,6 +2,7 @@
 @import "tw-animate-css";
 
 @import "@fontsource-variable/inter";
+@import "@fontsource-variable/space-grotesk";
 @import "@fontsource/ibm-plex-mono/400.css";
 @import "@fontsource/ibm-plex-mono/500.css";
 @import "@fontsource/ibm-plex-mono/600.css";
@@ -207,6 +208,12 @@
   --text-3xl--line-height: 1.1;
 
   --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  /* Used on the sign-in screen and nowhere else. Inter is the right face for
+     a dense queue and a wrong one for the single word that names the product:
+     Space Grotesk has the wider apertures and the cut counters that make a
+     name read as a mark rather than as a label. It was already a dependency
+     and had never been loaded. */
+  --font-display: "Space Grotesk Variable", "Inter Variable", ui-sans-serif, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", monospace;
 
   --radius-DEFAULT: 8px;

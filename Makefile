@@ -10,9 +10,14 @@ help:
 .PHONY: check
 check: fmt vet test ## Format, vet and test
 
+# The file list comes from git rather than from walking the tree. `gofmt .`
+# descends into everything, including the bind-mounted Postgres data directory
+# that the container owns as root, and stops on "permission denied" before
+# formatting anything. go build and go vet are unaffected — they skip
+# dot-prefixed directories — so this was the one command the state mounts broke.
 .PHONY: fmt
-fmt: ## gofmt every package
-	@gofmt -l -w .
+fmt: ## gofmt every tracked Go file
+	@gofmt -l -w $$(git ls-files '*.go')
 
 .PHONY: vet
 vet: ## go vet
@@ -91,7 +96,7 @@ down-hard: ## Stop the stack and delete its data, returning it to first run
 # and this machine's user may not. Without this the target stopped short of
 # what its name promises, and quietly: the stack came back up on the old
 # cluster looking like a first run that had failed.
-	@docker run --rm -v "$$PWD:/w" -w /w alpine:3.22 rm -rf ./data ./db ./cache
+	@docker run --rm -v "$$PWD:/w" -w /w alpine:3.22 rm -rf ./.state
 
 .PHONY: logs
 logs: ## Tail stack logs

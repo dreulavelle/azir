@@ -38,6 +38,13 @@ const (
 // sitting in the database and on every page load forever.
 const maxLogo = 512 << 10
 
+// maxSplash is the ceiling for the sign-in picture. Larger than the logo by
+// the ratio of what they are: this one fills half a card at whatever size the
+// display happens to be, and the default shipped with the binary is about
+// 90KB as WebP. Four megabytes is room for somebody exporting carelessly from
+// a design tool without letting a raw camera file through.
+const maxSplash = 4 << 20
+
 type brandingView struct {
 	store.Branding
 	// The resolved values, so no caller has to know the fallback rules.
@@ -118,6 +125,80 @@ func (s *Server) getLogo(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", kind)
 	_, _ = w.Write(image)
+}
+
+/*
+getSplash serves the uploaded sign-in picture.
+
+Same revalidation as the logo and for a stronger reason: this is the largest
+thing the application serves, and every unauthenticated hit on the sign-in page
+would otherwise refetch it. An entity tag answers "has it changed" in a 304
+with no body.
+
+Unauthenticated, like the branding it belongs to. It is a picture somebody
+chose to put on a login screen; serving it leaks what looking at the page
+leaks.
+*/
+func (s *Server) getSplash(w http.ResponseWriter, r *http.Request) {
+	image, kind, err := s.DB.Splash(r.Context())
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	sum := sha256.Sum256(image)
+	etag := `"` + hex.EncodeToString(sum[:16]) + `"`
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Cache-Control", "public, no-cache, must-revalidate")
+
+	if match := r.Header.Get("If-None-Match"); match != "" && strings.Contains(match, etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+
+	w.Header().Set("Content-Type", kind)
+	_, _ = w.Write(image)
+}
+
+// putSplash accepts a sign-in picture, or clears it when sent nothing.
+func (s *Server) putSplash(w http.ResponseWriter, r *http.Request, actor identity.Actor) {
+	kind := r.Header.Get("Content-Type")
+
+	image, err := io.ReadAll(io.LimitReader(r.Body, maxSplash+1))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errBody("that image could not be read"))
+		return
+	}
+	if len(image) > maxSplash {
+		writeJSON(w, http.StatusRequestEntityTooLarge, errBody(
+			"that image is larger than 4MB; a WebP around 1200px tall is plenty"))
+		return
+	}
+
+	if len(image) > 0 {
+		// The same allowlist the logo uses, and SVG is absent for the same
+		// reason: this file comes back out to every browser that loads the
+		// sign-in page, and it must not be able to carry markup.
+		switch kind {
+		case "image/png", "image/jpeg", "image/webp", "image/gif":
+		default:
+			writeJSON(w, http.StatusBadRequest, errBody(
+				"use a PNG, JPEG, WebP or GIF — SVG can carry code, so it is not accepted"))
+			return
+		}
+	} else {
+		kind = ""
+	}
+
+	if err := s.DB.SetSplash(r.Context(), image, kind, actor.Email); err != nil {
+		s.fail(w, err, "could not store that image")
+		return
+	}
+	s.Audit.Record(r.Context(), audit.Event{
+		ActorUserID: actor.Email, Action: "branding.splash", Outcome: audit.OutcomeOK,
+		Detail: kindOrCleared(kind),
+	})
+	writeJSON(w, http.StatusOK, map[string]bool{"has_splash": len(image) > 0})
 }
 
 func (s *Server) putBranding(w http.ResponseWriter, r *http.Request, actor identity.Actor) {
