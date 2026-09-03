@@ -496,6 +496,69 @@ func main() {
 				Handler: createExtensions,
 			},
 			{
+				Name: "trunks.list",
+				Description: "The trunks a customer's phone system carries calls on, with the DID numbers " +
+					"each one answers on, whether it is registered, and any number that appears on more " +
+					"than one trunk. Use it to find out which trunk a number belongs to, or what a trunk " +
+					"is currently answering.",
+				Summary:  "Lists a customer's trunks and the numbers on each.",
+				Provides: []plugin.Capability{plugin.CapPhoneTrunks},
+				Freshness: &plugin.Freshness{
+					Soft: 2 * time.Minute,
+					Hard: 30 * time.Minute,
+				},
+				Schema:  json.RawMessage(`{"type": "object", "properties": {}}`),
+				Handler: listTrunks,
+			},
+			{
+				Name: "trunk.dids.import",
+				Description: "Adds DID numbers to a trunk and assigns each one to an extension. The " +
+					"extension is a plain number — whether it is a person, a queue, a ring group or a " +
+					"digital receptionist is looked up on the phone system. Numbers already on the " +
+					"trunk are kept and never removed. Several DIDs may ring one extension. Where a DID " +
+					"is already assigned, mode decides: append leaves it alone, replace repoints it. A " +
+					"number given without an extension is added to the trunk but not assigned.",
+				Summary:            "Adds DID numbers to a trunk and assigns them to extensions.",
+				Provides:           []plugin.Capability{plugin.CapPhoneTrunkDidImport},
+				Mutates:            true,
+				RequiresPermission: "phone.manage",
+				Schema: json.RawMessage(`{
+					"type": "object",
+					"required": ["trunk", "dids"],
+					"properties": {
+						"trunk": {
+							"type": "string",
+							"description": "Which trunk, by its number, its id or its exact name — as trunks.list reports them."
+						},
+						"mode": {
+							"type": "string",
+							"enum": ["append", "replace"],
+							"default": "append",
+							"description": "What to do with a DID that is already assigned. append leaves it exactly as it is; replace repoints it at the extension given here. Neither ever removes a number from the trunk."
+						},
+						"dids": {
+							"type": "array",
+							"description": "The numbers to add, written out one by one. There is no way to say a range here; ranges are expanded before this is called.",
+							"items": {
+								"type": "object",
+								"required": ["number"],
+								"properties": {
+									"number": {
+										"type": "string",
+										"description": "The DID exactly as the carrier delivers it. No country code is added or removed — it has to match what arrives in the call."
+									},
+									"extension": {
+										"type": "string",
+										"description": "The number its calls should ring — an extension, a queue, a ring group or a digital receptionist, written as just the number. Left out to add the DID without assigning it."
+									}
+								}
+							}
+						}
+					}
+				}`),
+				Handler: importTrunkDIDs,
+			},
+			{
 				Name: "schedule.list",
 				Description: "When a department is closed: its holidays and early closings, the office hours " +
 					"they are exceptions to, and whether somebody has forced it open or shut. Hours and " +

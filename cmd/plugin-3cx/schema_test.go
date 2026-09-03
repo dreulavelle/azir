@@ -116,6 +116,25 @@ func TestEveryEditableFieldExists(t *testing.T) {
 			t.Errorf("%s (%q) is not a property of Pbx.User", o.Field, o.Label)
 		}
 	}
+
+	/*
+		The fields that are deliberately not properties of an extension.
+
+		A handset is a record beside the extension, and a DID is an inbound
+		rule pointing at it — both are joined on in extensionSettings rather
+		than selected from Users. Asserted as absent because the failure mode
+		is silent: adding one of these names to the $select would have 3CX
+		refuse the whole page, and adding it to `editable` would have Azir
+		offer to write somewhere that does not exist.
+	*/
+	for _, o := range append(append([]option{}, handsetFields...), didFields...) {
+		if user[o.Field] {
+			t.Errorf("%s is joined on separately and is now a property of Pbx.User; select it instead", o.Field)
+		}
+		if o.Kind != "readonly" {
+			t.Errorf("%s is not a property of Pbx.User and is offered as %q rather than readonly", o.Field, o.Kind)
+		}
+	}
 	for _, name := range []string{fieldTunnel, fieldLanOnly} {
 		if !user[name] {
 			t.Errorf("%s is not a property of Pbx.User", name)
@@ -238,4 +257,141 @@ func TestEveryHandsetFieldExists(t *testing.T) {
 			t.Errorf("Pbx.Phone has no %s", name)
 		}
 	}
+}
+
+/*
+Every property the trunk and DID import reads or writes.
+
+Written after this test caught the file's first version reading Name and Host
+off Pbx.Trunk. Neither is a trunk property — both belong to the Gateway a trunk
+carries — and the mistake compiles, unmarshals to empty strings, and shows a
+trunk picker of blank rows. Nothing else would have found it before somebody
+opened the screen against a customer's phone system.
+*/
+func TestEveryTrunkFieldExists(t *testing.T) {
+	doc := load(t)
+	trunk := propertiesOf(t, doc, "Pbx.Trunk")
+
+	for _, name := range []string{"Id", "Number", "ExternalNumber", "Direction", "IsOnline", "DidNumbers", "Gateway"} {
+		if !trunk[name] {
+			t.Errorf("Pbx.Trunk has no %s", name)
+		}
+	}
+	// And the two that are not on it, so the fix cannot quietly come undone.
+	for _, name := range []string{"Name", "Host"} {
+		if trunk[name] {
+			t.Errorf("Pbx.Trunk now has %s; the Gateway indirection in trunks.go can be simplified", name)
+		}
+	}
+
+	gateway := propertiesOf(t, doc, "Pbx.Gateway")
+	for _, name := range []string{"Name", "Host"} {
+		if !gateway[name] {
+			t.Errorf("Pbx.Gateway has no %s, which is where a trunk's name comes from", name)
+		}
+	}
+}
+
+// Every property an imported DID's inbound rule is built from.
+func TestEveryInboundRuleFieldExists(t *testing.T) {
+	doc := load(t)
+	rule := propertiesOf(t, doc, "Pbx.InboundRule")
+
+	for _, name := range []string{
+		"Id", "RuleName", "Condition", "Data", "TrunkDN", "OfficeHoursDestination",
+		"AlterDestinationDuringOutOfOfficeHours", "AlterDestinationDuringHolidays",
+	} {
+		if !rule[name] {
+			t.Errorf("Pbx.InboundRule has no %s", name)
+		}
+	}
+
+	// The trunk a rule names is a Peer, and it is matched by Id.
+	peer := propertiesOf(t, doc, "Pbx.Peer")
+	for _, name := range []string{"Id", "Number"} {
+		if !peer[name] {
+			t.Errorf("Pbx.Peer has no %s", name)
+		}
+	}
+}
+
+// The condition that matches on the dialled number. A rule created with a
+// condition 3CX does not know is a rule that never fires.
+func TestTheDIDConditionExists(t *testing.T) {
+	doc := load(t)
+	if !slices.Contains(enumOf(t, doc, "Pbx.RuleConditionType"), conditionDID) {
+		t.Errorf("%q is not one of %v", conditionDID, enumOf(t, doc, "Pbx.RuleConditionType"))
+	}
+}
+
+/*
+Every kind of number a DID may be pointed at exists in both enums.
+
+The sheet gives a plain number and the phone system says what it is, which
+means a PeerType has to be turned into a DestinationType. They overlap but are
+not the same list — Parking and Conference are peers that no call can be sent
+to — so the six this plugin treats as interchangeable have to actually be
+spelled the same way in both. If 3CX ever renames one on one side, a DID import
+would start writing a destination type that does not exist.
+*/
+func TestEveryRoutableNumberIsInBothEnums(t *testing.T) {
+	doc := load(t)
+	peers := enumOf(t, doc, "Pbx.PeerType")
+	destinations := enumOf(t, doc, "Pbx.DestinationType")
+
+	for _, name := range []string{"Extension", "Queue", "RingGroup", "IVR", "Fax", "RoutePoint"} {
+		if !slices.Contains(peers, name) {
+			t.Errorf("%q is treated as a routable number and Pbx.PeerType has no such value", name)
+		}
+		if !slices.Contains(destinations, name) {
+			t.Errorf("%q is written as a destination and Pbx.DestinationType has no such value", name)
+		}
+		if !canTakeACall(name) {
+			t.Errorf("%q is in both enums and canTakeACall refuses it", name)
+		}
+	}
+
+	// And the ones deliberately left out really are peers, or the exclusion is
+	// guarding against nothing.
+	for _, name := range []string{"Parking", "Conference"} {
+		if !slices.Contains(peers, name) {
+			t.Errorf("Pbx.PeerType has no %q, so refusing it proves nothing", name)
+		}
+		if canTakeACall(name) {
+			t.Errorf("a DID may be pointed at a %q, which is not somewhere a call can go", name)
+		}
+	}
+}
+
+// The properties a number's kind is read from.
+func TestEveryPeerFieldExists(t *testing.T) {
+	doc := load(t)
+	peer := propertiesOf(t, doc, "Pbx.Peer")
+
+	for _, name := range []string{"Id", "Number", "Name", "Type"} {
+		if !peer[name] {
+			t.Errorf("Pbx.Peer has no %s", name)
+		}
+	}
+}
+
+// enumOf reads the values an enum schema names.
+func enumOf(t *testing.T, doc *openAPI, name string) []string {
+	t.Helper()
+	node, ok := doc.Components.Schemas[name]
+	if !ok {
+		t.Fatalf("the schema has no %s", name)
+	}
+	var out []string
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == "enum" {
+			for _, one := range node.Content[i+1].Content {
+				out = append(out, one.Value)
+			}
+		}
+	}
+	if len(out) == 0 {
+		t.Fatalf("%s names no values", name)
+	}
+	return out
 }

@@ -78,9 +78,31 @@ const (
 
 // Comparable reports whether a field can take part in a before-and-after.
 // A secret has nothing to compare against and a read-only field has nothing to
-// change, so neither belongs in a sheet or a diff.
+// change, so neither belongs in a diff.
 func Comparable(spec Spec) bool {
 	return spec.Kind != KindSecret && spec.Kind != KindReadOnly
+}
+
+/*
+Sheetable reports whether a field may appear in a sheet Azir writes.
+
+Wider than Comparable by exactly the read-only fields, and that is the whole
+difference between the two: a MAC address or the DID assigned to an extension
+is worth carrying in an export beside the things somebody is about to edit,
+even though Azir will never write it back.
+
+The rule that used to keep these out — a column somebody can fill in and Azir
+will ignore is worse than no column at all — is kept by marking the header
+rather than by dropping the column. SheetColumns writes them as "(read-only)",
+and Suggest refuses to map one on the way back in, so a sheet that comes home
+with edits in that column is not half-applied: it is not applied at all, and
+the header said so before anybody typed.
+
+Secrets stay out under every circumstance. A voicemail PIN in a downloaded file
+is a credential at rest in somebody's downloads folder.
+*/
+func Sheetable(spec Spec) bool {
+	return spec.Kind != KindSecret
 }
 
 // Spec describes one field: what it is called, how it reads, and what it will
@@ -189,24 +211,33 @@ recognises every one of them. That round trip is the point: download, edit in
 Excel, upload, and the columns map themselves.
 */
 func SheetColumns(specs []Spec) []string {
-	columns := make([]string, 0, len(specs)+1)
+	sheeted := Sheeted(specs)
+	columns := make([]string, 0, len(sheeted)+1)
 	columns = append(columns, "Extension")
-	for _, spec := range specs {
-		if !Comparable(spec) {
-			continue
-		}
-		columns = append(columns, spec.Label)
+	for _, spec := range sheeted {
+		columns = append(columns, ColumnName(spec))
 	}
 	return columns
 }
 
+// ColumnName is a field's header in a sheet. Read-only fields say so in the
+// header, because that is the only place somebody sees it before they start
+// typing into the column.
+func ColumnName(spec Spec) string {
+	if !Comparable(spec) {
+		return spec.Label + " (read-only)"
+	}
+	return spec.Label
+}
+
 // Sheeted is the fields a sheet can carry, which is every field but the
-// secrets. Exported because the mapping and the download both need the same
-// answer as SheetColumns.
+// secrets. Exported because SheetColumns, CanonicalMapping and Line all have
+// to agree on the order, and one function answering for all three is what
+// stops them drifting a column apart.
 func Sheeted(specs []Spec) []Spec {
 	kept := make([]Spec, 0, len(specs))
 	for _, spec := range specs {
-		if Comparable(spec) {
+		if Sheetable(spec) {
 			kept = append(kept, spec)
 		}
 	}

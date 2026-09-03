@@ -13,6 +13,7 @@ import {
   LogOut,
   Stethoscope,
   Phone,
+  PhoneForwarded,
   Plus,
   RefreshCw,
   Search,
@@ -56,6 +57,7 @@ export const Icon = {
   person: () => <UserRound className="size-3.5" />,
   business: () => <Building2 className="size-3.5" />,
   phone: () => <Phone className="size-3.5" />,
+  routed: () => <PhoneForwarded className="size-3.5" />,
   mail: () => <AtSign className="size-3.5" />,
   download: () => <Download className="size-3.5" />,
 };

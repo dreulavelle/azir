@@ -249,6 +249,15 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/bulk/{id}/cancel", s.require(identity.PermPhoneManage, s.cancelBulk))
 	mux.HandleFunc("POST /api/bulk/{id}/revert", s.require(identity.PermPhoneManage, s.revertBulk))
 
+	// A carrier's list of DID numbers, onto a trunk. Under the same permission
+	// and the same read-compare-approve shape as the sheet above; see
+	// internal/api/dids.go for why it holds nothing in between.
+	mux.HandleFunc("GET /api/dids/trunks", s.require(identity.PermPhoneManage, s.listDIDTrunks))
+	mux.HandleFunc("GET /api/dids/starting-sheet",
+		s.require(identity.PermPhoneManage, s.startingDIDs))
+	mux.HandleFunc("POST /api/dids/preview", s.require(identity.PermPhoneManage, s.previewDIDs))
+	mux.HandleFunc("POST /api/dids/import", s.require(identity.PermPhoneManage, s.importDIDs))
+
 	// One extension at a time: the form, rather than the sheet. Same
 	// capabilities, same approvals, same audit — a different number of
 	// extensions and no separate screen for the difference.

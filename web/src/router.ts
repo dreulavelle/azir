@@ -41,6 +41,7 @@ export type Route =
   | { name: "extensions" }
   | { name: "schedule" }
   | { name: "bulk" }
+  | { name: "dids" }
   | { name: "snapshot"; id: string }
   | { name: "settings"; tab?: string };
 
@@ -76,6 +77,8 @@ export function parse(path: string, search: string): Route {
       return { name: "schedule" };
     case "bulk":
       return { name: "bulk" };
+    case "dids":
+      return { name: "dids" };
     case "settings":
       return { name: "settings", tab: tail || "plugins" };
     default:
@@ -111,6 +114,8 @@ export function href(route: Route): string {
       return "/schedule";
     case "bulk":
       return "/bulk";
+    case "dids":
+      return "/dids";
     case "diagnostics":
       return "/diagnostics";
     case "snapshot":

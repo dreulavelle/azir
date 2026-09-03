@@ -130,6 +130,24 @@ const (
 	// "the phone is unplugged".
 	CapPhoneExtensions Capability = "phone_system.extensions"
 
+	// CapPhoneTrunks is the trunks a phone system carries calls on, and the DID
+	// numbers each one answers on.
+	//
+	// One capability for both because a trunk without its numbers cannot
+	// answer the question anybody has — which trunk is this DID on — and
+	// fetching them separately would be a second call per trunk to assemble
+	// one screen.
+	CapPhoneTrunks Capability = "phone_system.trunks"
+
+	// CapPhoneTrunkDidImport adds DID numbers to a trunk.
+	//
+	// Its own tag rather than a flag on a general trunk write, because adding
+	// numbers is the one change to a trunk that cannot take a customer's phones
+	// off the air: the numbers already on it are read first and written back
+	// untouched. Anything that could remove one belongs behind a different tag,
+	// with a different approval.
+	CapPhoneTrunkDidImport Capability = "phone_system.trunk_did_import"
+
 	// CapWebSearch is the public internet, as search results.
 	//
 	// The only capability whose answers come from outside the customer's own
@@ -186,6 +204,8 @@ var vocabulary = map[Capability]struct{}{
 	CapPhoneScheduleAdd:       {},
 	CapPhoneScheduleRemove:    {},
 	CapPhoneHoursSet:          {},
+	CapPhoneTrunks:            {},
+	CapPhoneTrunkDidImport:    {},
 	CapCallsList:              {},
 	CapDocsSearch:             {},
 	CapInvoicesList:           {},

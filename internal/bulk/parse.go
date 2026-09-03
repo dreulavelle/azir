@@ -121,10 +121,20 @@ func Parse(r io.Reader) (Sheet, error) {
 		}
 	}
 	if len(rows) == 0 {
-		return Sheet{}, errors.New("that sheet has a header and no rows")
+		// The sheet comes back alongside the error rather than being thrown
+		// away, because for one caller this is not an error at all: a list of
+		// DIDs with no header and one number in it is a header and no rows,
+		// and the number is in the part that would otherwise be discarded.
+		return Sheet{Columns: columns, Rows: [][]string{}}, ErrHeaderOnly
 	}
 	return Sheet{Columns: columns, Rows: rows}, nil
 }
+
+// ErrHeaderOnly is a sheet with column names and nothing under them. Its own
+// error because whether that is a mistake depends on what was expected: a
+// sheet of extensions with no rows is empty, and a single column of DIDs with
+// no header is a file with exactly one number in it.
+var ErrHeaderOnly = errors.New("that sheet has a header and no rows")
 
 // delimiter guesses which character separates the columns, by counting them in
 // the header line. Whichever appears most is the one.

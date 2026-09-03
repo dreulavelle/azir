@@ -124,6 +124,15 @@ const ACTIONS: Record<string, { verb: string; note?: string }> = {
     note: "Only the rows that differed from the phone system were changed, and only after somebody approved the before and after.",
   },
 
+  "dids.preview": {
+    verb: "Checked a list of DID numbers against a trunk",
+    note: "Reads only. The file is compared against what the trunk carries now, and nothing is written until somebody approves the difference.",
+  },
+  "dids.import": {
+    verb: "Imported DID numbers onto a trunk",
+    note: "Only ever adds. The numbers already on the trunk are kept, and a number that already had an inbound rule was left pointing where it was.",
+  },
+
   "data.retention": { verb: "Changed how long things are kept" },
   "data.clear": {
     verb: "Started fresh",

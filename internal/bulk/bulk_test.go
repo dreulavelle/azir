@@ -722,3 +722,83 @@ func TestTheDisplayNameLeavesTheFormWhenThePartsArrive(t *testing.T) {
 		t.Error("the display name left the spreadsheet too")
 	}
 }
+
+/*
+A read-only field is exported, marked, and never written back.
+
+The three halves of one property, asserted together because they only mean
+anything together. Carrying the DID assigned to an extension in the sheet is
+worth having beside the outbound caller ID somebody is about to edit; letting
+that column be typed into and applied would mean the extension sheet quietly
+changing inbound routing.
+*/
+func TestAReadOnlyFieldIsExportedAndNeverWrittenBack(t *testing.T) {
+	specs := []Spec{
+		{Field: FieldName, Label: "Name", Kind: KindText},
+		{Field: "OutboundCallerID", Label: "Outbound caller ID", Kind: KindText},
+		{Field: "AssignedDIDs", Label: "Assigned DID", Kind: KindReadOnly},
+	}
+
+	// Exported, so it is in the file somebody downloads.
+	columns := SheetColumns(specs)
+	found := ""
+	for _, name := range columns {
+		if strings.HasPrefix(name, "Assigned DID") {
+			found = name
+		}
+	}
+	if found == "" {
+		t.Fatalf("the read-only column is not in the sheet: %v", columns)
+	}
+
+	// Marked, so nobody fills it in expecting it to apply.
+	if !strings.Contains(found, "read-only") {
+		t.Errorf("the column reads %q and does not say it is read-only", found)
+	}
+
+	// And refused on the way back in, whatever the header says.
+	for _, header := range []string{found, "Assigned DID", "AssignedDIDs"} {
+		got := Suggest([]string{"Extension", header}, specs)
+		if _, mapped := got.Fields["AssignedDIDs"]; mapped {
+			t.Errorf("a column headed %q was mapped to a read-only field", header)
+		}
+	}
+}
+
+// The columns, the mapping and the row have to stay a column apart from each
+// other, and a read-only field is the thing most likely to knock them out of
+// step because only some of the three used to skip it.
+func TestAReadOnlyFieldKeepsTheColumnsAligned(t *testing.T) {
+	specs := []Spec{
+		{Field: FieldName, Label: "Name", Kind: KindText},
+		{Field: "AssignedDIDs", Label: "Assigned DID", Kind: KindReadOnly},
+		{Field: "OutboundCallerID", Label: "Outbound caller ID", Kind: KindText},
+		{Field: "VMPIN", Label: "Voicemail PIN", Kind: KindSecret},
+	}
+
+	columns := SheetColumns(specs)
+	line := Line("101", Values{
+		FieldName:          "Reception",
+		"AssignedDIDs":     "+15551110000 +15551110001",
+		"OutboundCallerID": "+15551110000",
+		"VMPIN":            "1234",
+	}, specs)
+
+	if len(line) != len(columns) {
+		t.Fatalf("Line wrote %d cells for %d columns: %v against %v", len(line), len(columns), line, columns)
+	}
+	// The secret is in neither.
+	for _, cell := range line {
+		if cell == "1234" {
+			t.Fatal("a voicemail PIN was written into a downloaded sheet")
+		}
+	}
+	// And the mapping points at the same column the value was written to.
+	mapping := CanonicalMapping(specs)
+	if got := line[mapping.Fields["OutboundCallerID"]]; got != "+15551110000" {
+		t.Errorf("the mapping points at %q, which is not the caller ID", got)
+	}
+	if got := line[mapping.Fields["AssignedDIDs"]]; got != "+15551110000 +15551110001" {
+		t.Errorf("the mapping points at %q, which is not the assigned DIDs", got)
+	}
+}

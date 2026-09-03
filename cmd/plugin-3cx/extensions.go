@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"slices"
 	"sort"
@@ -166,6 +167,7 @@ func settable(lists fieldLists) []published {
 		option{fieldRole, "Role", "choice", "General", lists.Roles.Values},
 	)
 	all = append(all, handsetFields...)
+	all = append(all, didFields...)
 
 	labelled := map[string]map[string]string{
 		fieldRole:       lists.Roles.Labels,
@@ -565,6 +567,38 @@ func extensionSettings(ctx context.Context, req plugin.Request) (any, error) {
 	// two minutes rather than fetched on every screen that reads it.
 	const settingsPage = pageSize
 
+	/*
+		Which DIDs ring which extension, read once for the whole system.
+
+		Inbound rules are their own objects — a DID is not a property of the
+		extension it reaches — so this is the join, done here rather than by
+		whatever reads the answer. One request, because the alternative is one
+		per extension.
+
+		A phone system that will not list its rules leaves the column empty
+		rather than failing the call: every other setting on the page is still
+		the answer to what was asked.
+	*/
+	didsByExtension := map[string][]string{}
+	if rules, err := readInboundRules(ctx, conn); err != nil {
+		slog.Info("the phone system would not list its inbound rules, so no DIDs are shown against extensions", "why", err)
+	} else {
+		for _, onTrunk := range rules {
+			for did, rule := range onTrunk {
+				if rule.Extension == "" {
+					continue
+				}
+				didsByExtension[rule.Extension] = append(didsByExtension[rule.Extension], did)
+			}
+		}
+		// Sorted, so two downloads of the same phone system are the same file.
+		// Map iteration order would otherwise shuffle the column on an
+		// extension with more than one number.
+		for _, dids := range didsByExtension {
+			sort.Strings(dids)
+		}
+	}
+
 	out := make([]map[string]any, 0, settingsPage)
 	everyRow := make([]map[string]any, 0, settingsPage)
 	complete := true
@@ -607,6 +641,13 @@ func extensionSettings(ctx context.Context, req plugin.Request) (any, error) {
 			// anything on it.
 			for name, value := range handsetOf(row["Phones"]) {
 				settings[name] = value
+			}
+			// Several DIDs may ring one extension, so they are one cell with
+			// spaces between them. A sheet column that sometimes holds two
+			// values needs a separator that survives a spreadsheet, and a
+			// comma does not.
+			if dids := didsByExtension[asText(row["Number"])]; len(dids) > 0 {
+				settings["AssignedDIDs"] = strings.Join(dids, " ")
 			}
 			out = append(out, map[string]any{
 				"extension": asText(row["Number"]),
@@ -1378,6 +1419,23 @@ was built against has ever been provisioned, so there is no shape to check a
 write against and nothing to try one on. Reading it is still worth having:
 "what phone is on this extension" is a question asked constantly.
 */
+/*
+didFields is the DID numbers that ring an extension.
+
+Read-only, and not because writing it would be hard: pointing a DID somewhere
+is an inbound rule, and doing that from a column in the extension sheet would
+mean two screens that both change inbound routing and disagree about how. The
+DID screen owns that.
+
+It is exported anyway, which read-only fields did not used to be. The reason is
+the job people actually do after importing a block of numbers: set each
+extension's outbound caller ID to the DID that rings it. Without this column
+that means reading two screens side by side and typing the numbers across.
+*/
+var didFields = []option{
+	{"AssignedDIDs", "Assigned DID", "readonly", "General", nil},
+}
+
 var handsetFields = []option{
 	{"PhoneModel", "Phone model", "readonly", "IP phone", nil},
 	{"PhoneMac", "MAC address", "readonly", "IP phone", nil},

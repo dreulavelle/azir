@@ -18,8 +18,19 @@ import { saveAs } from "./words";
  * click away, grouped the way the phone system groups them.
  */
 
-/** What a sheet starts out carrying: what somebody usually came to change. */
-const COMMON = ["name", "enabled"];
+/*
+What a sheet starts out carrying: what somebody usually came to change.
+
+Outbound caller ID and the DID assigned to each extension are here because of
+the job that follows a block import: a carrier's numbers go onto the trunk, and
+then each extension's outbound caller ID is set to the number that rings it.
+Having both in the same file is the difference between editing one column and
+reading two screens side by side.
+
+The DID column is read-only — its header says so, and Azir refuses to map it
+back in. Where a DID points is the DID screen's business, not a column here.
+*/
+const COMMON = ["name", "enabled", "OutboundCallerID", "AssignedDIDs"];
 
 export function SheetWay({
   customerID,

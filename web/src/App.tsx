@@ -40,6 +40,7 @@ const Extensions = lazy(() =>
 );
 const Schedule = lazy(() => import("./pages/Schedule").then((m) => ({ default: m.Schedule })));
 const BulkEdits = lazy(() => import("./pages/BulkEdits").then((m) => ({ default: m.BulkEdits })));
+const DIDs = lazy(() => import("./pages/DIDs").then((m) => ({ default: m.DIDs })));
 
 /**
  * The assistant, fetched the first time somebody opens it.
@@ -287,6 +288,14 @@ function Console() {
         )}
         {actor.permissions.includes(Perm.phoneManage) && (
           <NavItem
+            icon={<Icon.routed />}
+            label="DID numbers"
+            active={route.name === "dids"}
+            onClick={() => go({ name: "dids" })}
+          />
+        )}
+        {actor.permissions.includes(Perm.phoneManage) && (
+          <NavItem
             icon={<Icon.clock />}
             label="Schedule"
             active={route.name === "schedule"}
@@ -440,6 +449,11 @@ function Console() {
         {route.name === "bulk" && (
           <Suspense fallback={<div className="mx-auto max-w-[1180px] px-6 py-6"><div className="h-40 animate-pulse rounded-lg bg-sunken" /></div>}>
             <BulkEdits actor={actor} />
+          </Suspense>
+        )}
+        {route.name === "dids" && (
+          <Suspense fallback={<div className="mx-auto max-w-[1180px] px-6 py-6"><div className="h-40 animate-pulse rounded-lg bg-sunken" /></div>}>
+            <DIDs actor={actor} />
           </Suspense>
         )}
         {route.name === "schedule" && (

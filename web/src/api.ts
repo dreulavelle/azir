@@ -912,6 +912,99 @@ export type Removed = { name: string; rows: number };
 /** One field on one extension, before and after. */
 export type BulkChange = { field: string; label: string; before: string; after: string };
 
+/**
+ * One trunk, and what it already carries.
+ *
+ * `routes` is the numbers on it that actually go somewhere, keyed by number.
+ * A trunk's DID list and its inbound rules are two different things in 3CX: a
+ * number in the list is answered, a number with a rule is routed, and the gap
+ * between the two counts is how many calls land on the trunk's default.
+ */
+export type DIDTrunk = {
+  id: number;
+  name: string;
+  number: string;
+  host: string;
+  direction: string;
+  online: boolean;
+  dids: string[];
+  routes: Record<string, string>;
+};
+
+/** One number, and what would happen to it. */
+export type DIDChange = {
+  number: string;
+  /**
+   * The number the file said this DID should ring. Absent when it only gave a
+   * DID.
+   *
+   * A plain number, with no type beside it: a 3CX numbering plan is one space,
+   * so 101 being a person and 800 being a queue is a fact the phone system
+   * holds rather than something the file has to say.
+   */
+  extension?: string;
+  /** What it already does — the trunk it is on, or the extension it rings. */
+  existing?: string;
+  row: number;
+};
+
+/**
+ * What an import does with a DID that is already assigned.
+ *
+ * "append" leaves it exactly as it is, which is the default: a second number
+ * bought for the sales desk should ring alongside the first, not replace it.
+ * "replace" repoints it, for when the number has actually moved.
+ */
+export type DIDMode = "append" | "replace";
+
+/** A line of the file that could not be read, and why. */
+export type DIDRefused = { raw: string; row: number; why: string };
+
+/**
+ * What an import would do, before anybody agrees to it.
+ *
+ * Every number is in exactly one of `adding` and `already`; `on_other` and
+ * `already_route` are warnings drawn beside them rather than further buckets.
+ */
+export type DIDPreview = {
+  trunk: DIDTrunk;
+  filename: string;
+  adding: DIDChange[];
+  already: DIDChange[];
+  /** Numbers that are already on a different trunk, which is usually a mistake. */
+  on_other: DIDChange[];
+  /**
+   * Numbers already assigned to a different extension. What happens to these
+   * is what the mode decides, so both sides are shown.
+   */
+  already_route: DIDChange[];
+  refused: DIDRefused[];
+  repeated: number;
+  counts: {
+    adding: number;
+    already: number;
+    on_other: number;
+    routing: number;
+    kept_rules: number;
+    refused: number;
+    total: number;
+  };
+};
+
+/** What the phone system did when the import was applied. */
+export type DIDImported = {
+  trunk: string;
+  added: string[];
+  already: string[];
+  total: number;
+  /** Assigned. `was` is set where the DID moved off another extension. */
+  routed: { number: string; extension: string; was?: string }[];
+  already_routed: { number: string; extension: string; why: string }[];
+  unrouted: string[];
+  failed: Record<string, string>;
+  summary: string;
+};
+
 /** One extension's worth of a bulk edit. */
 export type BulkRow = {
   extension: string;
@@ -1415,6 +1508,71 @@ export const api = {
 
   cancelSheet: (id: string) =>
     request<{ edit: BulkEdit }>(`/api/bulk/${encodeURIComponent(id)}/cancel`, { method: "POST" }),
+
+  /** The trunks a customer's phone system carries calls on. */
+  didTrunks: (customerID: string) =>
+    request<{ trunks: DIDTrunk[] }>(
+      `/api/dids/trunks?customer_id=${encodeURIComponent(customerID)}`,
+    ),
+
+  /**
+   * Compares an uploaded list of numbers against a trunk as it is now.
+   *
+   * Nothing is held between this and the import. What comes back is what the
+   * import is given, so the only thing that can be applied is what was on the
+   * screen.
+   */
+  previewDIDs: (customerID: string, trunk: string, file: File) => {
+    const body = new FormData();
+    body.append("sheet", file);
+    return request<DIDPreview>(
+      `/api/dids/preview?customer_id=${encodeURIComponent(customerID)}` +
+        `&trunk=${encodeURIComponent(trunk)}`,
+      { method: "POST", body },
+    );
+  },
+
+  importDIDs: (customerID: string, trunk: string, dids: DIDChange[], mode: DIDMode) =>
+    request<DIDImported>(`/api/dids/import?customer_id=${encodeURIComponent(customerID)}`, {
+      method: "POST",
+      body: JSON.stringify({
+        trunk,
+        mode,
+        confirm: "import",
+        dids: dids.map((d) => ({ number: d.number, extension: d.extension ?? "" })),
+      }),
+    }),
+
+  /**
+   * Downloads a trunk's numbers as the file to edit.
+   *
+   * Fetched rather than linked, for the reason startingSheet gives: the thing
+   * most likely to go wrong is that the phone system cannot be reached, and a
+   * plain link answers that by navigating the console to a page of JSON.
+   */
+  startingDIDs: async (
+    customerID: string,
+    trunk: string,
+    saveAs: (blob: Blob, name: string) => void,
+  ) => {
+    const res = await fetch(
+      `/api/dids/starting-sheet?customer_id=${encodeURIComponent(customerID)}` +
+        `&trunk=${encodeURIComponent(trunk)}`,
+    );
+    if (!res.ok) {
+      let message = humanStatus(res.status);
+      try {
+        const body = await res.json();
+        if (body?.error) message = body.error;
+      } catch {
+        // Not JSON. The status line will have to do.
+      }
+      throw new Error(message);
+    }
+    const name =
+      /filename="([^"]+)"/.exec(res.headers.get("Content-Disposition") ?? "")?.[1] ?? "dids.csv";
+    saveAs(await res.blob(), name);
+  },
 
   registry: () => request<Registry>("/api/registry"),
 
